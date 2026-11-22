@@ -14,11 +14,11 @@ const control=(channel:'cli'|'hosted',closed=false):ReviewRoundProgress=>({chann
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('current review position badges',()=>{
-  it('replaces only a later row queue badge with its proven incoming findings hold',()=>{
+  it('keeps the PR queue label independent of either lane’s work and incoming findings',()=>{
     const v=value();
     v.channels=v.channels.map(channel=>({...channel,state:'held',reason:'review_evidence_pending'}));
     const progress:ReviewProgressItem={pull_number:4,incoming_routes_pending:1,channels:[control('hosted'),control('cli')].map(channel=>({...channel,pending:1,pending_execution:0,pending_adjudication:1}))};
-    expect(reviewQueueBadges(pull(4),snapshot,v,progress)[0]).toMatchObject({kind:'held',text:'Findings pending',description:expect.stringContaining('Incoming routed findings')});
+    expect(reviewQueueBadges(pull(4),snapshot,v,progress)[0]).toMatchObject({kind:'queued',text:'Queued'});
     for (const absent of [undefined,{...progress,incoming_routes_pending:0},{...progress,incoming_routes_pending:undefined},{...progress,pull_number:3}]) {
       expect(reviewQueueBadges(pull(4),snapshot,v,absent)[0]?.text).toBe('Queued');
     }

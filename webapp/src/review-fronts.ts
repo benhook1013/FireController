@@ -15,7 +15,7 @@ export interface ReviewFronts {
   configuration_revision: number; policy_revision: number; snapshot_id?: string;
   queue: number[]; channels: ReviewFrontChannel[];
 }
-export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued' | 'held'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
+export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
 export interface ReviewChannelPosition { text: string; description?: string }
 export const reviewFixesPending: ReviewChannelPosition = {text:'Fixes pending',description:'See the accepted findings in Review history.'};
 export function parentBaseMovedDescription(parentPullNumber?: number): string {
@@ -94,7 +94,6 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   // Closure is retained PR/channel control state, independent of the source
   // snapshot that happens to be loading. Missing controls never mean closed.
   if (selected.length > 0 && selected.every(closed)) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
-  if (pull.parent_base_moved) return [{kind:'held',text:'Parent changed',description:parentBaseMovedDescription(pull.parent_pull_number)}];
   if (!fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return [];
   const positions = new Map(fronts.queue.map((number, index) => [number, index]));
   const priorities = fronts.channels.flatMap(channel => {
@@ -111,11 +110,5 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   }
   if (position <= first) return [];
 
-  const current = progress?.pull_number === pull.number ? progress : undefined;
-  if ((current?.incoming_routes_pending ?? 0) > 0) {
-    const executing = current?.channels.some(channel => (channel.pending_execution ?? channel.pending) > 0) ||
-      pull.latest_attempts.some(attempt => !attempt.finished_at && ['preparing','prepared','posting','active'].includes(attempt.state));
-    if (!executing) return [{kind:'held',text:'Findings pending',description:'Incoming routed findings hold new reviews.'}];
-  }
   return [{kind:'queued',text:'Queued',description:'Behind the first PR with review rounds remaining.'}];
 }
