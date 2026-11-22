@@ -222,7 +222,6 @@ func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Model the remaining budget after required selection and operation reads.
 		if err := operationResponseDeadlineAt(w, time.Now().Add(750*time.Millisecond)); err != nil {
@@ -233,8 +232,15 @@ func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T
 		e.queuedRunResponseHeader(w, r, scope, RunState{Operation: &Operation{ID: "review_operation_test", State: "queued", Channel: "cli", Revision: 1}})
 		w.Write([]byte("retained response"))
 	}))
-	defer server.Close()
-	response, err := server.Client().Get(server.URL)
+	defer func() {
+		// Release the held connection before waiting for the handler to exit.
+		conn.Close()
+		server.Close()
+	}()
+	// Bound dial, response headers and body reads without shortening the handler's budget.
+	client := *server.Client()
+	client.Timeout = 2 * time.Second
+	response, err := client.Get(server.URL)
 	if err != nil {
 		t.Fatal("optional diagnostic lost response", err)
 	}
