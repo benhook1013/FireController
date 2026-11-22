@@ -529,18 +529,10 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     const finished = (run: ReviewRunSummary) => Date.parse(run.finished_at || run.started_at) || 0;
     return finished(a.run) - finished(b.run);
   });
-  // Suppress only an exact returned result's duplicate pending label when that
-  // same result remains visible. Aggregate/older/unmatched work stays separate.
-  const duplicateReturnedStatus = !waiting && returned &&
-    candidateBadge?.text === 'Needs adjudication' && progress?.pending_adjudication === 1 && capacity > 0 &&
-    reviewRunPillStatus(returned) === candidateBadge.text &&
-    pills.slice(-Math.max(0, capacity)).some(item => item.run.id === returned.id);
-  const badge = duplicateReturnedStatus ? undefined : candidateBadge;
-  // Channel obligations without a captured result stay in the lane heading.
-  // They are not additional reviews and must not consume result-pill capacity.
-  // Never attach a new operation's state to an unrelated earlier completion.
-  // Aggregate pending work may belong to an older run. Keep it separate from
-  // every captured result unless that result's own retained fields establish it.
+  // Decisions and fix obligations belong to their retained result. The lane
+  // heading describes execution and scheduling; aggregate counts stay below it.
+  const resultStatus = candidateBadge?.text === 'Needs adjudication' || candidateBadge?.text === 'Fixes pending';
+  const badge = resultStatus ? undefined : candidateBadge;
   const currentStatus = !attemptPill && (waiting || waitingForParent || badge)
     ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{waitingForParent ? <ReviewAttemptBadge channel={channel} status={{text:'Waiting for parent',description:parentBaseMovedDescription(parentPullNumber)}} /> : badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
   const slots = capacity - Number(attemptPill);

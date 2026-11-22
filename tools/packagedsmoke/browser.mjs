@@ -1160,6 +1160,14 @@ try {
   await expect(mergedFacts.locator('.review-ci')).toHaveCount(0);
   await expect(openFacts.locator('.review-ci')).toHaveText('Checking CI');
   await expect(openFacts.locator('.review-mergeability')).toHaveText('Merge: Unknown');
+  for (const facts of [openFacts, mergedFacts]) {
+    const badges = facts.locator(':scope > .badge');
+    need(await badges.count() >= 2);
+    for (const badge of await badges.all()) {
+      await expect(badge).toHaveCSS('border-top-style', 'solid');
+      await expect(badge).toHaveCSS('border-top-width', '1px');
+    }
+  }
   const headRow = page.locator('#review-pr-32');
   const headJumpPosition = () => headRow.evaluate(element => {
     const box = element.getBoundingClientRect(), mast = document.querySelector('.mast').getBoundingClientRect();

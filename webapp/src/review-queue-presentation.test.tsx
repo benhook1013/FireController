@@ -129,17 +129,18 @@ describe('truthful stored review presentation', () => {
     for (const out of [html(0), html(), html(2, 3), html(2, 2, 'merged')]) expect(out).not.toContain('incoming routed finding');
   });
 
-  it('renders Fixes pending from the current native hold while keeping adjudication distinct', () => {
+  it('keeps result obligations out of the lane heading while preserving scheduler holds', () => {
     const v = fronts();
     v.channels = [{ ...v.channels[0], state: 'held', reason: 'review_fixes_pending' }];
     const row = pull(2);
     const fixedStage = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={v} />);
-    expect(fixedStage).toContain('>Fixes pending</span>');
+    expect(fixedStage).not.toContain('>Fixes pending</span>');
     expect(fixedStage).not.toContain('>Results pending</span>');
     expect(fixedStage).not.toContain('>Reviewing</span>');
     const progress: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 1, pending_execution: 0, pending_adjudication: 1 }] };
     const adjudicating = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={v} progress={progress} />);
-    expect(adjudicating).toContain('>Needs adjudication</span>');
+    expect(adjudicating).not.toContain('>Needs adjudication</span>');
+    expect(adjudicating).toContain('1 awaiting adjudication');
     expect(adjudicating).not.toContain('>Fixes pending</span>');
     const unclassified = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={{ ...v, channels: [{ ...v.channels[0], reason: 'review_evidence_pending' }] }} />);
     expect(unclassified).toContain('>Results pending</span>');
@@ -153,7 +154,8 @@ describe('truthful stored review presentation', () => {
     const html=markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={progress} />);
     expect(html).toContain('>Findings pending</span>');
     expect(html).toContain('>1 incoming routed finding</a>');
-    expect(html).toContain('>Needs adjudication</span>');
+    expect(html).toContain('1 awaiting adjudication');
+    expect(html).not.toContain('>Needs adjudication</span>');
     expect(html).not.toContain('>Queued</span>');
     for (const incoming of [0,undefined]) {
       expect(markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={{...progress,incoming_routes_pending:incoming}} />)).toContain('>Queued</span>');

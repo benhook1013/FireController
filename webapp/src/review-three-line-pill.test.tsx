@@ -38,7 +38,7 @@ describe('three-line review state pills',()=>{
  it('keeps real partial-case semantics without completed credit',()=>{
   const partial={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,found:15,accepted:0,fixed:0,retained_undecided:15};
   const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'coverage_incomplete'}],{...progress,retained_adjudication_pending:true});
-  expect(html).toContain('<strong>15/?/?</strong>');expect(html).toContain('>Adjudicating</span>');expect(html).toContain('Needs adjudication');expect(html).toContain('No completed round');
+  expect(html).toContain('<strong>15/?/?</strong>');expect(html).toContain('>Adjudicating</span>');expect(html).not.toContain('aria-label="cli current review state"');expect(html).toContain('No completed round');
   expect(html).not.toContain('>Finished</span>');expect(html).not.toContain('review-pill-zero');
   expect(markup([{...partial,finalized:true,retained_undecided:0,accepted:3,routed:2}])).toContain('<strong>15/3/2</strong>');
  });
@@ -79,8 +79,8 @@ describe('aggregate channel holds do not relabel a clean result',()=>{
   expect(latest).toContain('review-pill-status">Finished');
   expect(latest).not.toContain('review-pill-status">Fixes pending');
   expect(latest).not.toContain('review-pill-status">Needs adjudication');
-  expect(html).toContain('aria-label="cli current review state"');
-  expect(html).toContain('review-pill-status">Fixes pending');
+  expect(html).not.toContain('aria-label="cli current review state"');
+  expect(html.match(/review-pill-status">Fixes pending/gu)).toHaveLength(1);
  });
 });
 
@@ -99,7 +99,7 @@ describe('adjudication indicator age', () => {
  it('keeps the retained partial start on its real review, not the lane indicator', () => {
   const run={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,retained_undecided:1};
   const html=markup([run],[{...attempt,state:'failed',finished_at:run.finished_at}],{...progress,retained_adjudication_pending:true});
-  expect(html.split('aria-label="cli current review state"')[1].split('</h4>')[0]).not.toContain('<time');
+  expect(html).not.toContain('aria-label="cli current review state"');
   expect(html.split('aria-label="Open cli run evidence:')[1]).toContain(`dateTime="${stamp}"`);
  });
  it.each(['different-run', 'different-head', 'settled', 'active'])('does not invent an adjudication start for %s', scenario => {
@@ -108,7 +108,7 @@ describe('adjudication indicator age', () => {
   const html=markup([run],[a],{...progress,pending:1,pending_adjudication:1});
   const indicator=html.split('aria-label="cli current review state"')[1]?.split('</h4>')[0];
   if(scenario==='active') expect(indicator).not.toContain('Needs adjudication');
-  else expect(indicator).not.toContain('<time');
+  else expect(indicator).toBeUndefined();
  });
 });
 
@@ -132,6 +132,9 @@ describe('complete persisted current-state mapping in both review lanes',()=>{
     if (label === 'Closed' || label === 'Cap reached') {
      expect(current).toBeUndefined();
      expect(html).toContain('No reviews remaining');
+    } else if (label === 'Needs adjudication' || label === 'Fixes pending') {
+     expect(current).toBeUndefined();
+     if (label === 'Needs adjudication') expect(html).toContain('1 awaiting adjudication');
     } else {
      expect(current).toBeDefined();
      expect(html).toContain('review-lane-current-state');
@@ -185,17 +188,17 @@ describe('terminal channel state stays in lane progress', () => {
  });
  it('preserves actionable pending adjudication despite closed rounds', () => {
   const html=markup([completed],[],{...progress,closed:true,pending:1,pending_adjudication:1});
-  expect(html).toContain('aria-label="cli current review state"');
-  expect(html).toContain('Needs adjudication');
+  expect(html).not.toContain('aria-label="cli current review state"');
+  expect(html).toContain('1 awaiting adjudication');
  });
 });
 
-it('retains aggregate adjudication indicator when more than the visible returned run is pending', () => {
+it('keeps additional pending adjudications in the round summary', () => {
  const run={...completed,finalized:false};
  const html=markup([run],[{...attempt,state:'completed',finished_at:run.finished_at}],{...progress,pending:2,pending_adjudication:2});
- expect(html).toContain('aria-label="cli current review state"');
+ expect(html).not.toContain('aria-label="cli current review state"');
  expect(html).toContain('<span class="review-pill-status">Adjudicating</span>');
- expect(html).toContain('aria-label="cli current review state"><span class="badge review-channel-position">Needs adjudication</span>');
+ expect(html).toContain('2 awaiting adjudication');
 });
 
 
@@ -262,7 +265,8 @@ describe('current finding obligations remain distinct from frozen counts', () =>
   expect(reviewRunPillStatus({...partial,current_pending_fixes:1})).toBe('Fixes pending');
   expect(reviewRunPillStatus({...partial,retained_undecided:1})).toBe('Needs adjudication');
   expect(reviewRunPillStatus({...partial,current_pending_fixes:undefined})).toBe('Reviewed');
-  const fixes = markup([{...partial,found:17,accepted:13,current_pending_fixes:13}]);
+  const fixes = markup([{...partial,found:17,accepted:13,current_pending_fixes:13}], [], {...progress,fixes_pending:true});
+  expect(fixes).not.toContain('aria-label="cli current review state"');
   expect(fixes).toContain('review-pill-partial');
   expect(fixes).toContain('<strong>17/13/0</strong><span class="review-pill-status">Fixes pending</span>');
  });
