@@ -357,7 +357,7 @@ func packagedCompletionEvidence(t *testing.T, f *restoreFixture, original review
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := e.ReadReviewAdjudication(t.Context(), scope, original.ID)
+	state, err = e.ReadReviewAdjudication(t.Context(), scope, original.ID)
 	if err != nil || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{Found: 1}) || later.Anchor == original.Anchor {
 		t.Fatal("original frozen authority changed", err)
 	}
