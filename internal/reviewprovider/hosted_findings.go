@@ -57,6 +57,7 @@ type findingLine struct {
 	preCountContinues       bool
 	preCommentContinues     bool // A comment hides this physical boundary in the preformatted projection.
 	countContinues          bool // A comment hides this physical line boundary.
+	countBreak              bool // Fenced code separates visible paragraphs.
 	hidden                  bool
 }
 
@@ -93,6 +94,16 @@ func findingLines(body string) ([]findingLine, bool) {
 		// Preformatted text stays hidden for retained markers and inventory.
 		// Capture only rendered text for the additional-only count check.
 		if quote <= 1 && fence == 0 && !comment && (wasPre || indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed)) {
+			if wasPre && preComment && strings.EqualFold(strings.TrimSpace(trimmed), "</pre>") {
+				// An unmatched opener can be a literal preformatted example.
+				// Preserve the standalone closing tag only if there is no
+				// matching close before another comment begins.
+				tail := body[next:]
+				closeAt, openAt := strings.Index(tail, "-->"), strings.Index(tail, "<!--")
+				if closeAt < 0 || openAt >= 0 && openAt < closeAt {
+					preComment = false
+				}
+			}
 			l.preCountText = findingCommentVisible(trimmed, &preComment)
 			l.preCommentContinues = preComment
 		}
@@ -100,6 +111,7 @@ func findingLines(body string) ([]findingLine, bool) {
 			l.hidden = true
 		} else if fence != 0 {
 			l.hidden = true
+			l.countBreak = true
 			n := 0
 			for n < len(trimmed) && trimmed[n] == fence {
 				n++
@@ -107,11 +119,9 @@ func findingLines(body string) ([]findingLine, bool) {
 			if quote == fenceQuote && indent <= 3 && n >= fenceLength && strings.TrimSpace(trimmed[n:]) == "" {
 				fence = 0
 			}
-		} else if indent > 3 || strings.HasPrefix(trimmed, "\t") {
+		} else if wasPre || !comment && indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed) {
 			l.hidden = true
-		} else if pre > 0 || findingPre.MatchString(trimmed) {
-			l.hidden = true
-			for _, tag := range findingPre.FindAllString(trimmed, -1) {
+			for _, tag := range findingPre.FindAllString(l.preCountText, -1) {
 				if strings.HasPrefix(tag, "</") {
 					if pre > 0 {
 						pre--
@@ -120,6 +130,8 @@ func findingLines(body string) ([]findingLine, bool) {
 					pre++
 				}
 			}
+		} else if indent > 3 || strings.HasPrefix(trimmed, "\t") {
+			l.hidden = true
 		} else if comment {
 			l.hidden = true
 			l.countText = findingCommentVisible(trimmed, &comment)
@@ -134,6 +146,7 @@ func findingLines(body string) ([]findingLine, bool) {
 			if n >= 3 {
 				fence, fenceLength, fenceQuote = trimmed[0], n, quote
 				l.hidden = true
+				l.countBreak = true
 			}
 		}
 		if !l.hidden {
@@ -1033,7 +1046,7 @@ func publicationSummaryOnly(publication HostedPublication) bool {
 func publicationCountAbsent(publication HostedPublication) bool {
 	for _, review := range publication.EligibleReviews {
 		for _, line := range publicationVisibleLines(review.Body) {
-			if strings.Contains(strings.ToLower(line), "actionable comments posted") {
+			if hasSubmittedLineActionableClaim(line) || hasBareSubmittedActionableLabel(line) {
 				return false
 			}
 		}

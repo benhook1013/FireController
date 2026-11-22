@@ -188,6 +188,20 @@ func standingHasReleaseMarkerComment(line string) bool {
 	}
 }
 
+// Continued comments are never structural markers. Retain just enough visible
+// wording to reject a reserved marker split across physical comment lines.
+func (p *standingHistoricalParser) scanMarkerComment(tail, fragment string) string {
+	const marker = "release notes by coderabbit.ai"
+	text := strings.ToLower(strings.Join(strings.Fields(tail+" "+fragment), " "))
+	if strings.Contains(text, marker) {
+		p.invalid = true
+	}
+	if len(text) > len(marker) {
+		text = text[len(text)-len(marker):]
+	}
+	return text
+}
+
 func (p *standingHistoricalParser) line(line string, stack []string, index int, inRecent bool) {
 	if line == "" {
 		return
@@ -314,6 +328,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 	var fence byte
 	fenceLength := 0
 	comment, inRecent := false, false
+	var markerCommentTail string
 	inStatus, statusSeen, statusClaim := false, false, false
 	starts, ends := 0, 0
 	risk := standingRiskParser{}
@@ -364,8 +379,15 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				}
 			}
 		}
-		if historical != nil && !comment && !pre {
-			historical.line(line, stack, index, inRecent)
+		if historical != nil && !pre {
+			if !comment {
+				historical.line(line, stack, index, inRecent)
+			} else {
+				// A continued comment cannot supply a valid transition, but
+				// its content still invalidates a reserved marker duplicate.
+				body, _, _ := strings.Cut(line, "-->")
+				markerCommentTail = historical.scanMarkerComment(markerCommentTail, body)
+			}
 		}
 		if !comment && len(stack) == 0 {
 			switch {
@@ -444,6 +466,13 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				stack = stack[:len(stack)-1]
 			} else if !strings.HasSuffix(token, "/>") {
 				stack = append(stack, tag)
+			}
+		}
+		if historical != nil {
+			if !comment {
+				markerCommentTail = ""
+			} else if start := strings.LastIndex(line, "<!--"); start >= 0 {
+				markerCommentTail = historical.scanMarkerComment("", line[start+4:])
 			}
 		}
 	}
@@ -587,7 +616,7 @@ func standingConfigurationHead(value, kind string) (string, bool) {
 func standingInventoryContradictsZero(lines []findingLine, historical *standingHistoricalParser) bool {
 	var projectedLine, paragraph, preformatted strings.Builder
 	claimsCount := func(text string) bool {
-		return strings.Contains(text, "Actionable comments posted:") || standingFindingClaim.MatchString(text)
+		return hasSubmittedActionableClaim(text) || standingFindingClaim.MatchString(text)
 	}
 	for index, line := range lines {
 		preformatted.WriteString(line.preCountText)
@@ -605,7 +634,7 @@ func standingInventoryContradictsZero(lines []findingLine, historical *standingH
 		}
 		// Only the exact standalone historical line is exempt. Neither the
 		// preceding nor following text may borrow that exemption across it.
-		if (!line.hidden && line.text == "" && !line.countContinues) || historical.allows(index) {
+		if line.countBreak || (!line.hidden && line.text == "" && !line.countContinues) || historical.allows(index) {
 			if claimsCount(paragraph.String()) || claimsCount(projectedLine.String()) {
 				return true
 			}

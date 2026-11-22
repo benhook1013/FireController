@@ -38,7 +38,7 @@ func (p *submittedReviewParser) additionalOnly() bool {
 // A count declaration has a label separator (including malformed values), a
 // numeric value without its separator, or a bare formatted label. Mentioning
 // the phrase in ordinary finding prose is not a declaration.
-var submittedActionableClaim = regexp.MustCompile(`(?i)actionable[ \t]+comments[ \t]+posted(?:[ \t]*:|[ \t]+[0-9]+\b)`)
+var submittedActionableClaim = regexp.MustCompile(`(?i)\bactionable[ \t]+comments[ \t]+posted(?:[ \t]*:|[ \t]+[0-9]+\b)`)
 
 // Complete provider collections independently prove the absence of attached or
 // in-window orphan roots before this check. The positive counted category must
@@ -66,11 +66,15 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 		}
 		// A genuinely blank visible line ends a Markdown paragraph. A
 		// comment-hidden boundary does not, and cannot evade the refusal check.
-		if line.text == "" && !line.hidden && !line.countContinues {
-			if hasSubmittedActionableClaim(visibleParagraph.String()) {
+		if line.countBreak || line.text == "" && !line.hidden && !line.countContinues {
+			if hasSubmittedActionableClaim(visibleParagraph.String()) || hasBareSubmittedActionableLabel(visibleParagraph.String()) {
 				return false
 			}
 			visibleParagraph.Reset()
+			if line.countBreak {
+				count.Reset()
+				continue
+			}
 		}
 		count.WriteString(line.countText)
 		visibleParagraph.WriteString(line.countText)
@@ -85,7 +89,7 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	}
 	// Ordinary Markdown soft breaks are whitespace within a paragraph.
 	// Keep the per-line refusal above for bare labels as well.
-	if hasSubmittedActionableClaim(visibleParagraph.String()) {
+	if hasSubmittedActionableClaim(visibleParagraph.String()) || hasBareSubmittedActionableLabel(visibleParagraph.String()) {
 		return false
 	}
 	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
@@ -145,16 +149,32 @@ var submittedCountMarkdownLink = regexp.MustCompile(`\[([^\]\r\n]+)\]\((?:[^()\r
 // supply trusted structure or proof of any inventory.
 var submittedCountMarkdownReference = regexp.MustCompile(`\[([^\]\r\n]+)\]\[[^\]\r\n]*\]`)
 
-func hasSubmittedPlainActionableClaim(text string) bool {
-	return submittedActionableClaim.MatchString(strings.Map(func(r rune) rune {
+func submittedCountWhitespace(text string) string {
+	return strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
 			return ' '
 		}
 		return r
-	}, text))
+	}, text)
+}
+
+func hasSubmittedPlainActionableClaim(text string) bool {
+	return submittedActionableClaim.MatchString(submittedCountWhitespace(text))
+}
+
+var submittedActionableLine = regexp.MustCompile(`(?i)^ *(?:(?:[-+]|[0-9]+[.)]) +)?actionable +comments +posted(?: *:| +[0-9]+\b)`)
+
+func hasSubmittedLineActionableClaim(text string) bool {
+	return hasSubmittedActionableProjection(text, func(visible string) bool {
+		return submittedActionableLine.MatchString(submittedCountWhitespace(visible))
+	})
 }
 
 func hasSubmittedActionableClaim(text string) bool {
+	return hasSubmittedActionableProjection(text, hasSubmittedPlainActionableClaim)
+}
+
+func hasSubmittedActionableProjection(text string, matches func(string) bool) bool {
 	for _, visible := range []string{text,
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, "")),
 		html.UnescapeString(submittedCountDecoration.ReplaceAllString(text, " ")),
@@ -162,7 +182,7 @@ func hasSubmittedActionableClaim(text string) bool {
 	} {
 		visible = submittedCountMarkdownLink.ReplaceAllString(visible, "${1}")
 		for _, projected := range []string{visible, submittedCountMarkdownReference.ReplaceAllString(visible, "${1}")} {
-			if hasSubmittedPlainActionableClaim(projected) || hasSubmittedPlainActionableClaim(
+			if matches(projected) || matches(
 				strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(projected)) {
 				return true
 			}

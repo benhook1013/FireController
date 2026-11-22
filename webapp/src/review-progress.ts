@@ -60,7 +60,7 @@ export function validRoundProgress(value: unknown, channel: string): value is Re
   }
   return progress.revision > 0 && progress.epoch > 0 && progress.epoch <= progress.revision &&
     (progress.maximum_unbounded ? progress.maximum === 0 : progress.minimum <= progress.maximum && progress.used <= progress.maximum) &&
-    progress.taper >= 1 && progress.taper <= 1000 && progress.dry - progress.used <= 1000 && progress.pending <= 32 &&
+    progress.taper >= 1 && progress.taper <= 1000 && progress.dry - progress.used <= 1000 &&
     (!progress.tapered || progress.used >= progress.minimum);
 }
 

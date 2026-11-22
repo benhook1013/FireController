@@ -21,6 +21,13 @@ const unconfigured = (channel: 'hosted' | 'cli') => ({
   taper: 0, used: 0, dry: 0, tapered: false, pending: 0,
 });
 
+it('accepts valid configured pending progress above 32', () => {
+  const large = { ...configured, maximum: 60, maximum_unbounded: false,
+    pending: 40, pending_execution: 5, pending_adjudication: 35 };
+  expect(validRoundProgress(large, 'hosted')).toBe(true);
+  expect(validRoundProgress({ ...large, pending_adjudication: 36 }, 'hosted')).toBe(false);
+});
+
 describe('operation wait presentation', () => {
   it('shows an earlier accepted Hosted request as Behind without exposing its retained timer', () => {
     expect(validOperationWait(behind, 'hosted')).toBe(true);
