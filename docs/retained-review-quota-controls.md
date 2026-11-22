@@ -37,7 +37,7 @@ Only one of the two supervisor workers probes retained Draft waits. Its scheduli
 
 ## Reading state
 
-Operation and round-progress reads expose waiting state only when requested with `X-FC-Operation-Wait`. Round-progress reads also require the `view=stages` query parameter. Version 1 preserves the original Hosted shape and version 2 also understands CLI baselines. Version 3 adds retained provider allowance estimates. Version 5 retains version 3 and adds optional `queue_ahead_pull_number` to a current Hosted wait in the staged round-progress read. It identifies an eligible earlier accepted request in the same project while preserving the recorded wait and deadline.
+Operation and round-progress reads expose waiting state only when requested with `X-FC-Operation-Wait`. Round-progress reads also require the `view=stages` query parameter. Version 1 preserves the original Hosted shape and version 2 also understands CLI baselines. Version 3 adds retained provider allowance estimates. Version 5 retains version 3 and adds optional `queue_ahead_pull_number` to a current Hosted wait in the staged round-progress read. It identifies an eligible request ahead in the same project queue while preserving the recorded wait and deadline.
 
 The current bound clients request version 3 and preserve validated `wait.cli_allowance` for a queued CLI baseline, held-operation `allowance` facts, and the compact held Hosted `retry_not_before` deadline. Legacy responses without these optional facts remain readable. A full-capacity estimate describes allowance and provides no retry time or dispatch guarantee.
 
