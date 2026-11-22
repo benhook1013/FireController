@@ -536,6 +536,9 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
 				return err
 			}
+			if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
+				return err
+			}
 			if choice.state == "held" {
 				if choice.sourceReason == "" && !globalFrontHold(choice.reason) && choice.reason != "expected_pr_mismatch" && choice.reason != "source_prefix_incomplete" && choice.reason != "local_read_unavailable" {
 					// Local readiness may have changed after chooseRun's read,
