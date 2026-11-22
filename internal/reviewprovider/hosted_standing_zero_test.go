@@ -886,7 +886,7 @@ func TestHostedStandingZeroHistoricalCheckpointBoundaries(t *testing.T) {
 }
 
 func TestHostedStandingZeroHistoricalCheckpointCountAndPresentation(t *testing.T) {
-	for _, mode := range []string{"zero counts", "major count", "maximum count", "no break", "CRLF", "separate status"} {
+	for _, mode := range []string{"zero counts", "major count", "maximum count", "no break", "CRLF", "separate status", "ordinary release prose"} {
 		t.Run(mode, func(t *testing.T) {
 			s, intent, poster, bot, earliest := standingTestFixture(t)
 			body := standingTestHistoricalCheckpoint(s.IssueComments[1].Body)
@@ -901,6 +901,8 @@ func TestHostedStandingZeroHistoricalCheckpointCountAndPresentation(t *testing.T
 				body = strings.Replace(body, "<br>\n", "", 1)
 			case "CRLF":
 				body = strings.ReplaceAll(body, "\n", "\r\n")
+			case "ordinary release prose":
+				body = strings.Replace(body, "Independent synthetic change description.", "The release notes by coderabbit.ai describe this change.", 1)
 			case "separate status":
 				body = strings.Replace(body, "No actionable comments were generated in the recent review. 🎉\n", "", 1)
 				body = standingStatusStart + "\nNo actionable comments were generated in the recent review.\n" + standingStatusEnd + "\n" + body

@@ -169,6 +169,25 @@ type standingHistoricalParser struct {
 	seen, invalid, bodyBreak bool
 }
 
+// Reserved release-note wording matters inside marker comments, not in ordinary
+// visible summary prose. The exact switch below still controls valid transitions.
+func standingHasReleaseMarkerComment(line string) bool {
+	for {
+		_, comment, found := strings.Cut(line, "<!--")
+		if !found {
+			return false
+		}
+		body, rest, closed := strings.Cut(comment, "-->")
+		if strings.Contains(strings.ToLower(body), "release notes by coderabbit.ai") {
+			return true
+		}
+		if !closed {
+			return false
+		}
+		line = rest
+	}
+}
+
 func (p *standingHistoricalParser) line(line string, stack []string, index int, inRecent bool) {
 	if line == "" {
 		return
@@ -202,7 +221,7 @@ func (p *standingHistoricalParser) line(line string, stack []string, index int, 
 		p.phase = 7
 		return
 	}
-	if strings.Contains(line, "<!-- walkthrough_") || strings.Contains(line, "release notes by coderabbit.ai") {
+	if strings.Contains(line, "<!-- walkthrough_") || standingHasReleaseMarkerComment(line) {
 		p.invalid = true
 	}
 	if p.phase == 0 || p.phase == 11 {

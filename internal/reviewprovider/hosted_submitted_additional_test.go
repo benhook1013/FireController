@@ -488,6 +488,7 @@ func TestHostedSubmittedAdditionalCountPhraseIsNotADeclaration(t *testing.T) {
 		"Preserve the actionable comments <span>posted</span> label.",
 		"<!-- **Actionable comments <span>posted</span>: 99** -->",
 		"Preserve the actionable comments posted\nlabel.",
+		"The summary references actionable comments posted\n\n1. Read the separate notes.",
 		"Actionable comments posted by the reviewer remain unverified.",
 		"Actionable comments\nposted by the reviewer remain unverified.",
 		"Preserve the actionable <!-- ordinary comment -->comments posted label.",

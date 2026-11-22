@@ -52,7 +52,7 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	if !sound {
 		return false
 	}
-	var count, visibleText, preCount strings.Builder
+	var count, visibleParagraph, preCount strings.Builder
 	for _, line := range lines {
 		preCount.WriteString(line.preCountText)
 		preCount.WriteByte(' ')
@@ -62,8 +62,16 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 			}
 			preCount.Reset()
 		}
+		// A genuinely blank visible line ends a Markdown paragraph. A
+		// comment-hidden boundary does not, and cannot evade the refusal check.
+		if line.text == "" && !line.hidden && !line.countContinues {
+			if hasSubmittedActionableClaim(visibleParagraph.String()) {
+				return false
+			}
+			visibleParagraph.Reset()
+		}
 		count.WriteString(line.countText)
-		visibleText.WriteString(line.countText)
+		visibleParagraph.WriteString(line.countText)
 		if line.countContinues {
 			continue
 		}
@@ -71,11 +79,11 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 			return false
 		}
 		count.Reset()
-		visibleText.WriteByte(' ')
+		visibleParagraph.WriteByte(' ')
 	}
-	// Ordinary Markdown soft breaks are whitespace, not declaration boundaries.
+	// Ordinary Markdown soft breaks are whitespace within a paragraph.
 	// Keep the per-line refusal above for bare labels as well.
-	if hasSubmittedActionableClaim(visibleText.String()) {
+	if hasSubmittedActionableClaim(visibleParagraph.String()) {
 		return false
 	}
 	inventory := HostedFindingInventory{Complete: true, Findings: []HostedFinding{}}
