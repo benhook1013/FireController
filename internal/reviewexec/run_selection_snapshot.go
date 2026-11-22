@@ -2,6 +2,8 @@ package reviewexec
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -21,6 +23,10 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 		return err
 	}
 
+	var hasScheduling bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='review_automatic_selections')`).Scan(&hasScheduling); err != nil {
+		return err
+	}
 	var bad bool
 	// Storage classes and empty keys are checked before scanned string keysets.
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections s LEFT JOIN projects p ON p.id=s.project_id LEFT JOIN workers w ON w.project_id=s.project_id AND w.id=s.worker_id WHERE p.id IS NULL OR w.id IS NULL OR NOT EXISTS(SELECT 1 FROM credentials c WHERE c.principal_id=s.actor_id))`).Scan(&bad); err != nil {
@@ -62,6 +68,24 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 			r, err := readRun(ctx, q, k.project, k.id)
 			if err != nil {
 				return err
+			}
+
+			event, err := readSelectionRequestedEvent(ctx, q, r)
+			if err != nil {
+				return err
+			}
+			if event.Origin != "" {
+				attributed := false
+				if hasScheduling {
+					_, err := readAutomaticSelectionAttribution(ctx, q, r)
+					if err != nil && !errors.Is(err, sql.ErrNoRows) {
+						return err
+					}
+					attributed = err == nil
+				}
+				if (event.Origin == selectionOriginAutomatic) != attributed || attributed && r.ExpectedPullNumber != 0 {
+					return schedulingUnavailable()
+				}
 			}
 			var configurationBody, policyBody string
 			if err = q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_execution_config WHERE project_id=? AND revision=?`, r.ProjectID, r.ConfigurationRevision).Scan(&configurationBody); err != nil {

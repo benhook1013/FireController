@@ -233,13 +233,14 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 		// An expired snapshot must not shorten a later retry's input.
 		limit, automatic, basisRevision = len(c.Queue), false, 0
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+			attribution, err := automaticSelectionBinding(ctx, tx, r)
+			if err != nil {
 				return err
 			}
+			automatic = attribution.revision != 0
 			if !automatic {
 				return nil
 			}
-			var err error
 			limit, err = e.automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
 			if err != nil {
 				return err
@@ -556,7 +557,19 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 				return updateRun(ctx, tx, r, "held", reason, "")
 			}
 			if e.publishAttempt != nil {
-				metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, configuration.Queue)
+				queue := configuration.Queue
+				attribution, err := automaticSelectionBinding(ctx, tx, r)
+				if err != nil {
+					return err
+				}
+				if attribution.revision != 0 {
+					limit, err := e.automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, configuration, r.Channel)
+					if err != nil {
+						return err
+					}
+					queue = queue[:limit]
+				}
+				metadataPins, err = reviews.PinSourceMetadata(ctx, tx, r.ProjectID, queue)
 				if err != nil {
 					return err
 				}
@@ -621,13 +634,9 @@ func (e *Engine) holdRunLocalRefusal(ctx context.Context, expected Run) (bool, e
 			if current.State != expected.State || current.Revision != expected.Revision {
 				return nil
 			}
-			var automatic bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, current.ProjectID, current.ID).Scan(&automatic); err != nil {
+			reason, err := selectionLocalHoldReason(ctx, tx, current)
+			if err != nil {
 				return err
-			}
-			reason := "local_read_unavailable"
-			if automatic {
-				reason = "automatic_scheduling_unavailable"
 			}
 			if err = updateRun(ctx, tx, current, "held", reason, ""); err != nil {
 				return err
@@ -678,12 +687,12 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					}
 				}
 				if automaticProjectRefused(resultErr) {
-					var automatic bool
-					if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+					reason, err := selectionLocalHoldReason(ctx, tx, current)
+					if err != nil {
 						resultErr = err
 						return
 					}
-					if !automatic {
+					if reason != "automatic_scheduling_unavailable" {
 						return // Explicit selections retain their original error and rollback.
 					}
 					// Settlement is part of atomic selection. Discard any source,
@@ -693,7 +702,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						resultErr = err
 						return
 					}
-					resultErr = updateRun(ctx, tx, current, "held", "automatic_scheduling_unavailable", "")
+					resultErr = updateRun(ctx, tx, current, "held", reason, "")
 				}
 				if resultErr == nil {
 					_, resultErr = tx.ExecContext(ctx, `RELEASE review_selection_finish`)

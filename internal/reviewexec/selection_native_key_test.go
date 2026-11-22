@@ -21,9 +21,9 @@ func TestSelectionNativeBlobKeyDoesNotStopRecovery(t *testing.T) {
 			// sorts text before blobs. Use a malformed project key as well so
 			// a healthy selection can follow a malformed key in that scan.
 			const corruptID = "review_selection_00000000000000000000000000000000"
-			const healthyID = "review_selection_ffffffffffffffffffffffffffffffff"
+			healthyID := healthy.ID
 			admissionSQL(t, f, `UPDATE review_selections SET id=?,state=?,created_at=? WHERE id=?`, corruptID, tc.state, "2000-01-01T00:00:00Z", corrupt.ID)
-			admissionSQL(t, f, `UPDATE review_selections SET id=?,state=?,created_at=? WHERE id=?`, healthyID, tc.state, "2000-01-02T00:00:00Z", healthy.ID)
+			admissionSQL(t, f, `UPDATE review_selections SET state=?,created_at=? WHERE id=?`, tc.state, "2000-01-02T00:00:00Z", healthyID)
 			var corruptKey any = []byte(corruptID)
 			if tc.key == "id" {
 				admissionSQL(t, f, `UPDATE review_selections SET id=CAST(id AS BLOB) WHERE id=?`, corruptID)

@@ -16,6 +16,7 @@ type RunRequest struct {
 	Channel                       string `json:"channel"`
 	ExpectedPullNumber            *int64 `json:"expected_pull_number,omitempty"`
 	ExpectedConfigurationRevision *int64 `json:"expected_configuration_revision,omitempty"`
+	origin                        string
 }
 type Run struct {
 	ID                    string `json:"id"`
@@ -117,6 +118,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 		v := *input.ExpectedConfigurationRevision
 		input.ExpectedConfigurationRevision = &v
 	}
+	input.origin = selectionOriginExplicit
 	out, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.run", Target: "channel-selection", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		return e.enqueueRunTx(ctx, tx, scope, input)
 	})
@@ -187,7 +189,7 @@ func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err != nil {
 		return Receipt{}, err
 	}
-	if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, map[string]any{"channel": input.Channel}); err != nil {
+	if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, selectionRequestedEvent{Channel: input.Channel, Origin: input.origin, WorkerID: scope.WorkerID}); err != nil {
 		return Receipt{}, err
 	}
 	return Receipt{ID: id, State: "queued", Revision: 1}, nil
@@ -342,7 +344,18 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if err = updateRun(ctx, tx, r, "queued", "", ""); err != nil {
+			state, reason := "queued", ""
+			if _, err := automaticSelectionBinding(ctx, tx, r); automaticProjectRefused(err) {
+				state = "held"
+				var holdErr error
+				reason, holdErr = selectionLocalHoldReason(ctx, tx, r)
+				if holdErr != nil {
+					return holdErr
+				}
+			} else if err != nil {
+				return err
+			}
+			if err = updateRun(ctx, tx, r, state, reason, ""); err != nil {
 				return err
 			}
 			changed = append(changed, r.ID)

@@ -138,6 +138,23 @@ candidates:
 			continue
 		}
 		queue := c.Queue
+		attribution, err := automaticSelectionBinding(ctx, tx, r)
+		if err != nil {
+			if automaticProjectRefused(err) {
+				continue candidates
+			}
+			return false, err
+		}
+		if attribution.revision != 0 {
+			limit, err := e.automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
+			if err != nil {
+				if automaticProjectRefused(err) {
+					continue candidates
+				}
+				return false, err
+			}
+			queue = queue[:limit]
+		}
 		if r.ExpectedPullNumber != 0 {
 			if !slices.Contains(queue, r.ExpectedPullNumber) {
 				continue

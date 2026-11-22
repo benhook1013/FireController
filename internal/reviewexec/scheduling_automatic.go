@@ -39,25 +39,17 @@ func automaticDenied() error {
 	return core.Fail("automation_authorization_changed", "Automatic review scheduling is disabled or its original authorizer is no longer authorized.", 403)
 }
 func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) error {
-	var retainedRevision any
-	var actor, worker, credential string
-	err := tx.QueryRowContext(ctx, `SELECT scheduling_revision,actor_id,worker_id,credential_id FROM review_automatic_selections WHERE project_id=? AND selection_id=?`, r.ProjectID, r.ID).Scan(&retainedRevision, &actor, &worker, &credential)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
+	attribution, err := automaticSelectionBinding(ctx, tx, r)
+	if err != nil || attribution.revision == 0 {
 		return err
 	}
-	// Preserve query failures while classifying malformed retained SQLite values.
-	revision, validRevision := retainedRevision.(int64)
-	if !validRevision || revision < 1 {
-		return schedulingUnavailable()
-	}
+	revision, credential := attribution.revision, attribution.credential
+	actor, worker := r.ActorID, r.WorkerID
 	s, err := readScheduling(ctx, tx, r.ProjectID)
 	if err != nil {
 		return err
 	}
-	if revision > s.Revision || !automaticChannelEnabled(s, r.Channel) || r.ActorID != actor || r.WorkerID != worker || !validChannel(r.Channel) {
+	if revision > s.Revision || !automaticChannelEnabled(s, r.Channel) || !validChannel(r.Channel) {
 		return automaticDenied()
 	}
 	if s.actor != actor || s.AuthorizingWorkerID != worker || s.credential != credential {
@@ -95,15 +87,19 @@ func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Op
 	if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
 		return err
 	}
-	var selection string
-	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.operation_id=?`, o.ProjectID, o.ID).Scan(&selection)
+	var project, selection any
+	err := tx.QueryRowContext(ctx, `SELECT project_id,id FROM review_selections WHERE operation_id=?`, o.ID).Scan(&project, &selection)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	r, err := readRun(ctx, tx, o.ProjectID, selection)
+	id, validID := selection.(string)
+	if project != o.ProjectID || !validID || !validRunID(id) {
+		return schedulingUnavailable()
+	}
+	r, err := readRun(ctx, tx, o.ProjectID, id)
 	if err != nil {
 		return err
 	}
@@ -397,24 +393,26 @@ func (e *Engine) automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, 
 	if err != nil {
 		return "", false, err
 	}
+	return automaticPlanningBasisForPrefix(ctx, tx, project, c.Queue[:limit], ignoreSelection, channel)
+}
+
+func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project string, queue []int64, ignoreSelection, channel string) (string, bool, error) {
 	var shared automaticBasisRead
-	if len(c.Queue) > 0 {
+	if len(queue) > 0 {
+		var err error
 		shared, err = readAutomaticBasis(ctx, tx, project, channel)
 		if err != nil {
 			return "", false, err
 		}
 	}
-	values := make([]any, 0, len(c.Queue))
+	values := make([]any, 0, len(queue))
 	remaining := []int64{}
-	for position, pull := range c.Queue {
+	for _, pull := range queue {
 		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
 		if err != nil {
 			return "", false, err
 		}
 		values = append(values, []any{pull, basis})
-		if position >= limit {
-			continue
-		}
 		p, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
 			return "", false, err
@@ -441,6 +439,31 @@ func (e *Engine) automaticPlanningBasisChannel(ctx context.Context, tx *sql.Tx, 
 	return hex.EncodeToString(sum[:]), len(remaining) > 0, nil
 }
 
+// Legacy pre-child intents have only an opaque whole-queue digest. At a
+// shortened cutoff there is no proof that a new prefix digest falls outside
+// the retained intent. Keep that scope held until an explicit rearm changes
+// the channel basis, a configuration/policy revision changes, or the full
+// queue becomes eligible for the original exact-digest comparison.
+func automaticLegacyPrefixFence(ctx context.Context, tx *sql.Tx, project string, configurationRevision, policyRevision int64, channel string) (bool, error) {
+	basisRevision, err := automaticChannelBasisRevision(ctx, tx, project, channel)
+	if err != nil {
+		return false, err
+	}
+	var held bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM review_automatic_selections a
+		JOIN review_selections s ON s.id=a.selection_id AND s.project_id=a.project_id
+		WHERE a.project_id=? AND s.channel=? AND s.configuration_revision=? AND s.policy_revision=?
+		  AND a.scheduling_revision>=? AND a.pull_number=0 AND s.operation_id IS NULL AND s.state IN ('held','empty')
+		  AND NOT EXISTS(
+		    SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.id
+		      AND e.event_type='review.selection_requested' AND e.revision=1 AND e.actor_id=s.actor_id
+		      AND e.payload_json=json_object('channel',s.channel,'origin','automatic','worker_id',s.worker_id)
+		  )
+	)`, project, channel, configurationRevision, policyRevision, basisRevision).Scan(&held)
+	return held, err
+}
+
 // A waiting request keeps its identity and deadline. Automatic selection may
 // reconsider only earlier PRs, rather than duplicate that request or prefetch
 // farther successors merely because the request is not executing yet.
@@ -453,10 +476,9 @@ func (e *Engine) automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql
 	if err != nil {
 		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT q.key,a.selection_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
+	rows, err := tx.QueryContext(ctx, `SELECT q.key,s.id,s.project_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number
-LEFT JOIN review_selections s ON s.project_id=o.project_id AND s.operation_id=o.id
-LEFT JOIN review_automatic_selections a ON a.project_id=s.project_id AND a.selection_id=s.id
+LEFT JOIN review_selections s ON s.operation_id=o.id
 WHERE o.project_id=? AND o.channel=? AND o.state='queued'
 AND NOT (o.channel='cli' AND o.reason='cli_draft_wait')
 AND NOT EXISTS(SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND w.paused=1)
@@ -471,10 +493,10 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 			return 0, schedulingUnavailable()
 		}
 		var position int
-		var selection sql.NullString
+		var selection, selectionProject any
 		var operation string
 		var custodyPresent bool
-		if err := rows.Scan(&position, &selection, &operation, &custodyPresent); err != nil {
+		if err := rows.Scan(&position, &selection, &selectionProject, &operation, &custodyPresent); err != nil {
 			return 0, err
 		}
 		if custodyPresent {
@@ -486,11 +508,15 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 			}
 			return 0, runUnavailable()
 		}
-		// Explicit work has no automatic binding and keeps its position.
-		if !selection.Valid {
+		// A direct operation has no parent selection and keeps its position.
+		if selection == nil {
 			return position, nil
 		}
-		r, err := readRun(ctx, tx, project, selection.String)
+		id, validID := selection.(string)
+		if selectionProject != project || !validID || !validRunID(id) {
+			return 0, schedulingUnavailable()
+		}
+		r, err := readRun(ctx, tx, project, id)
 		if err != nil {
 			return 0, err
 		}
@@ -522,12 +548,13 @@ func automaticHostedPendingPullChannel(ctx context.Context, tx *sql.Tx, project 
 }
 
 func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run, pull int64) (bool, error) {
-	var automatic bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
-		return false, err
-	}
-	if !automatic {
+	// The fact-only evaluator may run without a persisted selection.
+	if r.ID == "" {
 		return false, nil
+	}
+	attribution, err := automaticSelectionBinding(ctx, tx, r)
+	if err != nil || attribution.revision == 0 {
+		return false, err
 	}
 	pending, err := automaticHostedPendingPullChannel(ctx, tx, r.ProjectID, pull, r.Channel)
 	if err != nil || pending {
@@ -553,12 +580,9 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	return seen, err
 }
 func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pull int64) error {
-	var automatic bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE selection_id=? AND project_id=?)`, r.ID, r.ProjectID).Scan(&automatic); err != nil {
+	attribution, err := automaticSelectionBinding(ctx, tx, r)
+	if err != nil || attribution.revision == 0 {
 		return err
-	}
-	if !automatic {
-		return nil
 	}
 	c, _, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
@@ -682,7 +706,7 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		}
 		return nil, err
 	}
-	c, _, err := readConfiguration(ctx, tx, project)
+	c, configurationRevision, err := readConfiguration(ctx, tx, project)
 	if err != nil {
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
@@ -691,17 +715,6 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 		return nil, err
 	}
 	if c.Paused || !slices.Contains(c.Channels, channel) || e.validateConfiguration(c) != nil || readers[c.CapabilityID] == nil || len(c.Queue) == 0 {
-		return nil, nil
-	}
-	unpaused := false
-	for _, pull := range c.Queue {
-		p, err := readPullScheduling(ctx, tx, project, pull)
-		if err != nil {
-			return nil, err
-		}
-		unpaused = unpaused || !p.Paused
-	}
-	if !unpaused {
 		return nil, nil
 	}
 	policy, err := readPolicy(ctx, tx, project)
@@ -722,7 +735,23 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if busy {
 		return nil, nil
 	}
-	basis, candidates, err := e.automaticPlanningBasisChannel(ctx, tx, project, c, "", channel)
+	limit, err := e.automaticHostedQueuedPrefixChannel(ctx, tx, project, c, channel)
+	if err != nil || limit == 0 {
+		return nil, err
+	}
+	queue := c.Queue[:limit]
+	unpaused := false
+	for _, pull := range queue {
+		control, err := readPullScheduling(ctx, tx, project, pull)
+		if err != nil {
+			return nil, err
+		}
+		unpaused = unpaused || !control.Paused
+	}
+	if !unpaused {
+		return nil, nil
+	}
+	basis, candidates, err := automaticPlanningBasisForPrefix(ctx, tx, project, queue, "", channel)
 	if err != nil || !candidates {
 		return nil, err
 	}
@@ -734,6 +763,12 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	if seen {
 		plan.retry, err = e.automaticSourceRetryCandidate(ctx, tx, project, basis, s.Revision, time.Now(), channel)
 		if err != nil || plan.retry == nil {
+			return nil, err
+		}
+	}
+	if !seen && limit < len(c.Queue) {
+		held, err := automaticLegacyPrefixFence(ctx, tx, project, configurationRevision, policy.Revision, channel)
+		if err != nil || held {
 			return nil, err
 		}
 	}
@@ -787,7 +822,7 @@ func (e *Engine) acceptAutomaticProjectWithEnqueue(ctx context.Context, project,
 			err = updateRunAt(ctx, tx, *current.retry, "queued", "", "", time.Now())
 		} else {
 			// Same ordinary acceptance path, fully reauthorized in this snapshot.
-			receipt, enqueueErr := enqueue(ctx, tx, current.scope, RunRequest{Channel: channel})
+			receipt, enqueueErr := enqueue(ctx, tx, current.scope, RunRequest{Channel: channel, origin: selectionOriginAutomatic})
 			if enqueueErr != nil {
 				var failure *core.Error
 				if errors.As(enqueueErr, &failure) && failure.Status == 409 {
