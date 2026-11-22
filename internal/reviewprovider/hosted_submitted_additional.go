@@ -112,7 +112,7 @@ var submittedCountDecoration = regexp.MustCompile(`(?s)</?[A-Za-z](?:[^<>"']|"[^
 
 // A formatted label without a value belongs to the line-level grammar only.
 // The same formatted phrase inside a normal sentence is not metadata.
-var bareSubmittedActionableLabel = regexp.MustCompile(`(?i)^\s*(?:[-+]\s+)?\*\*\s*actionable\s+comments\s+posted\s*\*\*\s*$`)
+var bareSubmittedActionableLabel = regexp.MustCompile(`(?i)^\s*(?:(?:[-+]|#{1,6})\s+)?\*\*\s*actionable\s+comments\s+posted\s*\*\*\s*$`)
 
 func hasBareSubmittedActionableLabel(line string) bool {
 	return bareSubmittedActionableLabel.MatchString(submittedRenderedCountText(line))
@@ -162,7 +162,7 @@ func hasSubmittedPlainActionableClaim(text string) bool {
 	return submittedActionableClaim.MatchString(submittedCountWhitespace(text))
 }
 
-var submittedActionableLine = regexp.MustCompile(`(?i)^ *(?:(?:[-+]|[0-9]+[.)]) +)?actionable +comments +posted(?: *:| +[0-9]+\b)`)
+var submittedActionableLine = regexp.MustCompile(`(?i)^ *(?:(?:[-+]|[0-9]+[.)]|#{1,6}) +)?actionable +comments +posted(?: *:| +[0-9]+\b)`)
 
 func hasSubmittedLineActionableClaim(text string) bool {
 	return hasSubmittedActionableProjection(text, func(visible string) bool {

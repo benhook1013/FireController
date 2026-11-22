@@ -28,3 +28,42 @@ func TestStandingCountTreatsFencedExamplesAsParagraphBreaks(t *testing.T) {
 		t.Fatal("a fenced example cannot connect two separate prose paragraphs")
 	}
 }
+
+func TestHostedCountBoundariesRespectBlockAndHeadingMarkup(t *testing.T) {
+	lines, sound := findingLines("Findings:\n<pre>\nExample release data\n</pre>\n2 releases remain.")
+	if !sound || standingInventoryContradictsZero(lines, &standingHistoricalParser{}) {
+		t.Fatal("unrelated prose on either side of an example was joined")
+	}
+	lines, sound = findingLines("<pre>\nFindings: 2\n</pre>")
+	if !sound || !standingInventoryContradictsZero(lines, &standingHistoricalParser{}) {
+		t.Fatal("preformatted count stopped contributing refusal-only evidence")
+	}
+	if !hasSubmittedLineActionableClaim("### Actionable comments posted: 1") {
+		t.Fatal("visible counted heading is not ordinary prose")
+	}
+	if !hasBareSubmittedActionableLabel("## **Actionable comments posted**") {
+		t.Fatal("visible standalone heading label is not ordinary prose")
+	}
+	lines, sound = findingLines("Current <strong>findings</strong>: 2")
+	if !sound || !standingInventoryContradictsZero(lines, &standingHistoricalParser{}) {
+		t.Fatal("decorative markup obscured an explicit count")
+	}
+}
+
+func TestStandingMarkerScanContinuesAfterEditorialComment(t *testing.T) {
+	for _, tc := range []struct {
+		name, remainder string
+		wantInvalid     bool
+	}{
+		{"editorial", "<!-- Formatting note. -->", false},
+		{"reserved wording", "<!-- release notes by coderabbit.ai -->", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			history := &standingHistoricalParser{}
+			standingSections("<!-- Editorial note.\n--> "+tc.remainder, history)
+			if history.invalid != tc.wantInvalid {
+				t.Fatalf("marker invalid = %v, want %v", history.invalid, tc.wantInvalid)
+			}
+		})
+	}
+}

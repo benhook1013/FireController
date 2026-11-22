@@ -1,6 +1,6 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import type { ProjectMetadataPage } from './types';
-import { refreshEventQueries } from './queries';
+import { refreshEventQueries, throwEventQueryFailures } from './queries';
 
 export function isCurrentProjectView(project: string, pathname: string, lifetime: AbortController, current: AbortController | undefined): boolean {
   const path = `/projects/${encodeURIComponent(project)}`;
@@ -58,5 +58,11 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   // Prefixes within a page can overlap (for example a map rename and job
   // reference change); visit each active query only once for the batch.
   const selected = [...prefixes.values()].filter(prefix => ![...prefixes.values()].some(other => other.length < prefix.length && other.every((part, index) => part === prefix[index])));
-  for (const prefix of selected) { if (signal.aborted) return; await refreshEventQueries(client, prefix, signal); }
+  const failures: unknown[] = [];
+  for (const prefix of selected) {
+    if (signal.aborted) return;
+    try { await refreshEventQueries(client, prefix, signal); }
+    catch (error) { failures.push(error); }
+  }
+  if (!signal.aborted) throwEventQueryFailures(failures);
 }

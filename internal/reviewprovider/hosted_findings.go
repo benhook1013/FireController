@@ -57,7 +57,7 @@ type findingLine struct {
 	preCountContinues       bool
 	preCommentContinues     bool // A comment hides this physical boundary in the preformatted projection.
 	countContinues          bool // A comment hides this physical line boundary.
-	countBreak              bool // Fenced code separates visible paragraphs.
+	countBreak              bool // Code and preformatted blocks separate visible paragraphs.
 	hidden                  bool
 }
 
@@ -121,6 +121,7 @@ func findingLines(body string) ([]findingLine, bool) {
 			}
 		} else if wasPre || !comment && indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed) {
 			l.hidden = true
+			l.countBreak = true
 			for _, tag := range findingPre.FindAllString(l.preCountText, -1) {
 				if strings.HasPrefix(tag, "</") {
 					if pre > 0 {

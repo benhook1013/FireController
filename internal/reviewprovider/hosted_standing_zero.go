@@ -385,8 +385,11 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 			} else {
 				// A continued comment cannot supply a valid transition, but
 				// its content still invalidates a reserved marker duplicate.
-				body, _, _ := strings.Cut(line, "-->")
+				body, remainder, closed := strings.Cut(line, "-->")
 				markerCommentTail = historical.scanMarkerComment(markerCommentTail, body)
+				if closed && standingHasReleaseMarkerComment(remainder) {
+					historical.invalid = true
+				}
 			}
 		}
 		if !comment && len(stack) == 0 {
@@ -616,7 +619,7 @@ func standingConfigurationHead(value, kind string) (string, bool) {
 func standingInventoryContradictsZero(lines []findingLine, historical *standingHistoricalParser) bool {
 	var projectedLine, paragraph, preformatted strings.Builder
 	claimsCount := func(text string) bool {
-		return hasSubmittedActionableClaim(text) || standingFindingClaim.MatchString(text)
+		return hasSubmittedActionableClaim(text) || hasSubmittedActionableProjection(text, standingFindingClaim.MatchString)
 	}
 	for index, line := range lines {
 		preformatted.WriteString(line.preCountText)

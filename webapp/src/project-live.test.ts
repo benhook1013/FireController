@@ -1,5 +1,6 @@
 import { QueryClient, QueryObserver, type QueryKey } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
+import { ApiError } from './api';
 import { projectEventTypes } from './project-event-types';
 import { refreshProjectMetadata } from './project-metadata';
 import { validMetadataPage } from './presentation';
@@ -13,11 +14,11 @@ const page = (items: Pick<ProjectMetadataEvent, 'event_type' | 'resource_id'>[])
 function fixture() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
   const counts = new Map<string, number>(), subscriptions: (() => void)[] = [];
-  const add = (suffix: QueryKey, active = true, prefix: QueryKey = key) => {
+  const add = (suffix: QueryKey, active = true, prefix: QueryKey = key, readError?: Error) => {
     const queryKey = [...prefix, ...suffix], id = JSON.stringify(queryKey);
     client.setQueryData(queryKey, 'old'); counts.set(id, 0);
     if (active) subscriptions.push(new QueryObserver(client, { queryKey, queryFn: async () => {
-      counts.set(id, counts.get(id)! + 1); return 'committed';
+      counts.set(id, counts.get(id)! + 1); if (readError) throw readError; return 'committed';
     } }).subscribe(() => {}));
     return { reads: () => counts.get(id), state: () => client.getQueryState(queryKey) };
   };
@@ -115,6 +116,20 @@ describe('live private project views', () => {
         expect(validMetadataPage(page([{ event_type: 'reviews.rounds_configured', resource_id }]), 25)).toBe(false);
       }
       expect(validMetadataPage(page([{ event_type: 'job.updated', resource_id: '32/hosted' }]), 25)).toBe(false);
+    } finally { f.close(); }
+  });
+
+  it('refreshes policy after failed progress and preserves permission failure priority', async () => {
+    const f = fixture();
+    const service = new ApiError('service_unavailable', 'Progress unavailable', 503);
+    const denied = new ApiError('forbidden', 'Policy not available to this role', 403);
+    const progress = f.add(['reviews', 'current', 'round-progress', '32'], true, key, service);
+    const assessment = f.add(['reviews', 'policy-assessment', 'evidence_one'], true, key, denied);
+    const lifecycle = new AbortController();
+    const update = page([{ event_type: 'review.operation_updated', resource_id: `review_operation_${'a'.repeat(32)}` }]);
+    try {
+      await expect(refreshProjectMetadata(f.client, key, update, lifecycle.signal)).rejects.toBe(denied);
+      expect(progress.reads()).toBe(1); expect(assessment.reads()).toBe(1);
     } finally { f.close(); }
   });
 
