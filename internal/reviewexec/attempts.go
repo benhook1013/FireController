@@ -174,7 +174,7 @@ func (e *Engine) startAttemptWithWitness(ctx context.Context, project, id string
 			return nil
 		}
 		var repositoryID int64
-		if earlier, err := e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, nil, witness); err != nil {
+		if earlier, err := e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, nil, witness, false); err != nil {
 			return err
 		} else if earlier != nil {
 			return nil

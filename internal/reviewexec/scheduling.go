@@ -45,8 +45,10 @@ func (r *SchedulingRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	if raw, exists := fields["automatic_cli"]; exists && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return invalid()
+	for name, raw := range fields {
+		if strings.EqualFold(name, "automatic_cli") && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return invalid()
+		}
 	}
 	*r = SchedulingRequest(value)
 	return nil
@@ -120,6 +122,13 @@ func readScheduling(ctx context.Context, tx *sql.Tx, project string) (s scheduli
 	return s, nil
 }
 
+type schedulingEvent struct {
+	Hosted      *bool           `json:"automatic_hosted"`
+	CLI         *bool           `json:"automatic_cli"`
+	HostedBasis json.RawMessage `json:"hosted_basis_revision"`
+	CLIBasis    json.RawMessage `json:"cli_basis_revision"`
+}
+
 // Channel basis revisions are carried in the current scheduling event, not in
 // the authorization revision. Legacy events retain the shared revision verbatim:
 // deploying this change must not regenerate cancelled or failed intent digests.
@@ -140,12 +149,7 @@ func schedulingBasisRevisions(ctx context.Context, tx *sql.Tx, s schedulingRecor
 		if err = rows.Scan(&actor, &payload); err != nil {
 			return 0, 0, err
 		}
-		var event struct {
-			Hosted      *bool           `json:"automatic_hosted"`
-			CLI         *bool           `json:"automatic_cli"`
-			HostedBasis json.RawMessage `json:"hosted_basis_revision"`
-			CLIBasis    json.RawMessage `json:"cli_basis_revision"`
-		}
+		var event schedulingEvent
 		if count != 1 || actor != s.actor || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.Hosted == nil || *event.Hosted != s.AutomaticHosted || event.CLI == nil && s.AutomaticCLI || event.CLI != nil && *event.CLI != s.AutomaticCLI {
 			return 0, 0, schedulingUnavailable()
 		}

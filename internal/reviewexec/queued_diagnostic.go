@@ -73,15 +73,20 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			}
 			return err
 		}
-		var originalJSON, latestJSON sql.NullString
-		var repositoryID, latestRevision int64
-		err = tx.QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(c.body_json AS BLOB))<=32768 THEN c.body_json END,CASE WHEN length(CAST(latest.body_json AS BLOB))<=32768 THEN latest.body_json END,p.github_repository_id,latest.revision FROM review_execution_config c JOIN projects p ON p.id=c.project_id JOIN review_execution_config latest ON latest.project_id=c.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=c.project_id) WHERE c.project_id=? AND c.revision=?`, op.ProjectID, op.ConfigurationRevision).Scan(&originalJSON, &latestJSON, &repositoryID, &latestRevision)
+		latest, latestRevision, err := readConfiguration(ctx, tx, op.ProjectID)
 		if err != nil {
 			return err
 		}
-		var original, latest Configuration
-		if !originalJSON.Valid || !latestJSON.Valid || json.Unmarshal([]byte(originalJSON.String), &original) != nil || json.Unmarshal([]byte(latestJSON.String), &latest) != nil || validateConfigurationShape(original) != nil || validateConfigurationShape(latest) != nil {
-			return adjudicationStorageError()
+		original := latest
+		if latestRevision != op.ConfigurationRevision {
+			original, err = sourceConfiguration(ctx, tx, op.ProjectID, op.ConfigurationRevision)
+			if err != nil {
+				return err
+			}
+		}
+		originalCapability, ok := e.capabilities[original.CapabilityID]
+		if !ok || originalCapability.Fingerprint != op.CapabilityFingerprint {
+			return nil
 		}
 		switch {
 		case op.Wait != nil && op.Wait.Paused:
@@ -135,13 +140,8 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		}
 		// Keep the generic diagnostic for an otherwise valid retained receipt.
 		// The current configuration gates reservation attribution, not receipt
-		// visibility. Original capability drift still omits the diagnostic.
+		// visibility. The original capability was verified above.
 		cause = "awaiting_scheduler"
-		originalCapability, ok := e.capabilities[original.CapabilityID]
-		if !ok || originalCapability.Fingerprint != op.CapabilityFingerprint {
-			cause = ""
-			return nil
-		}
 		if op.Channel != "cli" {
 			compatible, err = compatibleQueuedConfiguration(ctx, tx, op, latest, latestRevision)
 			if err != nil {
@@ -153,6 +153,10 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			!slices.Contains(latest.Queue, op.PullNumber) || !slices.Contains(latest.Channels, op.Channel) ||
 			capability.Fingerprint != op.CapabilityFingerprint {
 			return nil
+		}
+		var repositoryID int64
+		if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, op.ProjectID).Scan(&repositoryID); err != nil {
+			return err
 		}
 		reservation, err = queuedReservationHolder(ctx, tx, op, capability, repositoryID)
 		if reservation != nil {

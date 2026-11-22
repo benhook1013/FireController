@@ -91,19 +91,31 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 	if !validChannel(r.Channel) || r.Revision < 4 {
 		return "", nil
 	}
-	var accepted, current int64
-	err := tx.QueryRowContext(ctx, `SELECT a.scheduling_revision,s.revision FROM review_automatic_selections a JOIN review_scheduling s ON s.project_id=a.project_id WHERE a.project_id=? AND a.selection_id=?`, r.ProjectID, r.ID).Scan(&accepted, &current)
+	var retainedRevision any
+	err := tx.QueryRowContext(ctx, `SELECT scheduling_revision FROM review_automatic_selections WHERE project_id=? AND selection_id=?`, r.ProjectID, r.ID).Scan(&retainedRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
+	// Compare native SQLite integers, not values coerced by Scan into int64.
+	accepted, validRevision := retainedRevision.(int64)
+	if !validRevision || accepted < 1 {
+		return "", schedulingUnavailable()
+	}
+	current, err := readScheduling(ctx, tx, r.ProjectID)
+	if err != nil {
+		return "", err
+	}
+	if current.Revision == 0 {
+		return "automation_authorization_changed", nil
+	}
 	initial, err := automaticSourceInitialRead(ctx, tx, r)
 	if err != nil || initial {
 		return "", err
 	}
-	if accepted != current {
+	if accepted != current.Revision {
 		return "automation_authorization_changed", nil
 	}
 	superseded, err := automaticSourceSuperseded(ctx, tx, r)

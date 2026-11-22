@@ -170,13 +170,18 @@ func TestAutomaticSelectionCapacityDoesNotSettlePendingBasis(t *testing.T) {
 	schedulingCLIEnable(t, f, 0, true)
 	schedulingCLIGenerate(t, f, true)
 	r := schedulingLatest(t, f)
+	var capacityHookReached bool
 	reader := &refreshTestReader{
 		repository: func(_ context.Context, id int64) (reviewprovider.Repository, error) {
 			selectionCapacityFill(t, f, attemptProject)
+			capacityHookReached = true
 			return reviewprovider.Repository{ID: id, FullName: "owner/repo", DefaultBranch: "main"}, nil
 		},
 	}
 	selectionNext(t, f, reader)
+	if !capacityHookReached {
+		t.Fatal("first selection did not reach the capacity hook")
+	}
 	var settled string
 	if err := f.store.DB().QueryRow("SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?", r.ID).Scan(&settled); err != nil {
 		t.Fatal(err)
