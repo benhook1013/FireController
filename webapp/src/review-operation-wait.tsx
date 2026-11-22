@@ -36,8 +36,9 @@ export function operationWaitLabel(wait: ReviewOperationWait, now = Date.now(), 
   if (!wait.retry_not_before) return 'Waiting';
   if (channel === 'cli') return 'Quota wait';
   const minutes = Math.ceil((Date.parse(wait.retry_not_before) - now) / 60000);
+  if (minutes <= 0) return 'Recheck due';
   const remaining = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
-  return minutes > 0 ? `Cooldown · ${remaining}` : 'Waiting';
+  return `Check in ${remaining}`;
 }
 
 export function reviewWaitExpandedForKey(key: string, expanded: boolean): boolean | undefined {
@@ -91,10 +92,9 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
       : undefined;
   const allowance=channel === 'cli' ? wait.cli_allowance : undefined;
   const estimate=allowance ? Date.parse(allowance.observed_at)+allowance.full_capacity_in_ms : undefined;
+  const tone = !wait.paused && wait.retry_not_before ? 'timed' : undefined;
   if (channel !== 'cli' || !wait.retry_not_before) {
-    const label = operationWaitLabel(wait, now, channel);
-    const cooldown = channel === 'hosted' && !wait.paused && wait.retry_not_before && Date.parse(wait.retry_not_before) > now;
-    return <span className={`badge review-channel-position${cooldown ? ' review-hosted-cooldown' : ''}`} title={description}>{label}</span>;
+    return <span className="badge review-channel-position" data-lane-label-tone={tone} title={description}>{operationWaitLabel(wait, now, channel)}</span>;
   }
   const retry = Date.parse(wait.retry_not_before);
   const relative = (stamp: number) => {
@@ -103,7 +103,7 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
     return `in ${minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`}`;
   };
   return <span className="review-quota-wait" onPointerEnter={event => { if (event.pointerType === 'mouse') setExpanded(true); }} onPointerLeave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) setExpanded(false); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }} onKeyDown={event => { if (event.key === 'Escape') setExpanded(reviewWaitExpandedForKey(event.key, expanded)!); }}>
-    <span ref={trigger} role="button" aria-expanded={expanded} aria-controls={detailsID} tabIndex={0} className="badge review-channel-position review-quota-label" aria-describedby={detailsID} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onPointerUp={event => { if (event.pointerType !== 'mouse') { event.stopPropagation(); setExpanded(value => !value); } }} onClick={event => event.stopPropagation()} onKeyDown={event => { const next = reviewWaitExpandedForKey(event.key, expanded); if (next !== undefined) { event.preventDefault(); event.stopPropagation(); setExpanded(next); } }}>{operationWaitLabel(wait, now, channel)}</span>
+    <span ref={trigger} role="button" aria-expanded={expanded} aria-controls={detailsID} tabIndex={0} className="badge review-channel-position review-quota-label" data-lane-label-tone={tone} aria-describedby={detailsID} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onPointerUp={event => { if (event.pointerType !== 'mouse') { event.stopPropagation(); setExpanded(value => !value); } }} onClick={event => event.stopPropagation()} onKeyDown={event => { const next = reviewWaitExpandedForKey(event.key, expanded); if (next !== undefined) { event.preventDefault(); event.stopPropagation(); setExpanded(next); } }}>{operationWaitLabel(wait, now, channel)}</span>
     <span id={detailsID} className="review-quota-panel" style={{ left: placement.left, top: placement.top }} hidden={!expanded} role="tooltip">
       <span ref={panel} className="review-quota-details" style={{ maxHeight: placement.maxHeight }}>
         <span>{description}</span>

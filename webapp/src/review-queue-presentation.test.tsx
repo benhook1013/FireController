@@ -104,14 +104,14 @@ describe('truthful stored review presentation', () => {
     const row = { ...pull(2), run_count: 6, run_counts: { ...pull(2).run_counts, cli: 6 }, attempt_count: 7, latest_attempts: [attempt] };
     const rounds: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'cli', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 7, taper: 2, used: 6, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 }] };
     const stopped = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={rounds} />);
-    expect(stopped).toContain('>Needs agent attention</span>'); expect(stopped).toContain('failed (admission_changed)');
+    expect(stopped).toContain('>Check attempt</span>'); expect(stopped).toContain('failed (admission_changed)');
     expect(stopped).not.toContain('>Failed</span>'); expect(stopped).toContain('6 runs');
     expect(stopped).toContain('title="Review eligibility changed before start');
     expect(stopped).not.toContain('>Review eligibility changed before start<');
     const retry = markup(<ReviewQueueRow pull={row} snapshot="snapshot" progress={{ ...rounds, channels: [{ ...rounds.channels[0], pending: 1, pending_execution: 1 }] }} />);
-    expect(retry).toContain('>Queued</span>'); expect(retry).not.toContain('>Needs agent attention</span>'); expect(retry).toContain('6 runs');
+    expect(retry).toContain('>Queued</span>'); expect(retry).not.toContain('>Check attempt</span>'); expect(retry).toContain('6 runs');
     const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={rounds} />);
-    expect(historical).toContain('>Past attempt</span>'); expect(historical).not.toContain('>Needs agent attention</span>'); expect(historical).not.toContain('>Queued</span>');
+    expect(historical).toContain('>Past attempt</span>'); expect(historical).not.toContain('>Check attempt</span>'); expect(historical).not.toContain('>Queued</span>');
     const held = markup(<ReviewQueueRow pull={{ ...row, latest_attempts: [{ ...attempt, state: 'held', reason: 'predecessor_unfinished' }] }} snapshot="snapshot" progress={rounds} />);
     expect(held).toContain('>Dependency hold</span>'); expect(held).toContain('title="Waiting for earlier PR work'); expect(held).toContain('No retry is confirmed'); expect(held).not.toContain('>Failed</span>');
   });
@@ -136,7 +136,7 @@ describe('truthful stored review presentation', () => {
     const fixedStage = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={v} />);
     expect(fixedStage).not.toContain('>Fixes pending</span>');
     expect(fixedStage).not.toContain('>Results pending</span>');
-    expect(fixedStage).not.toContain('>Reviewing</span>');
+    expect(fixedStage).not.toContain('>Review active</span>');
     const progress: ReviewProgressItem = { pull_number: 2, channels: [{ channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 1, pending_execution: 0, pending_adjudication: 1 }] };
     const adjudicating = markup(<ReviewQueueRow pull={row} snapshot="snapshot" fronts={v} progress={progress} />);
     expect(adjudicating).not.toContain('>Needs adjudication</span>');
@@ -171,14 +171,14 @@ describe('truthful stored review presentation', () => {
     expect(html).not.toContain('review-attempt-history');
     expect(html).not.toContain('review-attempt-explanation');
     expect(html).not.toContain('held (hosted_allowance_cooldown)');
-    expect(html).not.toContain('>Needs agent attention</span>');
-    expect(html).not.toContain('>Reviewing</span>');
+    expect(html).not.toContain('>Check attempt</span>');
+    expect(html).not.toContain('>Review active</span>');
     expect(html).not.toContain('>Queued</span>');
     const historical = markup(<ReviewQueueRow pull={{ ...row, state: 'merged' }} snapshot="snapshot" progress={progress} />);
     expect(historical).toContain('>Past attempt</span>');
     expect(historical).toContain('held (hosted_allowance_cooldown)');
     const unrelated = markup(<ReviewQueueRow pull={{ ...row, latest_attempts: [{ ...attempt, source_attempt_id: `review_attempt_${'b'.repeat(32)}` }] }} snapshot="snapshot" progress={progress} />);
-    expect(unrelated).toContain('>Needs agent attention</span>');
+    expect(unrelated).toContain('>Check attempt</span>');
     expect(unrelated).not.toContain('>Request cancelled</span>');
   });
 
@@ -236,20 +236,20 @@ describe('truthful stored review presentation', () => {
     const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: both });
     expect(html).not.toContain('Review front ·');
     const row = html.match(/<li id="review-pr-2"[\s\S]*?<\/li>/u)![0];
-    expect(row).toContain('aria-label="hosted current review state"><span class="badge review-channel-position">Up next</span></span>');
-    expect(row).toContain('aria-label="cli current review state"><span class="badge review-channel-position">Up next</span></span>');
+    expect(row).toContain('aria-label="hosted current review state"><span data-lane-label-tone="active"><span class="badge review-channel-position">Up next</span></span></span>');
+    expect(row).toContain('aria-label="cli current review state"><span data-lane-label-tone="active"><span class="badge review-channel-position">Up next</span></span></span>');
     const independent = markup(<ReviewQueueView />, queue([pull(1, 'merged'), pull(2), pull(3)]), undefined, { fronts: fronts() });
     const selected = independent.match(/<li id="review-pr-2"[\s\S]*?<\/li>/u)![0];
-    expect(selected).toContain('aria-label="hosted current review state"><span class="badge review-channel-position">Up next</span></span>');
-    expect(selected).not.toContain('aria-label="cli current review state"><span class="badge review-channel-position">Up next</span></span>');
+    expect(selected).toContain('aria-label="hosted current review state"><span data-lane-label-tone="active"><span class="badge review-channel-position">Up next</span></span></span>');
+    expect(selected).not.toContain('aria-label="cli current review state"><span data-lane-label-tone="active"><span class="badge review-channel-position">Up next</span></span></span>');
   });
   it('keeps an already-started review visible after head movement', () => {
     const attempt = { channel: 'hosted', head_sha: pull(2).head_sha, state: 'active', finished_at: '', started_at: '2026-10-22T00:00:00Z', source_attempt_id: 'active' } as ReviewAttemptSummary;
     const html = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [attempt] }]), undefined, { fronts: fronts() });
-    expect(html).toContain('aria-label="hosted execution: Reviewing"');
+    expect(html).toContain('aria-label="hosted execution: Review active"');
     expect(html).not.toContain('>Up next</span>');
     const stale = markup(<ReviewQueueView />, queue([pull(1, 'merged'), { ...pull(2), latest_attempts: [{ ...attempt, head_sha: 'c'.repeat(40) }] }]), undefined, { fronts: fronts() });
-    expect(stale).toContain('aria-label="hosted execution: Reviewing"');
+    expect(stale).toContain('aria-label="hosted execution: Review active"');
     expect(stale).not.toContain('>Up next</span>');
   });
   it('shows carried admission work without claiming Up next, and keeps independent channel readiness', () => {
@@ -257,11 +257,11 @@ describe('truthful stored review presentation', () => {
     held.channels.push({...held.channels[0],channel:'cli',state:'ready',reason:undefined});
     const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:held});
     expect(html).toMatch(/aria-label="hosted current review state"[\s\S]*?title="[^"]*holds new reviews[^"]*">Carried work<\/span>/u);
-    expect(html).toContain('aria-label="cli current review state"><span class="badge review-channel-position">Up next</span></span>');
-    expect(html).not.toContain('aria-label="hosted current review state"><span class="badge review-channel-position">Up next</span></span>');
+    expect(html).toContain('aria-label="cli current review state"><span data-lane-label-tone="active"><span class="badge review-channel-position">Up next</span></span></span>');
+    expect(html).not.toContain('aria-label="hosted current review state"><span data-lane-label-tone="active"><span class="badge review-channel-position">Up next</span></span></span>');
     const attempt={channel:'hosted',head_sha:pull(2).head_sha,state:'active',finished_at:'',started_at:'2026-10-22T00:00:00Z',source_attempt_id:'active'} as ReviewAttemptSummary;
     const running=markup(<ReviewQueueView />,queue([{...pull(2),latest_attempts:[attempt]}]),undefined,{fronts:held});
-    expect(running).toContain('aria-label="hosted execution: Reviewing"');
+    expect(running).toContain('aria-label="hosted execution: Review active"');
     expect(running).not.toContain('>Carried work</span>');
     const stale=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:{...held,snapshot_id:'old'}});
     expect(stale).not.toContain('>Carried work</span>');
@@ -271,7 +271,7 @@ describe('truthful stored review presentation', () => {
     const progress:ReviewProgressItem={pull_number:2,channels:[{channel:'hosted',configured:true,revision:1,epoch:1,closed:false,minimum:1,maximum:3,taper:2,used:0,dry:0,tapered:false,pending:0}]};
     missing.queue=[2];
     const html=markup(<ReviewQueueView />,queue([pull(2)]),undefined,{fronts:missing,progress:[progress]});
-    expect(html).toContain('>Queue position</span>');
+    expect(html).toContain('>First in line</span>');
     expect(html).toContain('First in line. Source checks are still outstanding.');
     expect(html).not.toContain('>Up next</span>');
   });
@@ -370,8 +370,8 @@ describe('truthful stored review presentation', () => {
     const row = held.match(/<li id="review-pr-3"[\s\S]*?<\/li>/u)![0];
     expect(row).toContain('>Parent changed</span>');
     expect(row).toContain('title="Parent PR #2 changed; this child still targets its earlier base."');
-    expect(row).toMatch(/aria-label="hosted current review state"><span[^>]*>Waiting for parent<\/span>/u);
-    expect(row).toMatch(/aria-label="cli current review state"><span[^>]*>Waiting for parent<\/span>/u);
+    expect(row).toMatch(/aria-label="hosted current review state"><span data-lane-label-tone="alert"><span[^>]*>Parent changed<\/span>/u);
+    expect(row).toMatch(/aria-label="cli current review state"><span data-lane-label-tone="alert"><span[^>]*>Parent changed<\/span>/u);
     expect(row).not.toContain('>Queued</span>');
 
     const alignedChild = { ...pull(3), parent_pull_number: 2, base_sha: pull(2).head_sha };
@@ -379,7 +379,6 @@ describe('truthful stored review presentation', () => {
     const alignedRow = aligned.match(/<li id="review-pr-3"[\s\S]*?<\/li>/u)![0];
     expect(alignedRow).toContain('>Queued</span>');
     expect(alignedRow).not.toContain('Parent changed');
-    expect(alignedRow).not.toContain('Waiting for parent');
   });
   it('keeps old CI and merge-ready facts from reading as current proof after the parent moves', () => {
     const observation = { state: 'current' as const, ci_checked_at: '2026-10-28T12:12:35Z', ci_gate_ref: 'main', ci_gate_state: 'success' as const };
@@ -406,16 +405,16 @@ describe('truthful stored review presentation', () => {
     const child = { ...pull(3), parent_pull_number: 2, parent_base_moved: true as const, run_count: 1, run_counts: { ...pull(3).run_counts, hosted: 1 }, recent_runs: [completed], attempt_count: 1, latest_attempts: [active] };
     const progress: ReviewProgressItem = { pull_number: 3, incoming_routes_pending: 1, channels: (['hosted', 'cli'] as const).map(channel => ({ channel, configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 })) };
     const live = markup(<ReviewQueueView />, queue([child]), undefined, { fronts: stackedFronts(), progress: [progress] });
-    expect(live).toContain('aria-label="hosted execution: Reviewing"');
+    expect(live).toContain('aria-label="hosted execution: Review active"');
     expect(live).toContain('>1/1/0</strong>');
     expect(live).toContain('1 incoming routed finding');
-    expect(live).toMatch(/aria-label="cli current review state"><span[^>]*>Waiting for parent<\/span>/u);
+    expect(live).toMatch(/aria-label="cli current review state"><span data-lane-label-tone="alert"><span[^>]*>Parent changed<\/span>/u);
 
     const closedProgress: ReviewProgressItem = { pull_number: 3, channels: (['hosted', 'cli'] as const).map(channel => ({ channel, configured: true, revision: 1, epoch: 1, closed: true, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 })) };
     const closed = markup(<ReviewQueueView />, queue([{ ...pull(3), parent_pull_number: 2, parent_base_moved: true }]), undefined, { fronts: stackedFronts(), progress: [closedProgress] });
     expect(closed).toContain('>Parent changed</span>');
     expect(closed).toContain('>Review closed</span>');
-    expect(closed).not.toContain('Waiting for parent');
+    expect(closed).not.toContain('current review state');
   });
   it('resolves only exact row anchors already present in the loaded queue', () => {
     const items = [pull(1, 'merged'), pull(2)];
@@ -533,9 +532,9 @@ describe('truthful stored review presentation', () => {
     expect(markup(<ReviewRunsView {...props} attempts={[{ ...attempt, state: 'rate_limited' }]} />)).toContain('Retained attempt: rate_limited.');
     expect(markup(<ReviewRunsView {...props} attempts={[]} />)).not.toContain('review-attempt-state');
     const held = markup(<ReviewRunsView {...props} attempts={[{ ...attempt, channel: 'hosted', state: 'held', reason: 'hosted_allowance_cooldown' }]} />);
-    expect(held).toContain('>Needs agent attention</span>');
+    expect(held).toContain('>Check attempt</span>');
     expect(held).toContain('held (hosted_allowance_cooldown)');
-    expect(held).not.toContain('>Cooldown</span>');
+    expect(held).not.toContain('>Check in ');
   });
   it('renders full finding Markdown safely while leaving titles and commit IDs literal', () => {
     const finding: ReviewFinding = { source_finding_id: 'id', title: '**Literal title**', detail: 'Useful **detail**\n\n- A step\n\n[unsafe](javascript:alert(1)) ![image](https://outside.invalid/image.png)', severity: 'low', disposition: 'accepted', decision_reason: 'Keep *context*.', actor: '', decided_at: '', fix_sha: '', proof_note: '`tested` with **evidence**', resolved_at: '' };

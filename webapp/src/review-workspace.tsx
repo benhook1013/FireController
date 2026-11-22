@@ -67,7 +67,7 @@ function reviewAttemptReason(attempt: ReviewAttemptSummary): string | undefined 
 }
 function ReviewNotice({ history = false }: { history?: boolean }) {
   const { home } = useWorkspace();
-  return <aside className="review-guide" aria-label="Reading the review queue"><h3>Review states</h3><dl><div><dt>Preparing / Reviewing</dt><dd>Retained attempt state; hover or focus for timing and execution limits</dd></div><div><dt>Retry pending / Cooldown</dt><dd>Recorded pending request or provider wait</dd></div><div><dt>Needs agent attention</dt><dd>Stopped process or unconfirmed outcome, not a PR review verdict</dd></div><div><dt>Past attempt</dt><dd>Diagnostics retained in review details</dd></div></dl><p className="review-count-key"><strong>Reading rounds:</strong> found / accepted / routed. Highlighted zero-accepted rounds have no accepted findings. {history ? 'Merged PRs are shown newest first.' : <>Merged PRs from the last 48 hours and the latest two known merges stay here. Full retained history is in <Link to={`${home}/reviews/history`}>Queue history</Link>.</>}</p></aside>;
+  return <aside className="review-guide" aria-label="Reading the review queue"><h3>Review states</h3><dl><div><dt>Preparing / Review active</dt><dd>Current attempt state. Hover or focus for timing and details.</dd></div><div><dt>Check in / Recheck due / Quota wait</dt><dd>Waiting for a provider allowance check.</dd></div><div><dt>Check attempt</dt><dd>See Attempts in Review history for a stopped or unconfirmed review.</dd></div><div><dt>Past attempt</dt><dd>Diagnostics retained in review details.</dd></div></dl><p className="review-count-key"><strong>Reading rounds:</strong> found / accepted / routed. Highlighted zero-accepted rounds have no accepted findings. {history ? 'Merged PRs are shown newest first.' : <>Merged PRs from the last 48 hours and the latest two known merges stay here. Full retained history is in <Link to={`${home}/reviews/history`}>Queue history</Link>.</>}</p></aside>;
 }
 function ReviewProvenance({ value }: { value: ReviewSnapshot }) {
   return <div className="review-freshness"><details><summary>Source details</summary><dl><div><dt>Source</dt><dd>{value.source}</dd></div><div><dt>Snapshot origin timestamp</dt><dd>{time(value.observed_at)}</dd></div><div><dt>Recorded</dt><dd>{time(value.recorded_at)}</dd></div><div><dt>Snapshot</dt><dd><code>{value.snapshot_id}</code> · revision {value.revision}</dd></div></dl></details></div>;
@@ -484,6 +484,24 @@ function RunningReviewPill({ evidence, attemptID, channel, attention, submittedA
     {date ? estimated ? <span className="review-pill-age">~ <RelativeTime value={date} label="Estimated start (request submission acknowledged)" /></span> : <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
   </ReviewRoundPillDisplay>{attention && <div id={detailID} popover="auto" className="review-attention-detail"><p>{description}</p><button type="button" popoverTarget={detailID} popoverTargetAction="hide">Close</button></div>}</>;
 }
+const laneAttemptLabels: Partial<Record<string, { text?: string; tone?: 'active' | 'alert' }>> = {
+  'Up next': { tone: 'active' },
+  'Queue position': { text: 'First in line' },
+  'Source unverified': { tone: 'alert' },
+  Preparing: { tone: 'active' },
+  Reviewing: { text: 'Review active', tone: 'active' },
+  'Waiting for parent': { text: 'Parent changed', tone: 'alert' },
+  'Dependency hold': { tone: 'alert' },
+  Held: { tone: 'alert' },
+  'Needs agent attention': { text: 'Check attempt', tone: 'alert' },
+  'Carried work': { tone: 'alert' },
+  'Findings pending': { text: 'Routed findings', tone: 'alert' },
+  'Manual results pending': { text: 'Manual review pending', tone: 'alert' },
+  'Results pending': { tone: 'alert' },
+  'Status unknown': { tone: 'alert' },
+  'Attempt cancelled': { text: 'Cancelled' },
+};
+
 function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, parentBaseMoved, parentPullNumber, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal, previewPending, announcePreviewLoading }: {
   channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[];
   snapshot: string; head: string; loading: boolean; failed: boolean; highlights: Map<string, string>;
@@ -532,15 +550,21 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   // Decisions and fix obligations belong to their retained result. The lane
   // heading describes execution and scheduling; aggregate counts stay below it.
   const resultStatus = candidateBadge?.text === 'Needs adjudication' || candidateBadge?.text === 'Fixes pending';
-  const badge = resultStatus ? undefined : candidateBadge;
-  const currentStatus = !attemptPill && (waiting || waitingForParent || badge)
-    ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{waitingForParent ? <ReviewAttemptBadge channel={channel} status={{text:'Waiting for parent',description:parentBaseMovedDescription(parentPullNumber)}} /> : badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
+  const badge = waitingForParent ? { text: 'Waiting for parent', description: parentBaseMovedDescription(parentPullNumber) }
+    : resultStatus ? undefined : candidateBadge;
+  const label = badge && laneAttemptLabels[badge.text];
+  const currentStatus = !attemptPill && (waiting || badge) && <span className="review-lane-current-state" aria-label={`${channel} current review state`}>
+    {waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}
+    {badge && <span data-lane-label-tone={label?.tone}>
+      <ReviewAttemptBadge channel={channel} status={{ ...badge, text: label?.text ?? badge.text }} />
+    </span>}
+  </span>;
   const slots = capacity - Number(attemptPill);
   const visiblePills = slots > 0 ? pills.slice(-slots) : [];
   const placeholders = previewPending ? Math.max(0, Math.min(currentTotal, slots) - visiblePills.length) : 0;
   const completedTotal = returned?.outcome === 'completed' ? currentTotal : total;
   return <ReviewLaneDisplay laneRef={laneRef} readingAnchor={readingAnchor} title={title}
-    status={<>{updateFailed && <span className="badge neutral" title="Refresh to retry loading review history.">Update failed</span>}{currentStatus && <span className="review-pill-status review-lane-current-state" aria-label={`${channel} current review state`}>{currentStatus}</span>}</>}
+    status={<>{updateFailed && <span className="badge review-lane-update-failed" title="Refresh to retry loading review history.">Update failed</span>}{currentStatus}</>}
     metadata={`${completedTotal} ${completedTotal === 1 ? 'run' : 'runs'}`}
     metadataTitle="Past reviews stay in history when the PR changes.">
     <ReviewProgressView value={progress} />

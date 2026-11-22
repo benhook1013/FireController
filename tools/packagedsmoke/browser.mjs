@@ -944,7 +944,7 @@ try {
   const cliSourceLane = sourceRow.getByRole('region',{name:'CLI CodeRabbit',exact:true});
   await expect(hostedSourceLane.getByText('Queued',{exact:true})).toBeVisible();
   await expect(hostedSourceLane).not.toContainText('GitHub rate limit');
-  await expect(cliSourceLane.getByText('Needs agent attention',{exact:true})).toHaveAttribute('title', /GitHub rate limit. The review did not start./u);
+  await expect(cliSourceLane.getByText('Check attempt',{exact:true})).toHaveAttribute('title', /GitHub rate limit. The review did not start./u);
   await expect(cliSourceLane).not.toContainText('GitHub rate limit');
   await page.unroute(sourceProgressPattern, sourceProgress);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
@@ -1004,7 +1004,7 @@ try {
   for (const width of [1440, 390]) {
     await page.setViewportSize({width,height:900});
     for (const channel of ['hosted','cli']) {
-      const badge = activityRow.getByRole('button',{name:`${channel} execution: Reviewing`,exact:true});
+      const badge = activityRow.getByRole('button',{name:`${channel} execution: Review active`,exact:true});
       await badge.hover();
       const tooltip = activityRow.locator(`[id="${await badge.getAttribute('aria-describedby')}"]`);
       await expect(tooltip).toBeVisible();
@@ -1088,7 +1088,7 @@ try {
   await expect(resultCLI).not.toContainText(/Previous attempt|Capture retained/u);
   // Process attention is separate from the captured partial result's adjudication.
   checkpoint = 'result-process-attention';
-  await expect(resultCLI.getByLabel('cli current review state', {exact:true}).locator('.review-attempt-state')).toHaveText('Needs agent attention');
+  await expect(resultCLI.getByLabel('cli current review state', {exact:true}).locator('.review-attempt-state')).toHaveText('Check attempt');
   const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/\?\/\? .*Partial review/});
   checkpoint = 'result-partial-link';
   await expect(partialLink).toHaveCount(1);
@@ -1133,9 +1133,9 @@ try {
   const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
   for (const pill of reasonPills) {
     await expect(pill).toHaveCount(1);
-    await expect(pill).toHaveText('Needs agent attention');
+    await expect(pill).toHaveText('Check attempt');
     await expect(pill).toHaveAttribute('title',reasonPillText);
-    await expect(pill).toHaveAttribute('aria-label',`hosted execution: Needs agent attention. ${reasonPillText}`);
+    await expect(pill).toHaveAttribute('aria-label',`hosted execution: Check attempt. ${reasonPillText}`);
   }
   checkpoint = 'attempt-visible-reason';
   for (const lane of [queueHosted, heroHosted]) {
@@ -1205,27 +1205,41 @@ try {
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
     for (const pill of reasonPills) {
       checkpoint = 'layout-reason-text';
-      await expect(pill).toHaveText('Needs agent attention');
-      const geometry=await pill.evaluate(element => {
-        // Compare to a shared channel badge in the same embedded status line.
-        // Three-line pills intentionally remove the old heading-badge chrome.
-        const standard=document.createElement('span');
-        standard.className='badge review-channel-position'; standard.textContent=element.textContent;
-        element.parentElement.append(standard);
-        const style=getComputedStyle(element),reference=getComputedStyle(standard);
-        const properties=['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','textTransform','paddingTop','paddingRight','paddingBottom','paddingLeft','borderTopLeftRadius'];
-        const typography=properties.every(property=>style[property]===reference[property]);
-        const height=Math.abs(element.getBoundingClientRect().height-standard.getBoundingClientRect().height)<=1;
-        standard.remove();
-        const box=element.getBoundingClientRect(),lane=element.closest('.review-lane').getBoundingClientRect();
-        return {typography,height,chrome:style.textTransform === 'none' && style.borderTopLeftRadius === '0px' && ['paddingTop','paddingRight','paddingBottom','paddingLeft'].every(property=>style[property]==='0px'),bounds:box.left >= lane.left-1 && box.right <= lane.right+1,overflowX:element.scrollWidth <= element.clientWidth+1,overflowY:element.scrollHeight <= element.clientHeight+1};
+      await expect(pill).toHaveText('Check attempt');
+      const geometry = await pill.evaluate(element => {
+        const lane = element.closest('.review-lane');
+        const round = lane.querySelector('.review-round-pill');
+        const label = getComputedStyle(element);
+        const card = getComputedStyle(round);
+        const cardStatus = getComputedStyle(round.querySelector('.review-pill-status'));
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 1;
+        const context = canvas.getContext('2d');
+        const pixel = color => {
+          context.clearRect(0, 0, 1, 1);
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return context.getImageData(0, 0, 1, 1).data;
+        };
+        const fill = pixel(label.backgroundColor);
+        const laneFill = pixel(getComputedStyle(lane).backgroundColor);
+        const border = pixel(label.borderTopColor);
+        const box = element.getBoundingClientRect();
+        const laneBox = lane.getBoundingClientRect();
+        return {
+          square: ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomLeftRadius', 'borderBottomRightRadius'].every(corner => label[corner] === '0px'),
+          border: label.borderTopStyle === 'solid' && label.borderTopWidth === '1px' && border[3] > 0,
+          fill: fill[3] === 255 && fill.some((value, index) => value !== laneFill[index]),
+          compact: label.textTransform === 'none' && parseFloat(label.fontSize) <= parseFloat(getComputedStyle(element.closest('h4')).fontSize),
+          bounds: box.left >= laneBox.left - 1 && box.right <= laneBox.right + 1,
+          noOverflow: element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1,
+          card: parseFloat(card.borderTopLeftRadius) > 0 && cardStatus.borderTopWidth === '0px',
+        };
       });
-      checkpoint='layout-reason-typography'; need(geometry.typography);
-      checkpoint='layout-reason-height'; need(geometry.height);
-      checkpoint='layout-reason-chrome'; need(geometry.chrome);
-      checkpoint='layout-reason-bounds'; need(geometry.bounds);
-      checkpoint='layout-reason-overflow-x'; need(geometry.overflowX);
-      checkpoint='layout-reason-overflow-y'; need(geometry.overflowY);
+      for (const [check, passed] of Object.entries(geometry)) {
+        checkpoint = `layout-reason-${check}`;
+        need(passed);
+      }
     }
     const progressColors=await page.evaluate(()=>{
       const luminance=value=>{const c=value.match(/[\d.]+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;});return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2];};

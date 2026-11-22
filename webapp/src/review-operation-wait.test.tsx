@@ -11,12 +11,12 @@ afterEach(() => vi.useRealTimers());
 describe('retained automatic review waiting', () => {
   it('labels future and due deadlines without promising a provider start', () => {
     vi.useFakeTimers();vi.setSystemTime('2026-10-30T12:00:00Z');
-    expect(operationWaitLabel(wait)).toBe('Cooldown · 30m');
+    expect(operationWaitLabel(wait)).toBe('Check in 30m');
     const future = renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait}/>);
-    expect(future).toContain('Cooldown · 30m');expect(future).toContain('Next automatic recheck at or after');
-    expect(future).toContain('review-hosted-cooldown');
-    vi.setSystemTime('2026-10-30T12:30:01Z');expect(operationWaitLabel(wait)).toBe('Waiting');
-    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait}/>)).not.toContain('review-hosted-cooldown');
+    expect(future).toContain('Check in 30m');expect(future).toContain('Next automatic recheck at or after');
+    expect(future).toContain('data-lane-label-tone="timed"');
+    vi.setSystemTime('2026-10-30T12:30:01Z');expect(operationWaitLabel(wait)).toBe('Recheck due');
+    expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={wait}/>)).toContain('data-lane-label-tone="timed"');
     expect(operationWaitLabel({...wait,paused:true})).toBe('Paused');
     expect(renderToStaticMarkup(<ReviewOperationWaitBadge wait={{...wait,paused:true}}/>)).toContain('Resume this request to let it run.');
     expect(operationWaitLabel({paused:false})).toBe('Waiting');
@@ -40,8 +40,8 @@ describe('retained automatic review waiting', () => {
     expect(html).toContain('Quota wait');
     expect(html).toContain('Next quota recheck:');
     expect(html).toContain('Review starts depend on quota at the recheck.');
-    expect(html).not.toContain('Cooldown');
-    expect(html).not.toContain('review-hosted-cooldown');
+    expect(html).not.toContain('Check in ');
+    expect(html).toContain('data-lane-label-tone="timed"');
     const counts=renderToStaticMarkup(<ReviewProgressView value={cliProgress}/>);
     expect(counts).toContain('Up to 3 more reviews');
     expect(counts).not.toContain('awaiting review result');
@@ -97,9 +97,9 @@ describe('accepted Hosted queue priority', () => {
     const queued = {...wait, queue_ahead_pull_number:4};
     const html = renderToStaticMarkup(<ReviewOperationWaitBadge wait={queued}/>);
     expect(html).toContain('Behind #4');
-    expect(html).not.toContain('Cooldown');
+    expect(html).not.toContain('Check in ');
     expect(html).toContain('Earliest recheck:');
-    expect(operationWaitLabel(wait, Date.parse('2026-10-30T12:00:00Z'))).toBe('Cooldown · 30m');
+    expect(operationWaitLabel(wait, Date.parse('2026-10-30T12:00:00Z'))).toBe('Check in 30m');
     expect(operationWaitLabel({...queued, paused:true})).toBe('Paused');
   });
   it('rejects malformed, paused and cross-channel priority hints', () => {

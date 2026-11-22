@@ -47,7 +47,7 @@ describe('three-line review state pills',()=>{
   const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
   expect(html).toContain('>Adjudicating</span>');
   expect(html).toContain('aria-label="cli current review state"');
-  expect(html).toContain('Needs agent attention');
+  expect(html).toContain('Check attempt');
   expect(html).toContain('0 runs');
   expect(html).not.toContain('review-pill-running');
   const compact=markup([{...partial,retained_undecided:undefined}],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
@@ -57,16 +57,16 @@ describe('three-line review state pills',()=>{
  });
  it('never lets a stale completion replace an active attempt with matching source identity',()=>{
   const html=markup([completed],[attempt],{...progress,closed:true});
-  expect(html).toContain('aria-label="cli execution: Reviewing"');
+  expect(html).toContain('aria-label="cli execution: Review active"');
   expect(html).toContain('aria-label="cli current review state"');
   expect(html).not.toContain('>Closed</span>');
  });
  it('keeps waiting and uncertain states as lane text without invented review pills',()=>{
   const wait=markup([],[],{...progress,wait:{paused:true}});
-  expect(wait).toMatch(/review-pill-status[\s\S]*?Paused/u);expect(wait).not.toContain('<strong>?/?/?</strong>');
+  expect(wait).toMatch(/review-lane-current-state[\s\S]*?Paused/u);expect(wait).not.toContain('<strong>?/?/?</strong>');
   expect(wait).toContain('review-lane-current-state');
   const uncertain=markup([completed],[{...attempt,state:'uncertain'}],progress);
-  expect(uncertain).toMatch(/review-pill-status[\s\S]*?Needs agent attention/u);
+  expect(uncertain).toMatch(/review-lane-current-state[\s\S]*?Check attempt/u);
   expect(uncertain).toContain('review-lane-current-state');
  });
 });
@@ -157,7 +157,7 @@ describe('complete persisted current-state mapping in both review lanes',()=>{
    const wait={paused:false,baseline_attempt_id:attempt.source_attempt_id,retry_not_before:'2099-01-01T00:00:00Z'};
    const html=markup([{...completed,channel}],[{...attempt,channel,state:'completed',finished_at:completed.finished_at}],{...progress,channel,wait});
    expect(html).toContain(`aria-label="${channel} current review state"`);
-   expect(html).toContain(channel==='cli'?'Quota wait':'Cooldown');
+   expect(html).toContain(channel==='cli'?'Quota wait':'Check in ');
    expect(html).toContain('review-pill-status">Finished');
   });
  }
