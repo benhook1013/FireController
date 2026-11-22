@@ -425,3 +425,11 @@ func TestSelectionQuarantineInventoryRetainsAutomaticChildWithoutAuthority(t *te
 		t.Fatal("original automatic operation identity was not retained", got, err)
 	}
 }
+
+func TestSelectionQuarantineInventoryRejectsDanglingEmptyV2Marker(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	bundle := restoreBundle(t, f)
+	mutateBundleSQL(t, bundle.Path, `UPDATE review_selections
+	   SET state='held',reason='linked_selection_quarantined',revision=2`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}

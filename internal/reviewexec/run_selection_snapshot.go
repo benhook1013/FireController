@@ -168,15 +168,7 @@ func validateSelectionQuarantine(ctx context.Context, q EvidenceQuery) error {
 		return err
 	}
 	if version == "1" && objects == 0 {
-		var danglingMarker bool
-		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections
-		   WHERE reason='linked_selection_quarantined')`).Scan(&danglingMarker); err != nil {
-			return err
-		}
-		if danglingMarker {
-			return runUnavailable()
-		}
-		return nil
+		return validateNoSelectionCustodyMarkers(ctx, q)
 	}
 	if version != "2" || objects != 1 {
 		return runUnavailable()
@@ -187,6 +179,16 @@ func validateSelectionQuarantine(ctx context.Context, q EvidenceQuery) error {
 	}
 	if ddl != selectionQuarantineTableSQL {
 		return runUnavailable()
+	}
+	// With no custody records there is no child binding to validate. Older
+	// supported execution schemas can lack current child identity columns.
+	// Still require every custody marker to have a retained diagnostic row.
+	var populated bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selection_quarantine)`).Scan(&populated); err != nil {
+		return err
+	}
+	if !populated {
+		return validateNoSelectionCustodyMarkers(ctx, q)
 	}
 	var inconsistent bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(
@@ -228,4 +230,16 @@ func validateSelectionQuarantine(ctx context.Context, q EvidenceQuery) error {
 		}
 	}
 	return rows.Err()
+}
+
+func validateNoSelectionCustodyMarkers(ctx context.Context, q EvidenceQuery) error {
+	var marker bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections
+	   WHERE reason='linked_selection_quarantined')`).Scan(&marker); err != nil {
+		return err
+	}
+	if marker {
+		return runUnavailable()
+	}
+	return nil
 }
