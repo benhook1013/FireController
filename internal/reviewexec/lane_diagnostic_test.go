@@ -227,3 +227,18 @@ func TestStackReviewSourceIdentityRemainsRequired(t *testing.T) {
 		})
 	}
 }
+
+func TestLaneDiagnosticRetainedRepositoryChangeReportsLaneHold(t *testing.T) {
+	f := schedulingFixture(t)
+	laneDiagnosticFrame(t, f, "cli", []SourcePlan{laneDiagnosticPlan(2), laneDiagnosticPlan(4)})
+	admissionSQL(t, f, `UPDATE review_front_frames SET complete=0,source_reason='repository_changed' WHERE project_id=? AND channel='cli'`, attemptProject)
+	out, err := f.e.ReadLaneDiagnostic(t.Context(), selectionScope(t, f, attemptProject, f.reader, "read"), "cli")
+	if err != nil || out.SourceReason != "repository_changed" || out.LaneReason != "repository_changed" || out.SourceComplete {
+		t.Fatal(out, err)
+	}
+	for _, candidate := range out.Candidates {
+		if candidate.LocalState != "unknown" || candidate.HeadSHA != "" {
+			t.Fatal(candidate)
+		}
+	}
+}

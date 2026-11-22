@@ -233,7 +233,7 @@ func (o *browserOutput) safePhase() string {
 		case "configuration", "launch", "connect", "fixture-update", "live-update", "metadata-failure", "metadata-reconnect", "metadata-live-update", "live-jobs", "live-workers", "live-notes", "live-reviews", "reload", "disconnect", "explicit-actions-connect", "explicit-actions-send", "explicit-actions-settings", "explicit-actions-uncertain":
 			if record.Phase == "live-reviews" {
 				switch record.Checkpoint {
-				case "round-grant", "round-allowance", "round-close", "round-closed", "round-observation-update":
+				case "initial-round-progress", "round-grant", "round-allowance", "round-close", "round-closed", "round-observation-update":
 					return record.Phase + "/" + record.Checkpoint
 				}
 			}
@@ -431,7 +431,7 @@ console.log(JSON.stringify({state:passed?'PASS':'FAIL',matcher_assertion:passed}
 }
 
 func TestBrowserOutputSafeReviewProgressCheckpoint(t *testing.T) {
-	for _, checkpoint := range []string{"round-grant", "round-allowance", "round-close", "round-closed", "round-observation-update"} {
+	for _, checkpoint := range []string{"initial-round-progress", "round-grant", "round-allowance", "round-close", "round-closed", "round-observation-update"} {
 		var out browserOutput
 		body, _ := json.Marshal(map[string]string{"state": "FAIL", "phase": "live-reviews", "checkpoint": checkpoint, "message": "PRIVATE_TOKEN"})
 		_, _ = out.Write(append(body, '\n'))

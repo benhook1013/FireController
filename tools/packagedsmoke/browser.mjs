@@ -240,18 +240,23 @@ try {
   const merged = pull(31, 'merged', 'Retained merged smoke PR');
   const open = pull(32, 'open', 'Live review before');
   const observation = (revision, queue) => ({expected_revision:revision, repository_id:991, source:'packaged-browser', observed_at:new Date().toISOString(), queue, retired:[]});
-  const initialProgressRead = page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/reviews/rounds/progress');
-  await write('POST', '/reviews/observations', observation(0, [merged, open]), 201);
-  await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
-  await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
+  // Arm the scoped response waiter before the observation write and handle both together.
   // Current round progress is an existing-event-driven, bounded local read.
-  // Exercise a real native write and observe its scoped browser invalidation.
   checkpoint = 'initial-round-progress';
-  const initialProgress = await initialProgressRead;
+  const [initialProgress] = await Promise.all([
+    page.waitForResponse(value => value.request().method() === 'GET' && new URL(value.url()).pathname === prefix + '/reviews/rounds/progress'),
+    write('POST', '/reviews/observations', observation(0, [merged, open]), 201),
+  ]);
   need(initialProgress.status() === 200);
   need(await initialProgress.finished() === null);
   const initialRounds = await initialProgress.json();
-  need(initialRounds.items.length === 2 && initialRounds.items.every(item => item.channels.every(channel => !channel.configured)));
+  need(initialRounds.items.length === 2 && [31, 32].every(number => {
+    const item = initialRounds.items.find(row => row.pull_number === number);
+    return item?.channels.length === 2 && ['hosted', 'cli'].every(name =>
+      item.channels.some(channel => channel.channel === name && channel.configured === false));
+  }));
+  await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
+  await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   checkpoint = 'round-grant';
   await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0, action:'grant', minimum:2, maximum:3});
   const progress = page.getByLabel('Hosted current round progress', {exact:true});

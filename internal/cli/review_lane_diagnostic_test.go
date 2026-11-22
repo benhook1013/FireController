@@ -23,3 +23,14 @@ func TestLaneDiagnosticCLIReadSyntax(t *testing.T) {
 		t.Fatal(code, out.String(), diag.String())
 	}
 }
+
+func TestReviewSchedulingReceiptOnlyForMutations(t *testing.T) {
+	for action, want := range map[string]bool{
+		"read": false, "diagnostics": false, "unknown": false,
+		"configure": true, "pause": true, "resume": true,
+	} {
+		if got := (&reviewSchedulingInvocation{action: action}).isMutation(); got != want {
+			t.Errorf("%s: receipt recovery = %v, want %v", action, got, want)
+		}
+	}
+}

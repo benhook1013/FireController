@@ -760,11 +760,16 @@ func TestCLIDriverLateAncestorCorrectionStillReviewsChild(t *testing.T) {
 	f.reader.pulls[4] = child
 	f.configure(t, "stacked", []int64{2, 4})
 	usage := f.driver.usage
+	var corrected atomic.Bool
 	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
 		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
+		corrected.Store(true)
 		return usage(ctx, w, repo, org)
 	}
 	op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
+	if !corrected.Load() {
+		t.Fatal("preparation did not apply the ancestor correction")
+	}
 	var reviews atomic.Int64
 	f.driver.review = func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error) {
 		reviews.Add(1)

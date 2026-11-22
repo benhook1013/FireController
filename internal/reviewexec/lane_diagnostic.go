@@ -69,7 +69,7 @@ func (e *Engine) ReadLaneDiagnostic(ctx context.Context, scope core.Scope, chann
 		}
 		out.SourceReason = "source_unavailable"
 		if found {
-			if frame.repository != repository && out.LaneReason == "" {
+			if (frame.repository != repository || frame.sourceReason == "repository_changed") && out.LaneReason == "" {
 				out.LaneReason = "repository_changed"
 			}
 			out.SourceConfigurationRevision, out.SourceCheckedAt = frame.configuration, frame.checkedAt

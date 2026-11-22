@@ -119,3 +119,12 @@ func executeReviewScheduling(ctx context.Context, service *client.Client, in *re
 		return service.ReviewScheduling(ctx)
 	}
 }
+
+func (in *reviewSchedulingInvocation) isMutation() bool {
+	switch in.action {
+	case "configure", "pause", "resume":
+		return true
+	default:
+		return false
+	}
+}
