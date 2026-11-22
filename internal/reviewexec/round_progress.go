@@ -13,28 +13,29 @@ import (
 // private activity diagnostics. Pending counts operations bound to this epoch,
 // not coverage or permission to dispatch.
 type RoundProgressChannel struct {
-	SubmissionEvidence          *SubmissionEvidence `json:"submission_evidence,omitempty"`
-	ActivityEvidence            *ActivityEvidence   `json:"activity_evidence,omitempty"`
-	CancelledWait               *CancelledWait      `json:"cancelled_wait,omitempty"`
-	Wait                        *OperationWait      `json:"wait,omitempty"`
-	SourceRetry                 *SourceRetry        `json:"source_retry,omitempty"`
-	Channel                     string              `json:"channel"`
-	Configured                  bool                `json:"configured"`
-	Revision                    int64               `json:"revision"`
-	Epoch                       int64               `json:"epoch"`
-	Closed                      bool                `json:"closed"`
-	Minimum                     int64               `json:"minimum"`
-	Maximum                     int64               `json:"maximum"`
-	MaximumUnbounded            bool                `json:"maximum_unbounded,omitempty"`
-	Taper                       int64               `json:"taper"`
-	Used                        int64               `json:"used"`
-	Dry                         int64               `json:"dry"`
-	Tapered                     bool                `json:"tapered"`
-	Pending                     int64               `json:"pending"`
-	PendingExecution            *int64              `json:"pending_execution,omitempty"`
-	RetainedAdjudicationPending bool                `json:"retained_adjudication_pending,omitempty"`
-	FixesPending                bool                `json:"fixes_pending,omitempty"`
-	PendingAdjudication         *int64              `json:"pending_adjudication,omitempty"`
+	SubmissionEvidence          *SubmissionEvidence   `json:"submission_evidence,omitempty"`
+	ActivityEvidence            *ActivityEvidence     `json:"activity_evidence,omitempty"`
+	CancelledWait               *CancelledWait        `json:"cancelled_wait,omitempty"`
+	Wait                        *OperationWait        `json:"wait,omitempty"`
+	Queue                       *QueuedReviewPosition `json:"queue,omitempty"`
+	SourceRetry                 *SourceRetry          `json:"source_retry,omitempty"`
+	Channel                     string                `json:"channel"`
+	Configured                  bool                  `json:"configured"`
+	Revision                    int64                 `json:"revision"`
+	Epoch                       int64                 `json:"epoch"`
+	Closed                      bool                  `json:"closed"`
+	Minimum                     int64                 `json:"minimum"`
+	Maximum                     int64                 `json:"maximum"`
+	MaximumUnbounded            bool                  `json:"maximum_unbounded,omitempty"`
+	Taper                       int64                 `json:"taper"`
+	Used                        int64                 `json:"used"`
+	Dry                         int64                 `json:"dry"`
+	Tapered                     bool                  `json:"tapered"`
+	Pending                     int64                 `json:"pending"`
+	PendingExecution            *int64                `json:"pending_execution,omitempty"`
+	RetainedAdjudicationPending bool                  `json:"retained_adjudication_pending,omitempty"`
+	FixesPending                bool                  `json:"fixes_pending,omitempty"`
+	PendingAdjudication         *int64                `json:"pending_adjudication,omitempty"`
 }
 
 // CancelledWait identifies the unused baseline of an explicitly cancelled queued request.
@@ -83,7 +84,7 @@ func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, 
 }
 
 type roundProgressView struct {
-	stages, queuePriority, activity, sourceRetry, sourceRetryTiming, fixes, incomingRoutes bool
+	stages, queuePriority, queueDetails, activity, sourceRetry, sourceRetryTiming, fixes, incomingRoutes bool
 }
 
 func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, view roundProgressView) (RoundProgress, error) {
@@ -93,6 +94,11 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 	numbers = append([]int64(nil), numbers...)
 	out := RoundProgress{ProjectID: scope.ProjectID, Items: make([]RoundProgressItem, 0, len(numbers))}
 	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
+		var queueConfig Configuration
+		var queueRevision int64
+		if view.queueDetails {
+			queueConfig, queueRevision, _ = readConfiguration(ctx, tx, scope.ProjectID)
+		}
 		var incoming map[int64]*int64
 		if view.incomingRoutes {
 			var err error
@@ -133,6 +139,9 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 							return err
 						}
 					}
+				}
+				if view.queueDetails && queueRevision > 0 && execution > 0 && !control.Closed {
+					progress.Queue = e.readQueuedReviewPosition(ctx, tx, scope.ProjectID, number, channel, queueConfig, queueRevision)
 				}
 				if view.activity {
 					progress.SubmissionEvidence, err = readSubmissionEvidence(ctx, tx, scope.ProjectID, number, channel)

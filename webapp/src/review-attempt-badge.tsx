@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { ReviewAttemptStatus } from './review-attempt-status';
 
 export function ReviewAttemptBadge({ channel, status }: { channel: string; status: ReviewAttemptStatus }) {
@@ -8,10 +8,20 @@ export function ReviewAttemptBadge({ channel, status }: { channel: string; statu
     const description = [cause, status.description].filter(Boolean).join(' ') || undefined;
     return <span className={className} title={description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${description ?? ''}` : undefined}>{status.text}</span>;
   }
-  return <ActivityBadge key={JSON.stringify([channel, status.text, status.activity])} channel={channel} status={status} />;
+  const activity = status.activity;
+  const evidence = activity.evidence;
+  const timing = evidence?.kind === 'cli_process_spawned'
+    ? { label: 'CLI started', value: evidence.process_started_at }
+    : evidence?.kind === 'hosted_processing_observed'
+      ? { label: 'CodeRabbit activity seen', value: evidence.observed_at }
+      : activity.startedAt ? { label: 'Preparation began', value: activity.startedAt } : undefined;
+  return <ReviewLaneDetailsBadge key={JSON.stringify([channel, status.text, activity])} channel={channel} text={status.text}>
+    <span>{activity.explanation}</span>
+    {timing && <span>{timing.label}: <time dateTime={timing.value}>{new Date(timing.value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time></span>}
+  </ReviewLaneDetailsBadge>;
 }
 
-function ActivityBadge({ channel, status }: { channel: string; status: ReviewAttemptStatus }) {
+export function ReviewLaneDetailsBadge({ channel, text, children }: { channel: string; text: string; children: ReactNode }) {
   const [expanded, setExpanded] = useState(false);
   const [placement, setPlacement] = useState({ left: 8, top: 8, width: 360 });
   const wrapper = useRef<HTMLSpanElement>(null);
@@ -41,18 +51,10 @@ function ActivityBadge({ channel, status }: { channel: string; status: ReviewAtt
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, [expanded]);
-  const activity = status.activity!;
-  const evidence = activity.evidence;
-  const timing = evidence?.kind === 'cli_process_spawned'
-    ? { label: 'CLI started', value: evidence.process_started_at }
-    : evidence?.kind === 'hosted_processing_observed'
-      ? { label: 'CodeRabbit activity seen', value: evidence.observed_at }
-      : activity.startedAt ? { label: 'Preparation began', value: activity.startedAt } : undefined;
   return <span ref={wrapper} className="review-activity" onPointerEnter={event => { cancelClose(); if (event.pointerType === 'mouse') setExpanded(true); }} onPointerLeave={event => { if (event.pointerType === 'mouse' && !event.currentTarget.contains(document.activeElement)) closeTimer.current = setTimeout(() => setExpanded(false), 150); }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setExpanded(false); } }}>
-    <span ref={trigger} role="button" tabIndex={0} className="badge review-channel-position review-activity-label" aria-label={`${channel} execution: ${status.text}`} aria-describedby={detailsID} aria-controls={detailsID} aria-expanded={expanded} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onClick={event => { event.stopPropagation(); setExpanded(true); }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(value => !value); } }}>{status.text}</span>
+    <span ref={trigger} role="button" tabIndex={0} className="badge review-channel-position review-activity-label" aria-label={`${channel} execution: ${text}`} aria-describedby={detailsID} aria-controls={detailsID} aria-expanded={expanded} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setExpanded(true); }} onClick={event => { event.stopPropagation(); setExpanded(true); }} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(value => !value); } }}>{text}</span>
     <span ref={details} id={detailsID} className="review-activity-details" style={placement} hidden={!expanded} role="tooltip">
-      <span>{activity.explanation}</span>
-      {timing && <span>{timing.label}: <time dateTime={timing.value}>{new Date(timing.value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time></span>}
+      {children}
     </span>
   </span>;
 }

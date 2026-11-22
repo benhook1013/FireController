@@ -1,5 +1,5 @@
 import { sessionExpiry } from './browser-session';
-import { validOperationWait, type ReviewOperationWait } from './review-operation-wait';
+import { validOperationWait, type ReviewOperationWait, type ReviewQueueDetails } from './review-operation-wait';
 
 interface ReviewActivityIdentity { attempt_id: string; head_sha: string; observed_at: string }
 export interface ReviewCancelledWait { baseline_attempt_id: string; head_sha: string; cancelled_at: string }
@@ -16,6 +16,7 @@ export interface ReviewRoundProgress {
   used: number; dry: number; tapered: boolean; pending: number;
   pending_execution?: number; pending_adjudication?: number; fixes_pending?: boolean; retained_adjudication_pending?: boolean;
   wait?: ReviewOperationWait;
+  queue?: ReviewQueueDetails;
   cancelled_wait?: ReviewCancelledWait;
   activity_evidence?: ReviewActivityEvidence;
   submission_evidence?: ReviewSubmissionEvidence;
@@ -31,6 +32,14 @@ export function progressPulls(value: unknown): value is number[] {
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function fields(value: Record<string, unknown>, keys: string[]) { return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key)); }
 function natural(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
+function validQueueDetails(value: unknown): value is ReviewQueueDetails {
+  if (!object(value) || Object.keys(value).some(key => !['ahead', 'holding', 'more'].includes(key))) return false;
+  const ahead = value.ahead, holding = value.holding;
+  if (ahead !== undefined && (!progressPulls(ahead) || ahead.length > 5)) return false;
+  if (holding !== undefined && (!progressPulls(holding) || holding.length > 16)) return false;
+  if (value.more !== undefined && (value.more !== true || ahead?.length !== 5)) return false;
+  return !!(ahead || holding) && !(ahead && holding && ahead.some(pull => holding.includes(pull)));
+}
 function validSourceRetry(value: unknown): value is ReviewSourceRetry {
   return object(value) && fields(value, ['attempt_id', 'observed_at', 'retry_not_before', 'sequence']) &&
     typeof value.attempt_id === 'string' && /^review_attempt_[a-f0-9]{32}$/u.test(value.attempt_id) &&
@@ -51,10 +60,11 @@ export function validActivityEvidence(value: unknown, channel: string): value is
   return channel === 'hosted' && fields(value, [...identity, 'comment_updated_at', 'source_comment_id', 'provider_run_id', 'trigger_id']) && value.kind === 'hosted_processing_observed' && !!sessionExpiry(value.comment_updated_at) && Date.parse(String(value.comment_updated_at)) <= Date.parse(String(value.observed_at)) && Number.isSafeInteger(value.source_comment_id) && Number(value.source_comment_id) > 0 && typeof value.provider_run_id === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(value.provider_run_id) && typeof value.trigger_id === 'string' && /^[1-9][0-9]{0,18}$/u.test(value.trigger_id);
 }
 export function validRoundProgress(value: unknown, channel: string): value is ReviewRoundProgress {
-  if (!object(value) || !fields(value, ['channel','configured','revision','epoch','closed','minimum','maximum','taper','used','dry','tapered','pending', ...(Object.hasOwn(value, 'maximum_unbounded') ? ['maximum_unbounded'] : []), ...(Object.hasOwn(value, 'pending_execution') || Object.hasOwn(value, 'pending_adjudication') ? ['pending_execution', 'pending_adjudication'] : []), ...(Object.hasOwn(value, 'fixes_pending') ? ['fixes_pending'] : []), ...(Object.hasOwn(value, 'retained_adjudication_pending') ? ['retained_adjudication_pending'] : []), ...(Object.hasOwn(value, 'wait') ? ['wait'] : []), ...(Object.hasOwn(value, 'cancelled_wait') ? ['cancelled_wait'] : []), ...(Object.hasOwn(value, 'activity_evidence') ? ['activity_evidence'] : []), ...(Object.hasOwn(value, 'submission_evidence') ? ['submission_evidence'] : []), ...(Object.hasOwn(value, 'source_retry') ? ['source_retry'] : [])]) || (Object.hasOwn(value, 'maximum_unbounded') && typeof value.maximum_unbounded !== 'boolean') || value.channel !== channel || typeof value.configured !== 'boolean' || typeof value.closed !== 'boolean' || typeof value.tapered !== 'boolean') return false;
+  if (!object(value) || !fields(value, ['channel','configured','revision','epoch','closed','minimum','maximum','taper','used','dry','tapered','pending', ...(Object.hasOwn(value, 'maximum_unbounded') ? ['maximum_unbounded'] : []), ...(Object.hasOwn(value, 'pending_execution') || Object.hasOwn(value, 'pending_adjudication') ? ['pending_execution', 'pending_adjudication'] : []), ...(Object.hasOwn(value, 'fixes_pending') ? ['fixes_pending'] : []), ...(Object.hasOwn(value, 'retained_adjudication_pending') ? ['retained_adjudication_pending'] : []), ...(Object.hasOwn(value, 'wait') ? ['wait'] : []), ...(Object.hasOwn(value, 'queue') ? ['queue'] : []), ...(Object.hasOwn(value, 'cancelled_wait') ? ['cancelled_wait'] : []), ...(Object.hasOwn(value, 'activity_evidence') ? ['activity_evidence'] : []), ...(Object.hasOwn(value, 'submission_evidence') ? ['submission_evidence'] : []), ...(Object.hasOwn(value, 'source_retry') ? ['source_retry'] : [])]) || (Object.hasOwn(value, 'maximum_unbounded') && typeof value.maximum_unbounded !== 'boolean') || value.channel !== channel || typeof value.configured !== 'boolean' || typeof value.closed !== 'boolean' || typeof value.tapered !== 'boolean') return false;
   if (Object.hasOwn(value, 'retained_adjudication_pending') && (typeof value.retained_adjudication_pending !== 'boolean' || channel !== 'cli' || !Object.hasOwn(value, 'pending_execution'))) return false;
   if (Object.hasOwn(value, 'fixes_pending') && (typeof value.fixes_pending !== 'boolean' || !Object.hasOwn(value, 'pending_execution'))) return false;
   if (Object.hasOwn(value, 'wait') && !validOperationWait(value.wait, channel)) return false;
+  if (Object.hasOwn(value, 'queue') && (!validQueueDetails(value.queue) || !natural(value.pending_execution) || value.pending_execution < 1)) return false;
   if (Object.hasOwn(value, 'cancelled_wait') && (!Object.hasOwn(value, 'pending_execution') || !validCancelledWait(value.cancelled_wait))) return false;
   if (Object.hasOwn(value, 'submission_evidence') && (channel !== 'hosted' || !validSubmissionEvidence(value.submission_evidence))) return false;
   if (Object.hasOwn(value, 'activity_evidence') && !validActivityEvidence(value.activity_evidence, channel)) return false;

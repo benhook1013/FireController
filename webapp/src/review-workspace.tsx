@@ -1,11 +1,11 @@
 import { recentMergedDisplayOrder, recentMergedDisplayDistances } from './review-merged-order';
 import { validSubmissionEvidence } from './review-progress';
 import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status';
-import { ReviewAttemptBadge } from './review-attempt-badge';
+import { ReviewAttemptBadge, ReviewLaneDetailsBadge } from './review-attempt-badge';
 import { useReviewPillCapacity } from './review-pill-capacity';
 import { useReloadWindow, validQueueWindow, type QueueWindow } from './reload-window';
 import { ReviewSchedulingBar, ReviewPullSchedulingControl } from './review-scheduling';
-import { ReviewOperationWaitBadge } from './review-operation-wait';
+import { reviewQueueDescription, ReviewOperationWaitBadge } from './review-operation-wait';
 import { CompactReviewFinding } from './review-finding-display';
 import { ReviewObligations } from './review-obligations';
 import { ReviewRoutedFindings } from './review-routed-findings';
@@ -565,10 +565,13 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const badge = waitingForParent ? { text: 'Waiting for parent', description: parentBaseMovedDescription(parentPullNumber) }
     : resultStatus ? undefined : candidateBadge;
   const label = badge && laneAttemptLabels[badge.text];
+  const queueDetails = !historical && badge?.text === 'Queued' ? reviewQueueDescription(progress?.queue) : undefined;
   const currentStatus = !attemptPill && (waiting || badge) && <span className="review-lane-current-state" aria-label={`${channel} current review state`}>
-    {waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}
+    {waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} queue={progress?.queue} />}
     {badge && <span data-lane-label-tone={label?.tone}>
-      <ReviewAttemptBadge channel={channel} status={{ ...badge, text: label?.text ?? badge.text }} />
+      {queueDetails
+        ? <ReviewLaneDetailsBadge channel={channel} text={label?.text ?? badge.text}><span>{queueDetails}</span></ReviewLaneDetailsBadge>
+        : <ReviewAttemptBadge channel={channel} status={{ ...badge, text: label?.text ?? badge.text }} />}
     </span>}
   </span>;
   const slots = capacity - Number(attemptPill);
@@ -579,7 +582,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     status={<>{updateFailed && <span className="badge review-lane-update-failed" title="Refresh to retry loading review history.">Update failed</span>}{currentStatus}</>}
     metadata={`${completedTotal} ${completedTotal === 1 ? 'run' : 'runs'}`}
     metadataTitle="Past reviews stay in history when the PR changes.">
-    <ReviewProgressView value={progress} />
+    <ReviewProgressView value={progress} queued={badge?.text === 'Queued'} />
     {placeholders > 0 && announcePreviewLoading && <span className="visually-hidden" role="status">Loading retained rounds</span>}
     {visiblePills.length > 0 || attemptPill || placeholders > 0 ? <div className="review-round-pills review-recent-rounds">
       <ReviewRoundPlaceholders count={placeholders} />

@@ -56,6 +56,7 @@ func roundProgressNumbers(r *http.Request) ([]int64, error) {
 func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", operationWaitHeader)
 	w.Header().Add("Vary", reviewFixStatusHeader)
+	w.Header().Add("Vary", reviewQueueDetailsHeader)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -68,8 +69,9 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	stages := query.Get("view") == "stages"
+	queueDetails := stages && r.Header.Get(reviewQueueDetailsHeader) == "v1"
 	progress, err := e.readRoundProgress(r.Context(), scope, numbers, roundProgressView{
-		stages: stages, queuePriority: r.Header.Get(operationWaitHeader) == "5",
+		stages: stages, queuePriority: !queueDetails && r.Header.Get(operationWaitHeader) == "5", queueDetails: queueDetails,
 		activity: query.Get("include_activity_evidence") == "true", sourceRetry: query.Get("include_source_retry") == "true",
 		sourceRetryTiming: query.Get("include_source_retry_timing") == "true",
 		fixes:             stages && (r.Header.Get(reviewFixStatusHeader) == "v1" || r.Header.Get(reviewFixStatusHeader) == "v2"),

@@ -66,9 +66,13 @@ Backups retain scheduling, PR pauses and automatic-intent attribution. Older bun
 
 Focused tests cover default-off behavior, authorization withdrawal, browser/writer/manager boundaries, pause before intent and dispatch, timer identity, cancellation suppression, independent progression and same-head dependency release, ordinary supervisor dispatch, typed CLI/MCP/browser contracts, exact-key recovery and backup/inactive restore. Controlled providers spend no live review allowance. Actual Chromium interaction proof covers desktop and mobile width. Installed release verification is recorded with deployment evidence rather than inferred from component tests.
 
-## Hosted queue-priority display
+## Queue priority and lane details
 
-Version `5` of `X-FC-Operation-Wait` extends version `3` with optional `queue_ahead_pull_number` in staged round progress. The browser shows **Behind #PR** for an earlier accepted Hosted request without a visible or hidden countdown. Older versions omit this hint and retained deadlines are unchanged. Version `4` remains the separate source-retry projection, without quota estimates; version `5` does not include source-retry evidence. The bound client uses [version `6`](source-preparation-retry-design.md#compatibility-and-backup-gates) to combine source-retry evidence and retained CLI allowance estimates without queue-priority hints. This display does not promise dispatch or change review accounting.
+Automatic selection, queued admission and queued lane details use the same effective configured order. Auto applies known PR topology to the saved order. Manual uses the saved positions directly. A queued predecessor must still qualify for priority under the ordinary admission checks.
+
+The browser opts into staged round progress with `X-FC-Review-Queue-Details: v1`. For a verified queued request in either lane, the optional `queue` object identifies up to five accepted predecessor PRs in effective order (`ahead`, with `more` when truncated), and relevant live reservations in the same project (`holding`). Projects sharing CLI capacity do not see one another's PR numbers. The browser puts evidence in the **Queued** disclosure and keeps existing cooldown clocks. These local details are provisional and do not predict dispatch.
+
+Without this opt-in, version `5` of `X-FC-Operation-Wait` retains the optional Hosted `queue_ahead_pull_number` on an existing staged wait. Version `4` retains its source-retry projection. The bound client uses [version `6`](source-preparation-retry-design.md#compatibility-and-backup-gates) to combine source-retry evidence and retained CLI allowance estimates.
 
 ## Bounded scheduler decision history
 

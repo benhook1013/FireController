@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { Api } from './api';
 import { roundProgressState, roundProgressStopReason, validRoundProgress, type ReviewRoundProgress } from './review-progress';
 import { ReviewProgressView } from './review-progress-view';
-import { ReviewOperationWaitBadge, reviewWaitExpandedForKey } from './review-operation-wait';
+import { ReviewOperationWaitBadge, reviewQueueDescription, reviewWaitExpandedForKey } from './review-operation-wait';
 
 const project = { id: 'project_one', name: 'Progress', github_repository_id: 1, repository: 'owner/project' };
 const current: ReviewRoundProgress = { channel: 'hosted', configured: true, revision: 3, epoch: 2, closed: false, minimum: 0, maximum: 5, taper: 1, used: 2, dry: 0, tapered: false, pending: 1 };
@@ -30,11 +30,22 @@ describe('current round progress', () => {
     expect(String(fetch.mock.calls[0][0])).toContain('/reviews/rounds/progress?pull_numbers=31');
     expect(fetch.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
     expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Operation-Wait')).toBe('5');
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Review-Queue-Details')).toBe('v1');
   });
   it('refuses invalid selectors before any network request', async () => {
     const api = await connected(); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     for (const value of [[], [0], [-1], [1.5], [2147483648], [31,31], Array.from({length:101}, (_,i)=>i+1)]) await expect(api.reviewProgress(value)).rejects.toMatchObject({code:'invalid_request'});
     expect(fetch).not.toHaveBeenCalled();
+  });
+  it('distinguishes slot holders, earlier requests and returned results', () => {
+    const queue = { holding: [6], ahead: [8, 2] };
+    const queued = { ...current, pending_execution: 1, pending_adjudication: 0, queue };
+    expect(validRoundProgress(queued, 'hosted')).toBe(true);
+    expect(reviewQueueDescription(queue)).toBe('Holding a slot: #6. Ahead in queue: #8, #2.');
+    expect(renderToStaticMarkup(<ReviewProgressView value={queued} queued />)).toContain('1 review request pending');
+    for (const invalid of [{}, {ahead:[1,1]}, {ahead:[1],holding:[1]}, {ahead:[1],more:true}, {holding:[2],other_project:'private'}]) {
+      expect(validRoundProgress({ ...queued, queue: invalid }, 'hosted')).toBe(false);
+    }
   });
   it('refuses malformed or cross-scoped progress instead of displaying invented limits', async () => {
     const api = await connected();

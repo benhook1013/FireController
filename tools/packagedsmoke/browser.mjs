@@ -935,6 +935,12 @@ try {
     const payload = await response.json();
     const channel = payload.items.find(item => item.pull_number === 33)?.channels.find(item => item.channel === 'hosted');
     if (channel) channel.source_retry = {attempt_id:sourceAttempt.source_attempt_id,observed_at:sourceObserved,retry_not_before:sourceDeadline,sequence:1};
+    const queued = payload.items.find(item => item.pull_number === 32)?.channels.find(item => item.channel === 'hosted');
+    if (queued) {
+      need(route.request().headers()['x-fc-review-queue-details'] === 'v1');
+      Object.assign(queued, {configured:true,revision:1,epoch:1,maximum:3,taper:2,pending:1,pending_execution:1,pending_adjudication:0,
+        queue:{holding:[29],ahead:[30,31]}});
+    }
     await route.fulfill({response,json:payload});
   };
   await page.route(sourceProgressPattern, sourceProgress);
@@ -946,6 +952,18 @@ try {
   await expect(hostedSourceLane).not.toContainText('GitHub rate limit');
   await expect(cliSourceLane.getByText('Check attempt',{exact:true})).toHaveAttribute('title', /GitHub rate limit. The review did not start./u);
   await expect(cliSourceLane).not.toContainText('GitHub rate limit');
+  const queuedLane = page.locator('#review-pr-32').getByRole('region',{name:'Hosted CodeRabbit',exact:true});
+  const queuedBadge = queuedLane.getByRole('button',{name:'hosted execution: Queued',exact:true});
+  const queuedDetails = queuedLane.getByRole('tooltip');
+  await queuedBadge.hover();
+  await expect(queuedDetails).toHaveText('Holding a slot: #29. Ahead in queue: #30, #31.');
+  await expect(queuedLane).toContainText('1 review request pending');
+  if (config.diagnostic_directory) await page.screenshot({path:config.diagnostic_directory+'/queued-review-slots.png',timeout:2000});
+  await queuedBadge.press('Escape');
+  await expect(queuedDetails).toBeHidden();
+  await queuedBadge.press('Enter');
+  await expect(queuedDetails).toBeVisible();
+  await queuedBadge.press('Escape');
   await page.unroute(sourceProgressPattern, sourceProgress);
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Delivery', exact:true}).click();
   const fallbackHero = page.getByRole('region', {name:'Review queue head', exact:true});

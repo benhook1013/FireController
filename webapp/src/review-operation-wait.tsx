@@ -12,6 +12,20 @@ export interface ReviewOperationWait {
   cli_allowance?: CLIAllowance;
 }
 
+export interface ReviewQueueDetails {
+  ahead?: number[];
+  holding?: number[];
+  more?: true;
+}
+
+export function reviewQueueDescription(details?: ReviewQueueDetails): string | undefined {
+  if (!details) return undefined;
+  const list = (pulls: number[]) => pulls.map(pull => `#${pull}`).join(', ');
+  const holding = details.holding?.length ? `Holding a slot: ${list(details.holding)}.` : '';
+  const ahead = details.ahead?.length ? `Ahead in queue: ${list(details.ahead)}${details.more ? ', and more' : ''}.` : '';
+  return [holding, ahead].filter(Boolean).join(' ') || undefined;
+}
+
 export function validOperationWait(value: unknown, channel: string): value is ReviewOperationWait {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
@@ -47,7 +61,7 @@ export function reviewWaitExpandedForKey(key: string, expanded: boolean): boolea
   return undefined;
 }
 
-export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: ReviewOperationWait; channel?: string }) {
+export function ReviewOperationWaitBadge({ wait, channel = 'hosted', queue }: { wait: ReviewOperationWait; channel?: string; queue?: ReviewQueueDetails }) {
   const behind = channel === 'hosted' && wait.queue_ahead_pull_number !== undefined && !wait.paused;
   const [now, setNow] = useState(Date.now);
   const [expanded, setExpanded] = useState(false);
@@ -93,8 +107,10 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
   const allowance=channel === 'cli' ? wait.cli_allowance : undefined;
   const estimate=allowance ? Date.parse(allowance.observed_at)+allowance.full_capacity_in_ms : undefined;
   const tone = !wait.paused && wait.retry_not_before ? 'timed' : undefined;
+  const position = reviewQueueDescription(queue);
+  const explanation = [description, position].filter(Boolean).join(' ') || undefined;
   if (channel !== 'cli' || !wait.retry_not_before) {
-    return <span className="badge review-channel-position" data-lane-label-tone={tone} title={description}>{operationWaitLabel(wait, now, channel)}</span>;
+    return <span className="badge review-channel-position" data-lane-label-tone={tone} title={explanation}>{operationWaitLabel(wait, now, channel)}</span>;
   }
   const retry = Date.parse(wait.retry_not_before);
   const relative = (stamp: number) => {
@@ -107,6 +123,7 @@ export function ReviewOperationWaitBadge({ wait, channel = 'hosted' }: { wait: R
     <span id={detailsID} className="review-quota-panel" style={{ left: placement.left, top: placement.top }} hidden={!expanded} role="tooltip">
       <span ref={panel} className="review-quota-details" style={{ maxHeight: placement.maxHeight }}>
         <span>{description}</span>
+        {position && <span>{position}</span>}
         {estimate !== undefined && <span>Provider full-capacity estimate: <time dateTime={new Date(estimate).toISOString()} title={new Date(estimate).toLocaleString()}>{relative(estimate)}</time>{estimate <= now ? ' (past estimate)' : ''}. <small>{new Date(estimate).toLocaleString()}</small></span>}
         <span>{wait.paused ? 'Retained recheck' : 'Next quota recheck'}: <time dateTime={wait.retry_not_before} title={new Date(retry).toLocaleString()}>{relative(retry)}</time>{retry <= now ? ' (awaiting recheck)' : ''}. <small>{new Date(retry).toLocaleString()}</small></span>
         <span>Review starts depend on quota at the recheck.</span>

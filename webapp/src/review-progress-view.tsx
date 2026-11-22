@@ -15,7 +15,7 @@ export function useReviewProgress(pulls: number[]) {
   const retained = useRetainedRead(JSON.stringify(key), query.data, selected.length > 0);
   return { ...query, data: retained };
 }
-export function ReviewProgressView({ value }: { value?: ReviewRoundProgress }) {
+export function ReviewProgressView({ value, queued = false }: { value?: ReviewRoundProgress; queued?: boolean }) {
   if (!value?.configured) return null;
   const stopReason = roundProgressStopReason(value);
   const finished = !!stopReason;
@@ -25,7 +25,7 @@ export function ReviewProgressView({ value }: { value?: ReviewRoundProgress }) {
     {!finished && remaining && value.minimum > value.used && <span>At least {value.minimum - value.used} more</span>}
     {!finished && remaining && <span title={`${value.dry} reviews in a row with no accepted findings. This can end reviews once the minimum is met.`}>{value.dry >= value.taper ? 'Clean streak target met' : `Clean streak ${value.dry}/${value.taper}`}</span>}
     {value.pending_execution !== undefined && value.pending_adjudication !== undefined ? <>
-      {!value.wait && value.pending_execution > 0 && <span>{value.pending_execution} awaiting review result</span>}
+      {!value.wait && value.pending_execution > 0 && <span>{value.pending_execution} {queued ? `review request${value.pending_execution === 1 ? '' : 's'} pending` : 'awaiting review result'}</span>}
       {value.pending_adjudication > 0 && <span>{value.pending_adjudication} awaiting adjudication</span>}
     </> : !value.wait && value.pending > 0 && <span>{value.pending} review pending</span>}
   </div>;
