@@ -13,7 +13,7 @@ try {
   return response.json();
  };
  const jobs=[]; for(let i=0;i<55;i++) jobs.push(await call('POST','/jobs',{title:'Audit job '+String(i).padStart(2,'0'),brief:'Private brief '+i,worker_id:i%2?config.worker:config.other_worker},201));
- const workers=[]; for(let i=0;i<23;i++) workers.push(await call('POST','/workers',{name:'Audit worker '+String(i).padStart(2,'0')},200));
+ const workers=[]; for(let i=0;i<43;i++) workers.push(await call('POST','/workers',{name:'Audit worker '+String(i).padStart(2,'0')},200));
  const notes=[]; for(let i=0;i<7;i++) notes.push(await call('POST','/notes',{worker_id:config.worker,job_id:jobs[0].id,phase:'audit',kind:'reminder',body:'Audit pending note '+i},201));
  const approved={expected_revision:0,enabled:true,manifest:{slug:'accumulated-browser-public',presentation:{name:'Audit published project'},description:'Approved public narrative'}};
  const preview=await call('POST','/publication/preview',approved); await call('PUT','/publication',{...approved,preview_sha256:preview.preview_sha256});
@@ -36,17 +36,41 @@ try {
  await publicPrivacy();
  if(requests.some(r=>!r.path.startsWith('/api/v1/public/')))throw new Error('anonymous private read');
  checks.push('Anonymous shared route renders publication without private API reads');
+ const deliveryPage = (predicate) => page.waitForResponse(response => {
+  const url = new URL(response.url());
+  return url.pathname === prefix+'/delivery' && response.ok() && predicate(url.searchParams);
+ });
+ const firstDelivery = deliveryPage(query => !query.has('worker_cursor') && !query.has('job_cursor'));
  await page.getByRole('button',{name:'Sign in',exact:true}).click();
  await page.getByLabel('Project credential',{exact:true}).fill(token); await page.getByRole('button',{name:'Connect to project',exact:true}).click();
  await expect(page.getByRole('heading',{name:'Packaged smoke',exact:true})).toBeVisible();
  phase='delivery accumulated'; await expect(page.locator('.delivery-job-list > li')).toHaveCount(50);
+ const first = await (await firstDelivery).json();
  await page.getByRole('button',{name:'Load more work',exact:true}).click(); await expect(page.locator('.delivery-job-list > li')).toHaveCount(55);
- checks.push('Delivery appends 55 jobs and remaining workers');
+ const deliveryReads = () => requests.filter(request => request.path === prefix+'/delivery').length;
+ const priorDeliveryReads = deliveryReads();
+ const lastDelivery = deliveryPage(query => query.has('worker_cursor') && !query.has('job_cursor'));
+ await page.getByRole('button',{name:'Load more work',exact:true}).click();
+ const response = await lastDelivery;
+ const lastBody = await response.body(), last = JSON.parse(lastBody);
+ await expect(page.getByRole('button',{name:'Load more work',exact:true})).toHaveCount(0);
+ await expect(page.locator('.delivery-job-list > li')).toHaveCount(55);
+ if (new URL(response.url()).searchParams.get('collection') !== 'workers' || deliveryReads() !== priorDeliveryReads+1 ||
+     last.workers.items.length !== 5 || last.jobs.items.length !== 0 || last.jobs.has_more || first.jobs.items.length !== 50) {
+  throw new Error('Delivery continuation transferred an unrequested collection');
+ }
+ facts.delivery_last_body_bytes = lastBody.length;
+ facts.delivery_avoided_json_bytes = Buffer.byteLength(JSON.stringify(first.jobs))-Buffer.byteLength(JSON.stringify(last.jobs));
+ checks.push('Delivery keeps all 55 jobs as the final worker page arrives, without retransmitting jobs');
  phase='jobs filter'; await page.getByRole('navigation',{name:'Project navigation'}).getByRole('link',{name:'Jobs',exact:true}).click();
  const workerFilter=page.getByLabel('Job worker',{exact:true});
- // This fixture has25 workers. Its random target identity may be on page two.
+ // The selected worker may be outside the initial worker page.
  await expect.poll(()=>workerFilter.locator('option').count()).toBeGreaterThan(1);
- if(await workerFilter.locator(`option[value="${config.worker}"]`).count()===0)await page.getByRole('button',{name:'More workers',exact:true}).click();
+ for (const name of ['Audit worker 20', 'Audit worker 40']) {
+  if (await workerFilter.locator(`option[value="${config.worker}"]`).count()) break;
+  await page.getByRole('button',{name:'More workers',exact:true}).click();
+  await expect(workerFilter.locator('option').filter({hasText: name})).toHaveCount(1);
+ }
  await workerFilter.selectOption(config.worker); await page.getByLabel('Job status',{exact:true}).selectOption('');
  await expect(page.locator('.job-list > li')).toHaveCount(20); await page.getByRole('button',{name:'Next jobs',exact:true}).click(); await expect(page.locator('.job-list > li')).toHaveCount(7);
  const detail=page.locator('.job-list .job-title').first();await detail.click();await expect(page.getByRole('heading',{name:'Job brief',exact:true})).toBeVisible();
@@ -68,7 +92,7 @@ try {
  await page.getByRole('link',{name:'Read current note',exact:true}).click();await expect(page.getByText('New current note body',{exact:true})).toBeVisible();
  checks.push('Contextual pending notes 5+2; immutable selected revision remains fixed after edit and refresh');
  phase='offpage worker selection';await page.goto(config.origin+home+'/workers');
- await expect(page.locator('.worker-list > li')).toHaveCount(20);await page.getByRole('button',{name:'Next workers',exact:true}).click();await expect(page.locator('.worker-list > li')).toHaveCount(5);
+ await expect(page.locator('.worker-list > li')).toHaveCount(20);await page.getByRole('button',{name:'Next workers',exact:true}).click();await expect(page.locator('.worker-list > li')).toHaveCount(20);
  const pick=page.locator('.worker-list button').last(); const selectedName=await pick.locator('strong').innerText();await pick.click();await expect(page.getByRole('heading',{name:selectedName+' inbox',exact:true})).toBeVisible();
  await page.reload();await expect(page.getByRole('heading',{name:selectedName+' inbox',exact:true})).toBeVisible();
  checks.push('Off-page worker selection and inbox survive cookie-backed reload');

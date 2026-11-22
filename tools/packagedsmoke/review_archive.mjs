@@ -423,6 +423,7 @@ try {
   phase = 'queue-pagination';
   const queueRoute = '**/reviews/queue?*';
   const progressRoute = '**/reviews/rounds/progress?*';
+  let updateQueueHead = false, updateQueueFinding = false;
   const paginateQueue = async route => {
     const url = new URL(route.request().url());
     if (url.searchParams.get('view') !== 'recent') { await route.continue(); return; }
@@ -436,6 +437,11 @@ try {
       parent_pull_number: 301, parent_base_moved: true, ci_state: 'success',
       merge_status: {state:'ready', reason:'github_clean'},
     });
+    if (moved && updateQueueHead) moved.head_sha = 'f'.repeat(40);
+    if (moved && updateQueueFinding) {
+      const retained = moved.recent_runs.find(run => run.source_run_id === 'current-only-run');
+      Object.assign(retained, {current_accepted: 1, current_pending_fixes: 1});
+    }
     data.has_more = !second;
     if (second) delete data.cursor; else data.cursor = 'mobile-page-two';
     await route.fulfill({response,json:data});
@@ -489,6 +495,26 @@ try {
     }
     need(movedChecked);
   }
+  phase = 'retained-pill-highlights';
+  const changedRow = queue.locator(`#review-pr-${number}`);
+  if (!await changedRow.count()) await queue.getByRole('button', {name:'Next review queue',exact:true}).click();
+  await changedRow.scrollIntoViewIfNeeded();
+  const retainedPill = changedRow.getByRole('link', {name:/^Open cli run current-only-run:/u});
+  await expect(retainedPill).toBeVisible();
+  await expect(retainedPill).not.toHaveClass(/semantic-change/u);
+  const retainedNode = await retainedPill.elementHandle();
+  const refresh = current.page.getByRole('button', {name:'Refresh visible data',exact:true});
+  updateQueueHead = true;
+  await refresh.click();
+  await expect(changedRow).toHaveClass(/semantic-change/u);
+  await expect(retainedPill).not.toHaveClass(/semantic-change/u);
+  need(await retainedPill.evaluate((node, old) => node === old, retainedNode));
+  updateQueueFinding = true;
+  await refresh.click();
+  await expect(retainedPill).toContainText('Fixes pending');
+  await expect(retainedPill).toHaveClass(/semantic-change/u);
+  need(await retainedPill.evaluate((node, old) => node === old, retainedNode));
+  await retainedNode.dispose();
   await current.page.unroute(queueRoute,paginateQueue);
   await current.page.unroute(progressRoute,showProgress);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2);

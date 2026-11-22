@@ -106,9 +106,10 @@ function useSemanticHighlight(fingerprint: string, history?: Map<string, string>
   return state.version ? `semantic-change semantic-change-${state.version % 2}` : '';
 }
 export function runDisplayFingerprint(run: ReviewRunSummary, head: string): string {
+  // A known older head has the same pill presentation as a known current head.
   return JSON.stringify([run.channel, run.outcome, run.found, run.accepted, run.routed, run.fixed,
-    run.complete, run.finalized, run.attributable, run.retained_undecided, run.current_accepted, run.current_pending_fixes, run.finished_at || run.started_at, run.display_start_at,
-    !head || !run.head_sha ? 'unknown' : head === run.head_sha ? 'same' : 'different']);
+    run.complete, run.finalized, run.attributable, run.retained_undecided, run.current_accepted, run.current_pending_fixes, run.finished_at, reviewStart(run),
+    Boolean(head && run.head_sha)]);
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
   return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability, pull.merge_status, ...(pull.parent_base_moved ? ['parent_base_moved'] : []),

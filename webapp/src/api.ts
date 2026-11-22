@@ -192,6 +192,8 @@ function validSummary(value: unknown): value is JobSummary {
 }
 function validDelivery(value: unknown, project: string, options: DeliveryOptions): value is DeliverySnapshot {
   if (!record(value) || !keys(value, ['workers', 'jobs']) || !coordinationPage(value.workers, options.worker_limit ?? 20) || !coordinationPage(value.jobs, options.job_limit ?? 50)) return false;
+  const skipped = options.collection === 'workers' ? value.jobs : options.collection === 'jobs' ? value.workers : undefined;
+  if (skipped && (skipped.items.length || skipped.has_more || skipped.cursor !== undefined)) return false;
   const seenWorkers = new Set<string>();
   for (const worker of value.workers.items) {
     if (!record(worker) || !keys(worker, ['id', 'project_id', 'name', 'primary_job_id', 'paused', 'pause_reason', 'pause_reason_truncated']) || !id(worker.id) || seenWorkers.has(worker.id) || worker.project_id !== project || !displayName(worker.name) || worker.primary_job_id !== '' && !id(worker.primary_job_id) || typeof worker.paused !== 'boolean' || !coordinationText(worker.pause_reason, 240, false, true) || typeof worker.pause_reason_truncated !== 'boolean' || !worker.paused && (worker.pause_reason !== '' || worker.pause_reason_truncated)) return false;
@@ -993,6 +995,15 @@ export class Api {
   }
   async delivery(options: DeliveryOptions = {}, signal?: AbortSignal): Promise<DeliverySnapshot> {
     const query = new URLSearchParams();
+    if (options.collection !== undefined) {
+      const { collection, job_cursor, job_limit, worker_cursor, worker_limit } = options;
+      if (collection !== 'workers' && collection !== 'jobs' ||
+          collection === 'workers' && (job_cursor !== undefined || job_limit !== undefined) ||
+          collection === 'jobs' && (worker_cursor !== undefined || worker_limit !== undefined)) {
+        throw new ApiError('invalid_request', 'Choose workers or jobs and supply only their Delivery page options.');
+      }
+      query.set('collection', collection);
+    }
     for (const name of ['worker_limit', 'job_limit'] as const) {
       const value = options[name];
       if (value !== undefined) {

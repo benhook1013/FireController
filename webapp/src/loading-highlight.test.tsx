@@ -122,7 +122,10 @@ describe('semantic review changes', () => {
     expect(pullDisplayFingerprint(sameDisplay)).toBe(pullDisplayFingerprint(pull));
     expect(runDisplayFingerprint({ ...run, id: 'new_id', source_run_id: 'same_original_binding' }, 'another_mismatching_head')).toBe(runDisplayFingerprint(run, pull.head_sha));
     for (const changed of [{ ...run, accepted: 0 }, { ...run, outcome: 'failed' as const }, { ...run, fixed: 1 }]) expect(runDisplayFingerprint(changed, pull.head_sha)).not.toBe(runDisplayFingerprint(run, pull.head_sha));
-    expect(runDisplayFingerprint(run, run.head_sha)).not.toBe(runDisplayFingerprint(run, pull.head_sha));
+    expect(runDisplayFingerprint(run, run.head_sha)).toBe(runDisplayFingerprint(run, pull.head_sha));
+    expect(runDisplayFingerprint(run, '')).not.toBe(runDisplayFingerprint(run, pull.head_sha));
+    expect(runDisplayFingerprint({ ...run, current_pending_fixes: 1 }, pull.head_sha)).not.toBe(runDisplayFingerprint(run, pull.head_sha));
+    expect(runDisplayFingerprint({ ...run, started_at: '2026-10-18T00:00:30Z' }, pull.head_sha)).not.toBe(runDisplayFingerprint(run, pull.head_sha));
   });
   it('includes displayed finding decisions, route state and fix proof, excluding route transport identity', () => {
     const route = { id: 'route_one', revision: 1, target_pull_number: 9, state: 'active' as const, disposition: 'accepted' as const, reason: 'Accepted', actor: 'Builder', decided_at: '', fix_sha: '', proof_note: '', fixed_at: '' };

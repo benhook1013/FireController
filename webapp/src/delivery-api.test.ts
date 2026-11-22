@@ -84,6 +84,19 @@ describe('bounded stored Delivery API', () => {
     expect(result.jobs.items[0].progress).toEqual(progress);
     expect(fetch).toHaveBeenCalledTimes(1); api.close();
   });
+  it('selects a single collection and rejects extra rows from the skipped collection', async () => {
+    const api = await client(), full = snapshot();
+    const workers = { ...full, jobs: { items: [], has_more: false } };
+    const fetch = vi.fn().mockResolvedValueOnce(json(workers)).mockResolvedValueOnce(json(full));
+    vi.stubGlobal('fetch', fetch);
+    const options = { collection: 'workers' as const, worker_limit: 20, worker_cursor: 'worker_page' };
+    await expect(api.delivery(options)).resolves.toEqual(workers);
+    expect(new URL(String(fetch.mock.calls[0][0])).search).toBe('?collection=workers&worker_limit=20&worker_cursor=worker_page');
+    await expect(api.delivery(options)).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(api.delivery({ ...options, job_limit: 1 })).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    api.close();
+  });
   it('rejects foreign, expanded, oversized, duplicated or inconsistent summaries', async () => {
     const api = await client();
     const original = snapshot(); const worker = original.workers.items[0], job = original.jobs.items[0];

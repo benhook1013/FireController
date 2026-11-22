@@ -21,7 +21,7 @@ export interface DeliveryChecklist {revision: number; job_revision: number; tota
 export interface JobPublicSummary {job_id: string; job_revision: number; revision: number; title: string; body: string}
 export interface DeliveryJob extends JobIdentity {summary?: JobPublicSummary;worker_name: string; brief_preview: string; brief_preview_truncated: boolean; updated_at: string; progress: DeliveryProgress; checklist: DeliveryChecklist|null}
 export interface DeliverySnapshot {workers: Page<DeliveryWorker>; jobs: Page<DeliveryJob>}
-export interface DeliveryOptions {worker_limit?: number; job_limit?: number; worker_cursor?: string; job_cursor?: string}
+export interface DeliveryOptions {collection?: 'workers' | 'jobs'; worker_limit?: number; job_limit?: number; worker_cursor?: string; job_cursor?: string}
 export interface Checkpoint {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; done: string; next: string; blocker: string; evidence: string[]; created_at: string}
 export interface LatestCheckpoint {job_id: string; job_revision: number; checkpoint: Checkpoint|null}
 export interface JobUpdate {id: string; project_id: string; job_id: string; job_revision: number; sequence: number; actor_id: string; worker_id: string; body: string; evidence: string[]; created_at: string}

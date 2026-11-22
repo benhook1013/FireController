@@ -146,14 +146,16 @@ func TestPackagedAccumulatedBrowserSmoke(t *testing.T) {
 		State  string   `json:"state"`
 		Checks []string `json:"checks"`
 		Facts  struct {
-			Requests      int `json:"requests"`
-			FixtureWrites int `json:"fixture_writes"`
-			PageErrors    int `json:"page_errors"`
-			External      int `json:"external_requests"`
-			DomainWrites  int `json:"browser_domain_writes"`
+			Requests          int `json:"requests"`
+			FixtureWrites     int `json:"fixture_writes"`
+			PageErrors        int `json:"page_errors"`
+			External          int `json:"external_requests"`
+			DomainWrites      int `json:"browser_domain_writes"`
+			DeliveryBodyBytes int `json:"delivery_last_body_bytes"`
+			DeliverySaved     int `json:"delivery_avoided_json_bytes"`
 		} `json:"facts"`
 	}
-	if json.Unmarshal(lines[len(lines)-1], &result) != nil || result.State != "PASS" || len(result.Checks) != 8 || result.Facts.Requests == 0 || result.Facts.FixtureWrites != 88 || result.Facts.PageErrors != 0 || result.Facts.External != 0 || result.Facts.DomainWrites != 0 {
+	if json.Unmarshal(lines[len(lines)-1], &result) != nil || result.State != "PASS" || len(result.Checks) != 8 || result.Facts.Requests == 0 || result.Facts.FixtureWrites != 108 || result.Facts.PageErrors != 0 || result.Facts.External != 0 || result.Facts.DomainWrites != 0 || result.Facts.DeliveryBodyBytes <= 0 || result.Facts.DeliverySaved <= 0 {
 		t.Fatal("accumulated browser proof receipt invalid")
 	}
 

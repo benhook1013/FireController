@@ -121,6 +121,36 @@ func TestDeliveryQueryCursorFilterBinding(t *testing.T) {
 	}
 }
 
+func TestDeliveryReadsOnlySelectedCollection(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("delivery-selection", "synthetic/delivery-selection")
+	token := a.grant(project, "delivery-selection-client", "read", "write")
+	worker := a.createWorker(project, "Selected worker")
+	base := "/api/v1/projects/" + project
+	created := a.call(http.MethodPost, base+"/jobs", token, "selected-job", map[string]any{"title": "Selected job", "worker_id": worker})
+	progressOK(t, created, http.StatusCreated)
+	read := func(query string) deliveryValue {
+		t.Helper()
+		response := a.call(http.MethodGet, base+"/delivery"+query, token, "", nil)
+		progressOK(t, response, http.StatusOK)
+		var value deliveryValue
+		decodeResponse(t, response, &value)
+		return value
+	}
+	full := read("")
+	workers := read("?collection=workers&worker_limit=1")
+	jobs := read("?collection=jobs&job_limit=1")
+	if !reflect.DeepEqual(workers.Workers, full.Workers) || !reflect.DeepEqual(workers.Jobs, deliveryPageValue[deliveryJobValue]{Items: []deliveryJobValue{}}) {
+		t.Fatalf("unexpected workers-only delivery: %+v", workers)
+	}
+	if !reflect.DeepEqual(jobs.Jobs, full.Jobs) || !reflect.DeepEqual(jobs.Workers, deliveryPageValue[deliveryWorkerValue]{Items: []deliveryWorkerValue{}}) {
+		t.Fatalf("unexpected jobs-only delivery: %+v", jobs)
+	}
+	for _, query := range []string{"collection=", "collection=all", "collection=jobs&collection=workers", "collection=jobs&worker_limit=1", "collection=workers&job_cursor=foreign"} {
+		progressOK(t, a.call(http.MethodGet, base+"/delivery?"+query, token, "", nil), http.StatusBadRequest)
+	}
+}
+
 func TestDeliveryPreservesAPIAcceptedControlCharactersInNamesAndTitles(t *testing.T) {
 	for _, chars := range []struct{ name, value string }{{"C0", "\x00\x01\x1f"}, {"DEL", "\x7f"}} {
 		for _, operation := range []string{"job-create", "job-edit", "worker-create"} {

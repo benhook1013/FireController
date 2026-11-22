@@ -45,7 +45,11 @@ export function groupDeliveryLanes(value: DeliverySnapshot, workerOrder: readonl
   });
 }
 export function deliveryQuery(session: Session, key: readonly string[], workerCursor = '', jobCursor = '') {
-  return { queryKey: [...key, 'delivery', workerCursor, jobCursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.delivery({ worker_limit: 20, job_limit: 50, ...(workerCursor ? { worker_cursor: workerCursor } : {}), ...(jobCursor ? { job_cursor: jobCursor } : {}) }, signalFor(session, signal)), staleTime: Infinity };
+  const workers = { worker_limit: 20, ...(workerCursor ? { worker_cursor: workerCursor } : {}) };
+  const jobs = { job_limit: 50, ...(jobCursor ? { job_cursor: jobCursor } : {}) };
+  const options = workerCursor && !jobCursor ? { ...workers, collection: 'workers' as const }
+    : jobCursor && !workerCursor ? { ...jobs, collection: 'jobs' as const } : { ...workers, ...jobs };
+  return { queryKey: [...key, 'delivery', workerCursor, jobCursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.delivery(options, signalFor(session, signal)), staleTime: Infinity };
 }
 export function deliveryReviewQuery(session: Session, key: readonly string[]) {
   return reviewQueueQuery(session, key, 'recent');

@@ -94,9 +94,16 @@ func delivery(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "invalid_query", "worker_limit", "job_limit", "worker_cursor", "job_cursor")
+		query, err := core.QueryKeys(r, "invalid_query", "worker_limit", "job_limit", "worker_cursor", "job_cursor", "collection")
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		collection := query.Get("collection")
+		if query.Has("collection") && collection != "workers" && collection != "jobs" ||
+			collection == "workers" && (query.Has("job_cursor") || query.Has("job_limit")) ||
+			collection == "jobs" && (query.Has("worker_cursor") || query.Has("worker_limit")) {
+			core.WriteError(w, core.Fail("invalid_query", "Select workers or jobs and supply page options for the selected collection.", http.StatusBadRequest))
 			return
 		}
 		workerLimit, err := deliveryLimit(r, "worker_limit", defaultDeliveryWorkerLimit)
@@ -130,10 +137,15 @@ func delivery(store *core.Store) http.HandlerFunc {
 			Jobs:    deliveryPage[deliveryJob]{Items: make([]deliveryJob, 0, jobLimit)},
 		}
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
-			if err := readDeliveryWorkers(ctx, tx, scope.ProjectID, workerAfter, workerLimit, scope, store, &result.Workers); err != nil {
-				return err
+			if collection != "jobs" {
+				if err := readDeliveryWorkers(ctx, tx, scope.ProjectID, workerAfter, workerLimit, scope, store, &result.Workers); err != nil {
+					return err
+				}
 			}
-			return readDeliveryJobs(ctx, tx, scope.ProjectID, afterStatus, afterID, jobLimit, scope, store, &result.Jobs)
+			if collection != "workers" {
+				return readDeliveryJobs(ctx, tx, scope.ProjectID, afterStatus, afterID, jobLimit, scope, store, &result.Jobs)
+			}
+			return nil
 		})
 		if err != nil {
 			core.WriteError(w, err)
