@@ -84,6 +84,7 @@ describe('current progress decoder and presentation', () => {
     expect(html).toContain('Behind #4');
     expect(html).toContain('No maximum');
     expect(html).toContain('1 in execution · 0 awaiting adjudication');
+    expect(html).toContain('aria-live="polite"');
     expect(renderToStaticMarkup(<ReviewProgressView channel="cli" progress={unconfigured('cli')} />)).toBe('');
   });
 });

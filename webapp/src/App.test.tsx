@@ -78,21 +78,28 @@ describe('review progress App query wiring', () => {
 });
 
 
-describe('current review progress after a refresh error', () => {
+describe('independent current review progress status', () => {
   it.each(['queue', 'pull'])('hides retained progress in the %s view until a successful read', view => {
     const pull = { number: 7, title: 'Retained PR', state: 'open', ci_state: 'unknown', mergeability: 'unknown', complete: true, run_count: 0, attempt_count: 0, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40), base_ref: 'main', latest_attempts: [] };
     const snapshot = { snapshot_id: 'snapshot_one', source: 'fixture', observed_at: '2026-11-10T12:00:00Z', recorded_at: '2026-11-10T12:00:00Z', revision: 1 };
     const progress = { items: [{ pull_number: 7, channels: [{ channel: 'hosted', configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 3, taper: 1, used: 0, dry: 0, tapered: false, pending: 0, wait: { paused: false, queue_ahead_pull_number: 4 } }] }] };
     let error: Error | null = null;
+    let loading = false;
     progressHookContext.workspace = { session: { project: { repository: 'example/repository' } }, key: ['projects', 'project_one'], home: '/projects/project_one', fail: vi.fn() };
     progressHookContext.query = ({ queryKey }) => {
-      if (queryKey.includes('round-progress')) return { data: progress, error, isPending: false };
+      if (queryKey.includes('round-progress')) return { data: loading ? undefined : progress, error, isLoading: loading };
       if (queryKey.includes('queue')) return { data: { ...snapshot, configured: true, items: [pull], has_more: false } };
       if (queryKey.includes('runs') || queryKey.includes('attempts')) return { data: undefined, isPending: false };
       return { data: { ...snapshot, pull } };
     };
     const render = () => renderToStaticMarkup(<MemoryRouter initialEntries={['/projects/project_one/reviews/pulls/7']}><Routes><Route path="/projects/:projectId/reviews/pulls/:number" element={view === 'queue' ? <ReviewQueueView /> : <ReviewPullView />} /></Routes></MemoryRouter>);
     try {
+      loading = true;
+      const pendingHTML = render();
+      expect(pendingHTML).toContain('Retained PR');
+      expect(pendingHTML).toContain('role="status">Loading current round progress…');
+      expect(pendingHTML).not.toContain('Hosted current round progress');
+      loading = false;
       for (const failed of [false, true, false]) {
         error = failed ? new Error('refresh failed') : null;
         const html = render();
@@ -101,6 +108,7 @@ describe('current review progress after a refresh error', () => {
         expect(html.includes('Up to 3 more reviews')).toBe(!failed);
         expect(html.includes('Behind #4')).toBe(!failed);
         expect(html.includes('Progress refresh failed')).toBe(failed);
+        expect(html).not.toContain('Loading current round progress…');
       }
     } finally {
       progressHookContext.query = null;

@@ -21,7 +21,7 @@ export function ReviewProgressView({ channel, progress }: { channel: 'hosted' | 
   const pending = progress.pending_execution !== undefined
     ? <span>{progress.pending_execution} in execution · {progress.pending_adjudication} awaiting adjudication</span>
     : <span>{progress.pending} pending</span>;
-  return <div className="review-current-progress" aria-label={`${channel === 'hosted' ? 'Hosted' : 'CLI'} current round progress`}>
+  return <div className="review-current-progress" aria-live="polite" aria-label={`${channel === 'hosted' ? 'Hosted' : 'CLI'} current round progress`}>
     {progress.configured && <>
       <span className="review-progress-state">{stopReason ? `${roundProgressState(progress)} · ${stopReason}` : roundProgressAllowance(progress)}</span>
       <span>{progress.used} used</span>

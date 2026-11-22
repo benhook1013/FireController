@@ -55,7 +55,9 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 	var count, visibleParagraph, preCount strings.Builder
 	for _, line := range lines {
 		preCount.WriteString(line.preCountText)
-		preCount.WriteByte(' ')
+		if preCount.Len() != 0 && !line.preCommentContinues {
+			preCount.WriteByte(' ')
+		}
 		if !line.preCountContinues {
 			if hasSubmittedPlainActionableClaim(submittedRenderedCountText(preCount.String())) {
 				return false
@@ -138,6 +140,11 @@ func submittedRenderedCountText(text string) string {
 // This refusal-only projection never yields structure or finding offsets.
 var submittedCountMarkdownLink = regexp.MustCompile(`\[([^\]\r\n]+)\]\((?:[^()\r\n]|\([^()\r\n]*\))*\)`)
 
+// Reference-link labels are a second, refusal-only rendering. Conservatively
+// also examine their label alone when a reference is unresolved; this cannot
+// supply trusted structure or proof of any inventory.
+var submittedCountMarkdownReference = regexp.MustCompile(`\[([^\]\r\n]+)\]\[[^\]\r\n]*\]`)
+
 func hasSubmittedPlainActionableClaim(text string) bool {
 	return submittedActionableClaim.MatchString(strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
@@ -154,9 +161,11 @@ func hasSubmittedActionableClaim(text string) bool {
 		submittedRenderedCountText(text),
 	} {
 		visible = submittedCountMarkdownLink.ReplaceAllString(visible, "${1}")
-		if hasSubmittedPlainActionableClaim(visible) || hasSubmittedPlainActionableClaim(
-			strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(visible)) {
-			return true
+		for _, projected := range []string{visible, submittedCountMarkdownReference.ReplaceAllString(visible, "${1}")} {
+			if hasSubmittedPlainActionableClaim(projected) || hasSubmittedPlainActionableClaim(
+				strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(projected)) {
+				return true
+			}
 		}
 	}
 	return false

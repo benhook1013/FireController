@@ -585,24 +585,48 @@ func standingConfigurationHead(value, kind string) (string, bool) {
 // exemption. The comment-excluded projection is refusal-only and must never
 // inherit that exemption or contribute structural inventory.
 func standingInventoryContradictsZero(lines []findingLine, historical *standingHistoricalParser) bool {
-	var visible strings.Builder
+	var projectedLine, paragraph, preformatted strings.Builder
+	claimsCount := func(text string) bool {
+		return strings.Contains(text, "Actionable comments posted:") || standingFindingClaim.MatchString(text)
+	}
 	for index, line := range lines {
-		if !line.hidden && (strings.Contains(line.text, "cr-comment") || strings.Contains(line.text, "Actionable comments posted:") || standingFindingClaim.MatchString(line.text) && !historical.allows(index)) {
+		preformatted.WriteString(line.preCountText)
+		if preformatted.Len() != 0 && !line.preCommentContinues {
+			preformatted.WriteByte(' ')
+		}
+		if !line.preCountContinues {
+			if claimsCount(submittedRenderedCountText(preformatted.String())) {
+				return true
+			}
+			preformatted.Reset()
+		}
+		if !line.hidden && strings.Contains(line.text, "cr-comment") {
 			return true
 		}
-		if line.hidden {
-			visible.WriteString(line.countText)
+		// Only the exact standalone historical line is exempt. Neither the
+		// preceding nor following text may borrow that exemption across it.
+		if (!line.hidden && line.text == "" && !line.countContinues) || historical.allows(index) {
+			if claimsCount(paragraph.String()) || claimsCount(projectedLine.String()) {
+				return true
+			}
+			paragraph.Reset()
+			projectedLine.Reset()
+			continue
 		}
+		projectedLine.WriteString(line.countText)
 		if line.countContinues {
 			continue
 		}
-		text := visible.String()
-		if strings.Contains(text, "Actionable comments posted:") || standingFindingClaim.MatchString(text) {
+		rendered := projectedLine.String()
+		if claimsCount(rendered) {
 			return true
 		}
-		visible.Reset()
+		paragraph.WriteString(rendered)
+		paragraph.WriteByte(' ')
+		projectedLine.Reset()
 	}
-	return false
+	return claimsCount(paragraph.String()) || claimsCount(projectedLine.String()) ||
+		claimsCount(submittedRenderedCountText(preformatted.String()))
 }
 
 func parseStandingZero(body string) (HostedStandingZero, bool) {

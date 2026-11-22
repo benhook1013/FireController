@@ -55,6 +55,7 @@ type findingLine struct {
 	countText               string // Visible comment-excluded text for contradictory count checks only.
 	preCountText            string // Visible HTML preformatted text, for refusal only.
 	preCountContinues       bool
+	preCommentContinues     bool // A comment hides this physical boundary in the preformatted projection.
 	countContinues          bool // A comment hides this physical line boundary.
 	hidden                  bool
 }
@@ -93,6 +94,7 @@ func findingLines(body string) ([]findingLine, bool) {
 		// Capture only rendered text for the additional-only count check.
 		if quote <= 1 && fence == 0 && !comment && (wasPre || indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed)) {
 			l.preCountText = findingCommentVisible(trimmed, &preComment)
+			l.preCommentContinues = preComment
 		}
 		if quote > 1 {
 			l.hidden = true
