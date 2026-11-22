@@ -4,7 +4,7 @@
 
 This slice includes the scheduling engine, retained-state guards and HTTP API. Bound Go client, CLI and MCP controls and their packaged administration smoke are delivered in the dependent client slice. The current-review-progress browser consumer, its scoped live-event additions, generated assets and browser smoke workload are delivered in the dependent browser slice. Browser behavior and historical validation described below apply to that combined stack, not this intermediate scheduling tree.
 
-Projects can independently opt in to automatic new Hosted or CLI requests. Both default to off. Explicit CLI requests continue to work without enabling automatic selection; a proven quota refusal retains any accepted request through [durable CLI waiting](retained-review-quota-controls.md), without replacing that operation. Automatic GitHub observation and automatic retry of an already authorized timer-backed request are independent of this setting; see [observation](github-observation.md) and [timer-backed waiting](retained-review-quota-controls.md).
+Projects can independently opt in to automatic new Hosted or CLI requests. Both default to off. Explicit CLI requests continue to work without enabling automatic selection; a proven quota refusal retains any accepted request through [durable CLI waiting](retained-review-quota-controls.md), without replacing that operation. Automatic GitHub observation and timer-backed retries of explicit requests are independent of this setting. Retries of automatically selected requests still require their channel to be continuously enabled. See [observation](github-observation.md) and [timer-backed waiting](retained-review-quota-controls.md).
 
 ## Automatic Hosted requests
 
@@ -45,6 +45,8 @@ Version `5` of `X-FC-Operation-Wait` extends version `3` with optional `queue_ah
 The existing queue and PR detail views show current round allowance, closure or taper, separate execution/adjudication counts and retained waits. Queue pages use one bounded local progress read for only their visible PRs; detail views read only the selected PR. Existing scoped project events invalidate the current read. The countdown updates text locally and creates no API requests. Historical run snapshots stay immutable and separate from explicitly current round progress. Automatic-setting and PR-pause browser editors remain outside this slice.
 
 ## CLI and MCP
+
+These scheduling commands and tools require the dependent client slice. The backend slice exposes the scheduling HTTP API.
 
 Read the current scheduling revision before changing settings. Keep the exact request and key after an uncertain mutation outcome; replaying the same key cannot enable or pause twice.
 

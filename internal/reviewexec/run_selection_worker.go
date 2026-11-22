@@ -501,8 +501,11 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 			// Request capacity is a scheduling constraint, not a terminal hold.
 			// Skip saturated projects before source work so they cannot occupy
 			// both selection workers or repeatedly reacquire provider facts.
+			// A linked selection with a non-native key cannot prove custody.
+			// Leave it intact and allow unrelated selections to proceed.
 			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,`+selectionClaimRevision+` FROM review_selections s
  WHERE s.state='queued'
+ AND (s.operation_id IS NULL OR (typeof(s.project_id)='text' AND typeof(s.id)='text'))
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
  ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity, preferredCLIRepository).Scan(&nativeProject, &nativeID, &expected)

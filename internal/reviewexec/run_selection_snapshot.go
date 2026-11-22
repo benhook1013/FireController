@@ -164,7 +164,9 @@ func validateSelectionQuarantine(ctx context.Context, q EvidenceQuery) error {
 		return err
 	}
 	var objects int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE tbl_name='review_selection_quarantine' AND sql IS NOT NULL`).Scan(&objects); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema
+	 WHERE (tbl_name='review_selection_quarantine' OR name='review_selection_quarantine' COLLATE NOCASE)
+	 AND sql IS NOT NULL`).Scan(&objects); err != nil {
 		return err
 	}
 	if version == "1" && objects == 0 {

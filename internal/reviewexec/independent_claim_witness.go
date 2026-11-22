@@ -8,10 +8,10 @@ import (
 
 // independentClaimWitness is one short-lived, internal observation. It is not
 // a client input, persisted source cache, or permission to reserve a slot.
-// The supervisor constructs it only for an exact typed per-pull refusal,
-// and the serialized claim rechecks those identities before any exemption.
+// The supervisor constructs it only for exact typed per-pull refusals,
+// and the serialized claim rechecks each identity before any exemption.
 type independentClaimWitness struct {
-	predecessor    Operation
+	predecessors   []Operation
 	successor      Operation
 	configRevision int64
 	repositoryID   int64
@@ -22,8 +22,10 @@ type independentClaimWitness struct {
 
 const independentClaimFreshness = 15 * time.Second
 
-func observeIndependentClaim(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, currentRevision int64, predecessor, successor Operation) (independentClaimWitness, error) {
-	if !independentClaimPair(c, currentRevision, predecessor, successor) {
+func observeIndependentClaim(ctx context.Context, reader TargetReader, repositoryID int64, c Configuration, currentRevision int64, predecessors []Operation, successor Operation) (independentClaimWitness, error) {
+	if len(predecessors) == 0 || slices.ContainsFunc(predecessors, func(predecessor Operation) bool {
+		return !independentClaimPair(c, currentRevision, predecessor, successor)
+	}) {
 		return independentClaimWitness{}, nil
 	}
 	plan, err := ResolveSource(ctx, reader, repositoryID, c, Request{PullNumber: successor.PullNumber, HeadSHA: successor.HeadSHA, Channel: successor.Channel})
@@ -39,7 +41,7 @@ func observeIndependentClaim(ctx context.Context, reader TargetReader, repositor
 	if err != nil || at.IsZero() {
 		return independentClaimWitness{}, nil
 	}
-	return independentClaimWitness{predecessor: predecessor, successor: successor, configRevision: currentRevision,
+	return independentClaimWitness{predecessors: slices.Clone(predecessors), successor: successor, configRevision: currentRevision,
 		repositoryID: repositoryID, defaultRef: plan.Repository.DefaultBranch, baseSHA: plan.Pull.BaseSHA, observed: at}, nil
 }
 
@@ -62,7 +64,8 @@ func (w independentClaimWitness) matches(now time.Time, repoID int64, c Configur
 	return !w.observed.IsZero() && !now.Before(w.observed) && now.Sub(w.observed) <= independentClaimFreshness &&
 		repoID > 0 && repoID == w.repositoryID && w.defaultRef != "" && sha.MatchString(w.baseSHA) &&
 		w.configRevision == rev && independentClaimPair(c, rev, predecessor, successor) &&
-		sameIndependentClaimOperation(predecessor, w.predecessor) && sameIndependentClaimOperation(successor, w.successor)
+		sameIndependentClaimOperation(successor, w.successor) &&
+		slices.ContainsFunc(w.predecessors, func(observed Operation) bool { return sameIndependentClaimOperation(predecessor, observed) })
 }
 
 func sameIndependentClaimOperation(a, b Operation) bool {
@@ -81,36 +84,67 @@ type IndependentQueueSource interface {
 const (
 	independentProbeInterval = 5 * time.Second
 	independentProbeTimeout  = 10 * time.Second
+	independentProbeRetry    = 30 * time.Second
 )
+
+type independentProbeKey struct {
+	project, operation string
+	revision           int64
+}
+
+func independentProbeIdentity(o Operation) independentProbeKey {
+	return independentProbeKey{o.ProjectID, o.ID, o.Revision}
+}
+
+func (e *Engine) independentProbeDeferred(o Operation) bool {
+	e.independentProbeMu.Lock()
+	defer e.independentProbeMu.Unlock()
+	return e.independentProbeNext[independentProbeIdentity(o)].After(time.Now())
+}
 
 func (e *Engine) probeIndependentClaim(ctx context.Context, drivers map[string]Driver, p *queuePriorityPreflight, successor Operation) *independentClaimWitness {
 	driver, ok := drivers[p.configuration.CapabilityID].(IndependentQueueSource)
-	if !ok {
+	if !ok || len(p.predecessors) == 0 {
 		return nil
 	}
 	reader := driver.IndependentQueueTargetReader()
 	if reader == nil {
 		return nil
 	}
-	// One optional source probe process-wide. Provider I/O is outside all
-	// transactions; the interval also bounds repeated unavailable reads.
+	// Keep the global source-read cadence. Defer a rejected target separately
+	// so it cannot take every probe slot from subsequent targets. Expiry and
+	// the global cadence bound the number of remembered targets.
+	key := independentProbeIdentity(successor)
 	now := time.Now()
 	e.independentProbeMu.Lock()
-	if e.independentProbeActive || !e.independentProbeLast.IsZero() && now.Sub(e.independentProbeLast) < independentProbeInterval {
+	if e.independentProbeActive || now.Sub(e.independentProbeLast) < independentProbeInterval || e.independentProbeNext[key].After(now) {
 		e.independentProbeMu.Unlock()
 		return nil
 	}
 	e.independentProbeActive, e.independentProbeLast = true, now
+	for candidate, next := range e.independentProbeNext {
+		if !next.After(now) {
+			delete(e.independentProbeNext, candidate)
+		}
+	}
 	e.independentProbeMu.Unlock()
-	defer func() {
-		e.independentProbeMu.Lock()
-		e.independentProbeActive = false
-		e.independentProbeMu.Unlock()
-	}()
+
 	probeCtx, cancel := context.WithTimeout(ctx, independentProbeTimeout)
 	defer cancel()
-	w, err := observeIndependentClaim(probeCtx, reader, p.repositoryID, p.configuration, p.revision, p.predecessor, successor)
-	if err != nil || probeCtx.Err() != nil || !w.matches(e.sampleExecutionTime(), p.repositoryID, p.configuration, p.revision, p.predecessor, successor) {
+	w, err := observeIndependentClaim(probeCtx, reader, p.repositoryID, p.configuration, p.revision, p.predecessors, successor)
+	valid := err == nil && probeCtx.Err() == nil &&
+		w.matches(e.sampleExecutionTime(), p.repositoryID, p.configuration, p.revision, p.predecessors[0], successor)
+
+	e.independentProbeMu.Lock()
+	e.independentProbeActive = false
+	if !valid && ctx.Err() == nil {
+		if e.independentProbeNext == nil {
+			e.independentProbeNext = make(map[independentProbeKey]time.Time)
+		}
+		e.independentProbeNext[key] = time.Now().Add(independentProbeRetry)
+	}
+	e.independentProbeMu.Unlock()
+	if !valid {
 		return nil
 	}
 	return &w

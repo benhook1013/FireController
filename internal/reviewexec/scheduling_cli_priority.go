@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"slices"
 	"strings"
-	"time"
 )
 
 const preferredCLIRepository = "benhook1013/firemud"
@@ -74,16 +73,20 @@ candidates:
 		if !ok || priorCapability.Fingerprint != earlier.CapabilityFingerprint || priorCapability.Provider != capability.Provider || priorCapability.Account != capability.Account {
 			continue
 		}
-		var waiting bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operation_waits WHERE operation_id=? AND (paused=1 OR (retry_not_before<>'' AND julianday(retry_not_before)>julianday(?))))`, earlier.ID, e.sampleExecutionTime().UTC().Format(time.RFC3339Nano)).Scan(&waiting); err != nil {
+		// An absent wait row is not proof that the candidate is fresh. A
+		// detached cooldown must still bind the original retry comparison.
+		if err := rejectMissingRetryWait(ctx, tx, earlier); err != nil {
+			if isWaitUnavailable(err) {
+				continue candidates
+			}
 			return false, err
 		}
-		if waiting {
+		if earlier.Wait != nil && earlier.Wait.RetryNotBefore != "" && e.sampleExecutionTime().Before(mustWaitTime(earlier.Wait.RetryNotBefore)) {
 			continue
 		}
 		valid, err := e.hostedPriorityBinding(ctx, tx, earlier)
 		if err != nil {
-			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
+			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) || isStoredUnavailable(err, storedRoundHistory) {
 				continue candidates
 			}
 			return false, err

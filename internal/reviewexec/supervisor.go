@@ -334,6 +334,9 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 		if err != nil {
 			var preflight *queuePriorityPreflight
 			if errors.As(err, &preflight) && preflight.repositoryID > 0 {
+				if e.independentProbeDeferred(o) {
+					return Operation{}, nil
+				}
 				o.independentPreflight = preflight
 				return o, nil
 			}
@@ -549,7 +552,7 @@ func preparationReason(err error) string {
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
-			case "pull_draft", "source_changed":
+			case "pull_draft", "source_changed", "target_changed":
 				return reason
 			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason

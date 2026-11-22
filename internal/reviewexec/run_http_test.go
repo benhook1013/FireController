@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,9 +43,11 @@ func TestRunHTTPWaitNegotiationVary(t *testing.T) {
 	versions := []string{"", "1", "2", "3", "4", "5", "unsupported"}
 	assertVary := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
-		vary := strings.Join(w.Header().Values("Vary"), ",")
+		vary := strings.Split(strings.Join(w.Header().Values("Vary"), ","), ",")
 		for _, header := range []string{"Prefer", operationWaitHeader} {
-			if !strings.Contains(vary, header) {
+			if !slices.ContainsFunc(vary, func(field string) bool {
+				return strings.EqualFold(strings.TrimSpace(field), header)
+			}) {
 				t.Errorf("missing Vary: %s in %v", header, w.Header())
 			}
 		}

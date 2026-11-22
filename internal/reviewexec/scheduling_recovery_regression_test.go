@@ -239,12 +239,19 @@ func TestAutomaticGeneratorsIsolateRetainedParentCycle(t *testing.T) {
 }
 
 func TestAutomaticCLISourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
-	for _, mode := range []string{"cancelled-operation", "scheduling", "configuration", "policy"} {
+	for _, tc := range []struct{ mode, reason string }{
+		{"cancelled-operation", "selection_superseded"},
+		{"scheduling", "automation_authorization_changed"},
+		{"configuration", "configuration_changed"},
+		{"policy", "policy_changed"},
+	} {
+		mode := tc.mode
 		t.Run(mode, func(t *testing.T) {
 			f, r := cliSourceRetryFixture(t)
 			ageSourceRetry(t, f, r.ID)
 			schedulingCLIGenerate(t, f, true)
 			var once sync.Once
+			var editApplied bool
 			reader := &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
 				once.Do(func() {
 					switch mode {
@@ -261,27 +268,31 @@ func TestAutomaticCLISourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
+						editApplied = cliWaitRead(t, f, receipt.ID).State == "cancelled"
 					case "scheduling":
 						schedulingCLIEnable(t, f, 1, true)
+						editApplied = attemptCount(t, f.store, `SELECT count(*) FROM review_scheduling WHERE project_id=? AND revision=2`, r.ProjectID) == 1
 					case "configuration":
 						f.configure(t, attemptProject, "test-capability", 1, false)
+						editApplied = attemptCount(t, f.store, `SELECT count(*) FROM review_execution_config WHERE project_id=? AND revision=2`, r.ProjectID) == 1
 					case "policy":
 						assessmentPolicy(t, f, 1, []string{"cli"}, []string{})
+						editApplied = attemptCount(t, f.store, `SELECT count(*) FROM review_policy_config WHERE project_id=? AND revision=2`, r.ProjectID) == 1
 					}
 				})
 				return reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, nil
 			}}
 			selectionNext(t, f, reader)
+			if !editApplied {
+				t.Fatal("source callback did not apply the fence edit")
+			}
 			got := selectionRead(t, f, r.ID)
-			if got.State != "held" || got.OperationID != "" {
-				t.Fatal("changed authority or cancelled successor ignored", got)
+			if got.State != "held" || got.Reason != tc.reason || got.OperationID != "" {
+				t.Fatalf("want hold reason %q and no child after the fence changed: %+v", tc.reason, got)
 			}
 			expected := 0
 			if mode == "cancelled-operation" {
 				expected = 1
-				if got.Reason != "selection_superseded" {
-					t.Fatal(got)
-				}
 			}
 			if attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != expected {
 				t.Fatal("retry created a child after its fence changed")

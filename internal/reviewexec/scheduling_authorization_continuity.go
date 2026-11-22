@@ -3,7 +3,6 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
@@ -52,11 +51,8 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 		if !validRevision || recorded != expected || recorded == revision && actor != originalActor || recorded == current.Revision && actor != current.actor {
 			return false, nil
 		}
-		var settings struct {
-			Hosted *bool `json:"automatic_hosted"`
-			CLI    *bool `json:"automatic_cli"`
-		}
-		if !payload.Valid || strictjson.Validate([]byte(payload.String)) != nil || json.Unmarshal([]byte(payload.String), &settings) != nil {
+		var settings schedulingEvent
+		if !payload.Valid || strictjson.Decode([]byte(payload.String), &settings) != nil {
 			return false, nil
 		}
 		enabled := settings.Hosted

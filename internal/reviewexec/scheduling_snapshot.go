@@ -215,9 +215,16 @@ const orphanPullSchedulingSQL = `WITH orphan AS (
 		WHERE e.event_type='review.pull_scheduling_updated' AND s.pull_number IS NULL
 	)`
 
+const latestOrphanPullResumesSQL = `
+	FROM orphan o JOIN events e ON e.sequence=o.sequence
+	WHERE o.newest=1`
+
 func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, orphanPullSchedulingSQL+`
-	SELECT resource_id,CASE WHEN typeof(revision)='integer' THEN revision END,payload,matches FROM orphan WHERE newest=1`)
+	SELECT CASE WHEN typeof(o.project_id)='text' THEN o.project_id END,o.resource_id,
+		CASE WHEN typeof(o.revision)='integer' THEN o.revision END,o.payload,o.matches,
+		CASE WHEN typeof(e.actor_id)='text' AND length(CAST(e.actor_id AS BLOB))<=128 THEN e.actor_id END,
+		CASE WHEN typeof(e.created_at)='text' AND length(CAST(e.created_at AS BLOB))<=64 THEN e.created_at END`+latestOrphanPullResumesSQL)
 	if err != nil {
 		return err
 	}
@@ -234,21 +241,21 @@ func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
 }
 
 func validateOrphanPullSchedulingEvent(row interface{ Scan(...any) error }) error {
-	var resource string
-	var revision any
+	var storedResource, revision any
 	var matches int64
-	var payload sql.NullString
-	if err := row.Scan(&resource, &revision, &payload, &matches); err != nil {
+	var project, payload, actor, createdAt sql.NullString
+	if err := row.Scan(&project, &storedResource, &revision, &payload, &matches, &actor, &createdAt); err != nil {
 		return err
 	}
-	return validateOrphanPullResume(resource, revision, payload, matches)
-}
-
-func validateOrphanPullResume(resource string, revision any, payload sql.NullString, matches int64) error {
+	resource, ok := storedResource.(string)
+	if !ok || len(resource) > 10 {
+		return schedulingUnavailable()
+	}
 	nativeRevision, revisionOK := revision.(int64)
 	pull, err := strconv.ParseInt(resource, 10, 32)
 	if err != nil || pull < 1 || strconv.FormatInt(pull, 10) != resource || !revisionOK || nativeRevision < 1 || matches != 1 ||
-		!validPullSchedulingPayload(payload, pull, false) {
+		!validPullSchedulingPayload(payload, pull, false) || !project.Valid || !identifier.MatchString(project.String) ||
+		!actor.Valid || !identifier.MatchString(actor.String) || !createdAt.Valid || !roundTime(createdAt.String) {
 		return schedulingUnavailable()
 	}
 	return nil
@@ -277,43 +284,14 @@ func RestoreHistoricalPullResumes(ctx context.Context, tx *sql.Tx) error {
 	if version != "1" && version != "2" {
 		return schedulingUnavailable()
 	}
-	const candidates = `
-	FROM orphan o JOIN events e ON e.sequence=o.sequence
-	WHERE o.newest=1`
-	rows, err := tx.QueryContext(ctx, orphanPullSchedulingSQL+`
-	SELECT o.project_id,o.resource_id,CASE WHEN typeof(o.revision)='integer' THEN o.revision END,o.payload,o.matches,
-		CASE WHEN typeof(e.actor_id)='text' THEN e.actor_id END,
-		CASE WHEN typeof(e.created_at)='text' THEN e.created_at END`+candidates)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var project, resource string
-		var revision any
-		var resumePayload, actor, createdAt sql.NullString
-		var matches int64
-		if err := rows.Scan(&project, &resource, &revision, &resumePayload, &matches, &actor, &createdAt); err != nil {
-			return err
-		}
-		if err := validateOrphanPullResume(resource, revision, resumePayload, matches); err != nil {
-			return err
-		}
-		if !identifier.MatchString(project) || !actor.Valid || !identifier.MatchString(actor.String) || !createdAt.Valid || !roundTime(createdAt.String) {
-			return schedulingUnavailable()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if err := rows.Close(); err != nil {
+	if err := validateOrphanPullSchedulingEvents(ctx, tx); err != nil {
 		return err
 	}
 	// Both reads are in the same transaction, and no projection was inserted
 	// until the complete set was validated. Keep the source event sequence.
 	_, err = tx.ExecContext(ctx, orphanPullSchedulingSQL+`
 	INSERT INTO review_pull_scheduling(project_id,pull_number,revision,paused,reason,actor_id,updated_at)
-	SELECT o.project_id,CAST(o.resource_id AS INTEGER),o.revision,0,'',e.actor_id,e.created_at`+candidates)
+	SELECT o.project_id,CAST(o.resource_id AS INTEGER),o.revision,0,'',e.actor_id,e.created_at`+latestOrphanPullResumesSQL)
 	return err
 }
 
