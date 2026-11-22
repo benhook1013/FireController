@@ -9,7 +9,7 @@ python3 tools/deploy/deploy.py            # deploy origin/develop
 python3 tools/deploy/deploy.py --dry-run  # build and check only
 ```
 
-[`deploy.py`](../tools/deploy/deploy.py) refuses a dirty checkout or one that is not at `origin/develop`. It builds the image from the repository [Dockerfile](../Dockerfile), extracts its `fcd`, records the embedded browser asset hashes, imports the image into the node's container runtime and runs [`deploy_host.py`](../tools/deploy/deploy_host.py) on the node. The host side runs the same steps every time:
+[`deploy.py`](../tools/deploy/deploy.py) requires a checkout with clean tracked files at `origin/develop`. It builds the Linux/amd64 image from the repository [Dockerfile](../Dockerfile), assembles the versioned installation payload, and records the embedded browser asset hashes. The receiving host verifies and materializes the package in a private staging directory. The script verifies the imported image digest before invoking the packaged [`deploy_host.py`](../tools/deploy/deploy_host.py). The dry run verifies and materializes the same package locally. The host side runs the same steps every time:
 
 1. Take the deploy lock, then the stable helper-generation lease exclusively, then the existing shared backup phase lock. Rollback follows the same order. Each helper acquires the generation lease in shared mode before it reads the selector and retains it through `execv`. Deployment and rollback wait for those processes to exit. The existing twenty-minute wait covers both leases. A timeout during first conversion can leave the inert lease inode ready for retry.
 2. Snapshot the live database with SQLite's online backup into `/var/lib/firecontroller/predeploy/`. This is the rollback point; the newest two are kept.
@@ -19,7 +19,7 @@ python3 tools/deploy/deploy.py --dry-run  # build and check only
 
 If a rollout fails or remains unverified, retain the reported prior image and snapshot. Inspect the same deployment and retry the staged `deploy_host.py` command with the exact pending image, source, helper and asset binding. A ready candidate resumes by completing helper selection under both locks. If the prior image is ready, independently verify the replacement request ended before retrying with `--confirm-prior-outcome`. A ready prior image on its own leaves the hold in place because an outstanding replacement can still arrive. `select-previous` requires a settled deployment. It takes the exclusive generation lease and then the phase lock, verifies the retained previous helper bytes, and atomically selects them for fresh health and batch processes. Coordinate that action with the matching application image. When migration changed the schema, restore the pre-deployment snapshot before starting the older image. Keep a reader from the creating generation for backups that require its schema or bundle format. Development deploys may proceed while CI and container publication are pending. Investigate and repair CI failures.
 
-The installed wrappers, deployment and rollback all use the same local leases. Before first conversion, finish any manual helper or rollback invocation that still uses the old launch path. Use the installed commands for later generation changes so all participants share the same custody checks.
+The installed wrappers, deployment and rollback all use the same local leases. Before first conversion, finish any manual helper or rollback invocation that still uses the old launch path. Use the installed commands for later generation changes so all participants share the same custody checks. Deployment retains the private staging directory for retry and recovery. Keep it while a rollout or rollback might still reference it.
 
 The focused source fixtures cover subprocess launch and rollback ordering, first-conversion refusal, and persistent recovery after an interrupted rollout. Installed qualification requires the effective systemd units, the packaged `fcd` running with its real arguments, and an isolated coordinated deployment and rollback.
 
@@ -37,7 +37,7 @@ python3 tools/install/generation_package.py verify --package "$RELEASE_PACKAGE" 
   --package-sha256 "$RELEASE_PACKAGE_SHA256" --source "$RELEASE_SOURCE" --image "$RELEASE_IMAGE"
 ```
 
-Keep the package digest with the release receipt and supply that digest on the receiving host. Verification checks the exact inventory, hashes, executable architecture and nested helper archive without extracting or running its contents. A verified payload is ready for platform and service preflight. Installation and activation still require the deployment and backup checks above.
+Keep the package digest with the release receipt and supply that digest on the receiving host. Verification checks the exact inventory, hashes, executable architecture and nested helper archive. Use `materialize` with the same arguments and `--output` pointing to a new directory under an owner-private parent to make the verified executables and deployment helpers available for preflight. The staged rclone copy is available for recovery. The installed backup jobs continue to use their configured transport and credentials. Installation and activation require the deployment and backup checks above.
 
 ## Published artifacts
 

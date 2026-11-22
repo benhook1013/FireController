@@ -532,9 +532,10 @@ g.launch("batch", pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv
             with self.assertRaisesRegex(h.DeployError, "pending"):
                 h.prune_after_deploy(set(), self.releases, [], selector=self.selector)
             run.assert_not_called()
-        with patch.object(h, "verify") as verify, patch.object(h, "verify_assets"), patch.object(h, "log"):
+        with patch.object(h, "verify") as verify, patch.object(h, "verify_assets") as verify_assets, patch.object(h, "log"):
             self.assertTrue(h._reconcile_pending_helpers_locked(self.selector, self.releases, NEW, new_image, args))
             verify.assert_called_once_with(NEW, new_image)
+            verify_assets.assert_called_once_with(None, NEW)
         self.assertIsNone(self._record()["pending"])
         self.assertEqual(self._record()["current"], new)
         self.assertEqual(self._record()["previous"], old)

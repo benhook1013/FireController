@@ -1,7 +1,11 @@
 import hashlib
 import io
+import json
 from pathlib import Path
+import stat
 import struct
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -14,6 +18,7 @@ import generation_package
 SOURCE = 'e' * 40
 IMAGE = 'ghcr.io/example/firecontroller@sha256:' + 'a' * 64
 MEMBERS = {'manifest.json', 'fcd', 'rclone', 'deploy-helpers.tar'}
+HOST_FILES = {'deploy_host.py', 'kubernetes.py', 'browser_asset_binding.py', 'helper_generation.py'}
 
 
 def digest(path):
@@ -38,7 +43,9 @@ class GenerationPackageTests(unittest.TestCase):
         for path in (self.fcd, self.rclone):
             path.write_bytes(elf(62, path.name.encode('ascii')))
             path.chmod(0o555)
-        sources = {module: b'import os\n' for module in deploy_helper_package.module_inventory(SOURCE)}
+        self.sources = {module: f'import os\n# {module}\n'.encode('ascii')
+                        for module in deploy_helper_package.module_inventory(SOURCE)}
+        sources = self.sources
         with patch.object(deploy_helper_package, 'source_at', return_value=sources):
             self.helpers = deploy_helper_package.assemble(self.root, SOURCE)
         extractor = patch.object(generation_package, '_extract_fcd', side_effect=self.extract_fcd)
@@ -140,3 +147,122 @@ class GenerationPackageTests(unittest.TestCase):
             self.assemble(fcd_sha256=other_image_sha256)
         self.extractor.assert_called_once()
         self.assertFalse(self.output.exists())
+
+    def test_materialize_exact_files_and_modes_in_isolated_cli(self):
+        self.assemble()
+        destination = self.root / 'receiver'
+        result = subprocess.run(
+            [sys.executable, '-I', '-B', generation_package.__file__, 'materialize',
+             '--package', str(self.output), '--package-sha256', digest(self.output),
+             '--source', SOURCE, '--image', IMAGE, '--output', str(destination)],
+            check=True, capture_output=True, text=True)
+        receipt = json.loads(result.stdout)
+        self.assert_receipt(receipt, self.output)
+        self.assertIs(receipt['payload_materialized'], True)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o700)
+        self.assertEqual({path.name for path in destination.iterdir()}, HOST_FILES | {'fcd', 'rclone'})
+        for original in (self.fcd, self.rclone):
+            candidate = destination / original.name
+            self.assertEqual(candidate.read_bytes(), original.read_bytes())
+            self.assertEqual(stat.S_IMODE(candidate.stat().st_mode), 0o555)
+            self.assertEqual(receipt[original.name + '_sha256'], digest(original))
+        for name in HOST_FILES:
+            candidate = destination / name
+            self.assertEqual(candidate.read_bytes(), self.sources[name.removesuffix('.py')])
+            self.assertEqual(stat.S_IMODE(candidate.stat().st_mode), 0o444)
+
+    def test_materialize_rejects_unpinned_and_malformed_packages_without_output(self):
+        self.assemble()
+        malformed = self.root / 'malformed.tar'
+        malformed.write_bytes(b'bad tar')
+        destination = self.root / 'receiver'
+        cases = (
+            (self.output, '0' * 64, SOURCE, IMAGE),
+            (self.output, digest(self.output), 'f' * 40, IMAGE),
+            (self.output, digest(self.output), SOURCE, IMAGE[:-1] + 'b'),
+            (malformed, digest(malformed), SOURCE, IMAGE),
+        )
+        for package, expected_hash, expected_source, expected_image in cases:
+            with self.subTest(expected_hash=expected_hash, expected_source=expected_source,
+                              expected_image=expected_image):
+                with self.assertRaises(generation_package.Invalid):
+                    generation_package.materialize(package, expected_hash, expected_source,
+                                                   expected_image, destination)
+                self.assertFalse(destination.exists())
+
+    def test_materialize_rejects_tampered_nested_archive_before_creating_output(self):
+        self.assemble()
+        tampered = self.root / 'tampered.tar'
+        destination = self.root / 'receiver'
+        with tarfile.open(self.output) as original:
+            with original.extractfile('deploy-helpers.tar') as body:
+                helpers = body.read().replace(b'import os', b'import io', 1)
+            with original.extractfile('manifest.json') as body:
+                manifest = json.load(body)
+            manifest['sha256']['deploy-helpers.tar'] = hashlib.sha256(helpers).hexdigest()
+            replacements = {
+                'deploy-helpers.tar': helpers,
+                'manifest.json': json.dumps(manifest).encode('ascii'),
+            }
+            members = {}
+            for member in original:
+                with original.extractfile(member) as body:
+                    members[member] = replacements.get(member.name, body.read())
+        with tarfile.open(tampered, 'w') as altered:
+            for member, raw in members.items():
+                member.size = len(raw)
+                altered.addfile(member, io.BytesIO(raw))
+        with patch.object(generation_package, '_fresh_output') as create:
+            with self.assertRaisesRegex(generation_package.Invalid, 'disagree with manifest'):
+                generation_package.materialize(tampered, digest(tampered), SOURCE, IMAGE, destination)
+            create.assert_not_called()
+        self.assertFalse(destination.exists())
+
+    def test_materialize_preserves_occupied_destination(self):
+        self.assemble()
+        destination = self.root / 'receiver'
+        destination.mkdir(0o700)
+        occupied = destination / 'keep'
+        occupied.write_text('previous generation')
+        inode = destination.stat().st_ino
+        with self.assertRaises(generation_package.Invalid):
+            generation_package.materialize(self.output, digest(self.output), SOURCE, IMAGE, destination)
+        self.assertEqual(occupied.read_text(), 'previous generation')
+        self.assertEqual(destination.stat().st_ino, inode)
+        self.assertEqual({path.name for path in destination.iterdir()}, {'keep'})
+
+    def test_materialize_requires_owner_private_output_parent(self):
+        self.assemble()
+        parent = self.root / 'shared'
+        parent.mkdir(0o755)
+        parent.chmod(0o755)
+        symlink = self.root / 'linked'
+        symlink.symlink_to(self.root, target_is_directory=True)
+        for bad_parent in (parent, symlink):
+            with self.subTest(parent=bad_parent):
+                destination = bad_parent / 'receiver'
+                with self.assertRaises(generation_package.Invalid):
+                    generation_package.materialize(self.output, digest(self.output), SOURCE, IMAGE, destination)
+                self.assertFalse(destination.exists())
+
+    def test_materialize_keeps_one_descriptor_and_removes_output_after_mutation(self):
+        self.assemble()
+        destination = self.root / 'receiver'
+        self.output.chmod(0o644)
+        expected = digest(self.output)
+        original_write = generation_package._write_member
+
+        def mutate_package(*args):
+            original_write(*args)
+            if args[1] == 'fcd':
+                with self.output.open('r+b') as file:
+                    file.seek(-1, 2)
+                    file.write(b'!')
+                self.assertFalse((destination / 'deploy_host.py').exists())
+
+        with patch.object(generation_package, '_open_regular', wraps=generation_package._open_regular) as opened:
+            with patch.object(generation_package, '_write_member', side_effect=mutate_package):
+                with self.assertRaisesRegex(generation_package.Invalid, 'package changed'):
+                    generation_package.materialize(self.output, expected, SOURCE, IMAGE, destination)
+            opened.assert_called_once_with(self.output)
+        self.assertFalse(destination.exists())

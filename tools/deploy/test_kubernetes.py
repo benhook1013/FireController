@@ -97,19 +97,61 @@ class RemoteMCPForwardingTests(unittest.TestCase):
         import browser_asset_binding
         import shlex
         revision = "b" * 40
-        listing = "REF TYPE DIGEST\nlocalhost/firecontroller:" + revision + " type sha256:" + "a" * 64 + "\n"
-        for mode in (None, "enable", "disable"):
-            with self.subTest(mode=mode), contextlib.ExitStack() as stack:
+        digest = "sha256:" + "a" * 64
+        package_sha = "c" * 64
+        stage = deploy.REMOTE_ROOT + "/" + revision + ".Ab12Cd34"
+
+        def run_command(args, **kwargs):
+            if "archive" in args:
+                self.assertIn(revision, args)
+                Path(args[args.index("--output") + 1]).touch()
+            if "--metadata-file" in args:
+                Path(args[args.index("--metadata-file") + 1]).write_text(
+                    json.dumps({"containerimage.digest": digest})
+                )
+
+        cases = [(None, digest, False), ("enable", digest, False),
+                 ("disable", digest, False), (None, "sha256:" + "d" * 64, False),
+                 (None, digest, True)]
+        for mode, imported, dry_run in cases:
+            with self.subTest(mode=mode, imported=imported, dry_run=dry_run), contextlib.ExitStack() as stack:
+                listing = "REF TYPE DIGEST\nlocalhost/firecontroller:" + revision + " type " + imported + "\n"
                 stack.enter_context(mock.patch.object(deploy, "require_clean_develop", return_value=revision))
-                stack.enter_context(mock.patch.object(deploy, "run"))
-                stack.enter_context(mock.patch.object(deploy, "out", side_effect=["fixture-container", listing]))
-                stack.enter_context(mock.patch.object(deploy.subprocess, "Popen")).return_value.wait.return_value = 0
+                wrapper_run = stack.enter_context(mock.patch.object(deploy, "run", side_effect=run_command))
+                outputs = ["fixture-container", "e" * 64, json.dumps({"package_sha256": package_sha})]
+                if not dry_run:
+                    outputs.extend([stage, listing])
+                stack.enter_context(mock.patch.object(deploy, "out", side_effect=outputs))
+                save = stack.enter_context(mock.patch.object(deploy.subprocess, "Popen"))
+                save.return_value.wait.return_value = 0
                 run = stack.enter_context(mock.patch.object(deploy.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)))
                 stack.enter_context(mock.patch.object(Path, "read_bytes", return_value=b"fixture-binary"))
                 stack.enter_context(mock.patch.object(browser_asset_binding, "source_binding", return_value={}))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-                self.assertEqual(deploy.main([] if mode is None else ["--remote-mcp-mode", mode]), 0)
-                self.assert_mode(shlex.split(run.call_args.args[0][-1]), mode)
+                argv = ["--dry-run"] if dry_run else []
+                if mode is not None:
+                    argv.extend(["--remote-mcp-mode", mode])
+                if imported != digest:
+                    with self.assertRaisesRegex(SystemExit, "host image digest differs"):
+                        deploy.main(argv)
+                else:
+                    self.assertEqual(deploy.main(argv), 0)
+                commands = [call.args[0] for call in wrapper_run.call_args_list]
+                if dry_run:
+                    self.assertTrue(all(command[0] != "ssh" for command in commands))
+                    self.assertIn("materialize", commands[-1])
+                    save.assert_not_called()
+                else:
+                    materialize = next(command[-1] for command in commands if " materialize " in command[-1])
+                    self.assertIn("--package-sha256 " + package_sha, materialize)
+                    self.assertIn("--output " + stage + "/payload", materialize)
+                if dry_run or imported != digest:
+                    run.assert_not_called()
+                else:
+                    host = shlex.split(run.call_args.args[0][-1])
+                    self.assertEqual(host[2], stage + "/payload/deploy_host.py")
+                    self.assertIn(stage + "/payload/fcd", host)
+                    self.assert_mode(host, mode)
 
     def test_host_wrapper_forwards_only_explicit_mode(self):
         import deploy_host

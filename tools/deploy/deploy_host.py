@@ -445,7 +445,7 @@ def _reconcile_pending_helpers_locked(selector, releases, observed_source, obser
     if (args.source, args.fcd_sha256, args.image) != (candidate["source"], candidate["sha256"], pending["image"]):
         raise DeployError("retry the exact pending controller image and helper before deploying a different release")
     verify(observed_source, observed_image)
-    verify_assets(args.assets)
+    verify_assets(args.assets, observed_source)
     _select_verified_helper_generation_locked(selector, releases, candidate["source"], candidate["sha256"])
     log("helper_rollout_reconciled", source=observed_source, image=observed_image)
     return True
@@ -480,17 +480,22 @@ def verify(source, image):
     return {"pod": running[0]["metadata"]["name"], "restarts": status.get("restartCount")}
 
 
-def verify_assets(binding_path):
+def verify_assets(binding_path, expected_source):
     if binding_path is None:
         return None
     sys.path.insert(0, str(HERE))
-    from browser_asset_binding import verify_live
-    binding = json.loads(Path(binding_path).read_text())
+    from browser_asset_binding import Refuse, verify_live
 
     def fetch(path):
         with urllib.request.urlopen(URL + path, timeout=10) as r:
             return r.read()
-    return verify_live(binding, binding["source"], fetch("/"), fetch)
+    try:
+        binding = json.loads(Path(binding_path).read_text())
+        if not isinstance(binding, dict) or binding.get("source") != expected_source:
+            raise Refuse("source binding differs")
+        return verify_live(binding, expected_source, fetch("/"), fetch)
+    except ValueError as error:
+        raise DeployError("browser asset verification failed: " + str(error)) from error
 
 
 def prune_after_deploy(keep_images, releases=HELPER_RELEASES, dropins=None, keep_recent=2,
@@ -608,7 +613,7 @@ def main(argv=None):
         log("rolled_out", result=rollout.stdout.strip()[-300:])
         try:
             checked = verify(a.source, a.image)
-            assets = verify_assets(a.assets)
+            assets = verify_assets(a.assets, a.source)
         except (DeployError, OSError, subprocess.SubprocessError) as error:
             log("rollout_unverified_reconciliation_required", state="unknown", helper_state="held",
                 error=str(error)[:300], rollback_image=old_image, rollback_snapshot=str(snap))

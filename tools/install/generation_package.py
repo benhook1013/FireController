@@ -1,17 +1,23 @@
 """Prepare and verify an immutable Linux/amd64 installation payload."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
+
+# The receiver runs in isolated Python from its trusted staging directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import deploy_helper_consumer
 import deploy_helper_package
@@ -23,6 +29,8 @@ DIGEST = re.compile(r"[0-9a-f]{64}")
 IMAGE = re.compile(r"[a-z0-9][a-z0-9.:-]*(/[a-z0-9][a-z0-9._-]*)+@sha256:[0-9a-f]{64}")
 HELPERS = "deploy-helpers.tar"
 MANIFEST = "manifest.json"
+HOST_ENTRY = "deploy_host.py"
+HOST_MODULES = ("kubernetes.py", "browser_asset_binding.py", "helper_generation.py", HOST_ENTRY)
 MODES = {"fcd": 0o555, "rclone": 0o555, HELPERS: 0o444, MANIFEST: 0o444}
 LIMITS = {
     "fcd": platform_prerequisites.MAX_EXECUTABLE,
@@ -78,7 +86,8 @@ def _receipt(source, image, digest):
             "payload_verified": True, "installation_ready": False}
 
 
-def _verify_payload(stream, expected_sha256, source, image):
+@contextmanager
+def _verified_members(stream, expected_sha256, source, image):
     if _sha256(stream) != expected_sha256:
         raise Invalid("generation package digest mismatch")
     stream.seek(0)
@@ -108,8 +117,26 @@ def _verify_payload(stream, expected_sha256, source, image):
                 if _sha256(file) != hashes[name]:
                     raise Invalid(name + " digest mismatch")
         with archive.extractfile(members[HELPERS]) as file:
-            deploy_helper_consumer.verify(file.read(), hashes[HELPERS], source)
-    return _receipt(source, image, expected_sha256)
+            helpers = file.read()
+        deploy_helper_consumer.verify(helpers, hashes[HELPERS], source)
+        yield archive, members, helpers, hashes
+
+
+def _verify_payload(stream, expected_sha256, source, image):
+    with _verified_members(stream, expected_sha256, source, image):
+        return _receipt(source, image, expected_sha256)
+
+
+def _package_identity(stream):
+    info = os.fstat(stream.fileno())
+    if not 0 < info.st_size <= sum(LIMITS.values()) + (1 << 20):
+        raise Invalid("bounded regular generation package required")
+    return platform_prerequisites.identity(info)
+
+
+def _require_package_identity(stream, identity):
+    if _package_identity(stream) != identity:
+        raise Invalid("generation package changed during verification or materialization")
 
 
 def verify(package, expected_sha256, source, image):
@@ -117,15 +144,106 @@ def verify(package, expected_sha256, source, image):
     _validate_pins(source, image, expected_sha256)
     try:
         with _open_regular(package) as stream:
-            info = os.fstat(stream.fileno())
-            if not 0 < info.st_size <= sum(LIMITS.values()) + (1 << 20):
-                raise Invalid("bounded regular generation package required")
+            identity = _package_identity(stream)
             receipt = _verify_payload(stream, expected_sha256, source, image)
-            if platform_prerequisites.identity(info) != platform_prerequisites.identity(os.fstat(stream.fileno())):
-                raise Invalid("generation package changed during verification")
+            _require_package_identity(stream, identity)
             return receipt
     except (OSError, tarfile.TarError, UnicodeError, json.JSONDecodeError) as error:
         raise Invalid("generation package unreadable or invalid") from error
+
+
+def _write_member(directory, name, stream, mode, written):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(name, flags, 0o600, dir_fd=directory)
+    written.append(name)
+    with os.fdopen(descriptor, "wb") as target:
+        shutil.copyfileobj(stream, target, length=1 << 20)
+        target.flush()
+        os.fchmod(target.fileno(), mode)
+        os.fsync(target.fileno())
+
+
+def _directory_identity(info):
+    return info.st_dev, info.st_ino, info.st_uid, info.st_mode
+
+
+@contextmanager
+def _fresh_output(output):
+    output = Path(output).absolute()
+    try:
+        parent = platform_prerequisites.open_directory(str(output.parent))
+    except ValueError as error:
+        raise Invalid("canonical generation output path required") from error
+    try:
+        parent_info = os.fstat(parent)
+        if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o077:
+            raise Invalid("owner-private generation output parent required")
+        os.mkdir(output.name, 0o700, dir_fd=parent)
+        directory = None
+        written = []
+        try:
+            directory = os.open(output.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            yield output, parent, directory, parent_info, written
+        except BaseException:
+            if directory is not None:
+                for name in reversed(written):
+                    os.unlink(name, dir_fd=directory)
+                named = os.stat(output.name, dir_fd=parent, follow_symlinks=False)
+                if _directory_identity(named) != _directory_identity(os.fstat(directory)):
+                    raise
+            os.rmdir(output.name, dir_fd=parent)
+            raise
+        finally:
+            if directory is not None:
+                os.close(directory)
+    finally:
+        os.close(parent)
+
+
+def _publish_host_entry(output, parent, directory, parent_info, entry, written):
+    current = platform_prerequisites.open_directory(str(output.parent))
+    try:
+        named = os.stat(output.name, dir_fd=parent, follow_symlinks=False)
+        if (_directory_identity(os.fstat(current)) != _directory_identity(parent_info)
+                or _directory_identity(named) != _directory_identity(os.fstat(directory))):
+            raise Invalid("generation output directory changed during materialization")
+    finally:
+        os.close(current)
+    # The entry point becomes visible only once the entire verified payload is in place.
+    os.link(entry, HOST_ENTRY, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+    written.append(HOST_ENTRY)
+    os.unlink(entry, dir_fd=directory)
+    written.remove(entry)
+    os.fsync(directory)
+    os.fsync(parent)
+
+
+def materialize(package, expected_sha256, source, image, output):
+    """Materialize an exact verified package without executing its contents."""
+    _validate_pins(source, image, expected_sha256)
+    entry = "." + HOST_ENTRY
+    try:
+        with _open_regular(package) as stream:
+            identity = _package_identity(stream)
+            with _verified_members(stream, expected_sha256, source, image) as (archive, members, helpers, hashes):
+                _require_package_identity(stream, identity)
+                with tarfile.open(fileobj=io.BytesIO(helpers), mode="r:") as helper_archive:
+                    host_members = [helper_archive.getmember(name) for name in HOST_MODULES]
+                    with _fresh_output(output) as (path, parent, directory, parent_info, written):
+                        os.fchmod(directory, 0o700)
+                        for name in ("fcd", "rclone"):
+                            with archive.extractfile(members[name]) as body:
+                                _write_member(directory, name, body, MODES[name], written)
+                        for member in host_members:
+                            with helper_archive.extractfile(member) as body:
+                                name = entry if member.name == HOST_ENTRY else member.name
+                                _write_member(directory, name, body, 0o444, written)
+                        _require_package_identity(stream, identity)
+                        _publish_host_entry(path, parent, directory, parent_info, entry, written)
+    except (OSError, tarfile.TarError, UnicodeError, json.JSONDecodeError, KeyError) as error:
+        raise Invalid("cannot materialize generation package at the requested path") from error
+    return {**_receipt(source, image, expected_sha256), "payload_materialized": True,
+            "fcd_sha256": hashes["fcd"], "rclone_sha256": hashes["rclone"]}
 
 
 def _docker(*args):
@@ -219,20 +337,25 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     build = commands.add_parser("assemble")
     check = commands.add_parser("verify")
-    for command in (build, check):
+    unpack = commands.add_parser("materialize")
+    for command in (build, check, unpack):
         command.add_argument("--source", required=True)
         command.add_argument("--image", required=True)
     for flag in ("repository", "fcd-sha256", "rclone", "rclone-sha256", "output"):
         build.add_argument("--" + flag, required=True)
-    check.add_argument("--package", required=True)
-    check.add_argument("--package-sha256", required=True)
+    for command in (check, unpack):
+        command.add_argument("--package", required=True)
+        command.add_argument("--package-sha256", required=True)
+    unpack.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "assemble":
             result = assemble(args.repository, args.source, args.image, args.fcd_sha256,
                               args.rclone, args.rclone_sha256, args.output)
-        else:
+        elif args.command == "verify":
             result = verify(args.package, args.package_sha256, args.source, args.image)
+        else:
+            result = materialize(args.package, args.package_sha256, args.source, args.image, args.output)
     except Invalid as error:
         parser.exit(1, "generation package: " + str(error) + "\n")
     print(json.dumps(result, sort_keys=True))

@@ -4,17 +4,13 @@
     python3 tools/deploy/deploy.py            # deploy origin/develop
     python3 tools/deploy/deploy.py --dry-run  # build and check only
 
-Locally: require a clean checkout at origin/develop, build the image from the
-repository Dockerfile, extract its fcd and the browser asset binding. Then ship
-the image and host scripts over SSH and run deploy_host.py, which snapshots the
-database, rehearses migrations, reconciles the shared helper-generation
-selector, drains and swaps the image, and verifies the live service. No
-per-release operation files.
+Build and verify the exact image and installation payload from origin/develop.
+The host verifies the package before starting the guarded rollout.
 """
 import argparse
+import hashlib
 import json
 import os
-import hashlib
 from pathlib import Path
 import re
 import shlex
@@ -26,7 +22,15 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 HOST = "root@77.42.29.156"
 REMOTE_ROOT = "/root/firecontroller-deploy"
-SHIPPED = ["deploy_host.py", "kubernetes.py", "browser_asset_binding.py", "helper_generation.py"]
+INSTALL = REPO / "tools" / "install"
+CONTEXT = ("Dockerfile", ".dockerignore", "go.mod", "go.sum", "LICENSE", "cmd", "internal")
+RECEIVER = (
+    "generation_package.py",
+    "deploy_helper_consumer.py",
+    "deploy_helper_package.py",
+    "platform_prerequisites.py",
+    "lifecycle_package.py",
+)
 
 
 def run(args, **kw):
@@ -59,7 +63,7 @@ def parse_digest(listing, name):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default=HOST)
-    p.add_argument("--dry-run", action="store_true", help="build and extract only; touch nothing remote")
+    p.add_argument("--dry-run", action="store_true", help="build and verify the image and package locally")
     p.add_argument("--drain-seconds", type=int, default=600)
     p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with every rollout")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"], help="explicitly set database retention mode on the live Controller; omit to preserve current mode")
@@ -69,58 +73,90 @@ def main(argv=None):
     source = require_clean_develop()
     tag = "localhost/firecontroller:" + source
     print("building", tag, flush=True)
-    # Base images are public; an empty client config avoids host credential helpers.
-    with tempfile.TemporaryDirectory(prefix="fc-docker-config-") as config:
-        run(["docker", "build", "-q", "-t", tag, "--label", "org.opencontainers.image.revision=" + source,
-             "--label", "org.opencontainers.image.source=https://github.com/benhook1013/FireController", str(REPO)],
-            stdout=subprocess.DEVNULL, env={**os.environ, "DOCKER_CONFIG": config})
-
     sys.path.insert(0, str(HERE))
     from browser_asset_binding import source_binding
     with tempfile.TemporaryDirectory(prefix="fc-deploy-") as tmp:
         tmp = Path(tmp)
-        cid = out(["docker", "create", tag])
+        metadata = tmp / "image.json"
+        context = tmp / "context.tar"
+        config = tmp / "docker-config"
+        config.mkdir()
+        git = ["git", "--no-replace-objects", "-C", str(REPO)]
+        run(git + ["archive", "--output", str(context), source, *CONTEXT])
+        with context.open("rb") as stream:
+            run(["docker", "buildx", "build", "-q", "--platform", "linux/amd64", "--load", "--provenance=false",
+                 "--metadata-file", str(metadata), "-t", tag, "--label", "org.opencontainers.image.revision=" + source,
+                 "--label", "org.opencontainers.image.source=https://github.com/benhook1013/FireController", "-"],
+                stdin=stream, stdout=subprocess.DEVNULL, env={**os.environ, "DOCKER_CONFIG": str(config)})
+        digest = json.loads(metadata.read_text()).get("containerimage.digest", "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise SystemExit("build did not report an immutable image digest")
+        image = "localhost/firecontroller@" + digest
+        cid = out(["docker", "create", "--pull=never", "--network=none", image])
         try:
             run(["docker", "cp", cid + ":/fcd", str(tmp / "fcd")])
         finally:
-            run(["docker", "rm", cid], stdout=subprocess.DEVNULL)
+            run(["docker", "rm", "--volumes", cid], stdout=subprocess.DEVNULL)
         fcd_sha = hashlib.sha256((tmp / "fcd").read_bytes()).hexdigest()
         (tmp / "assets.json").write_text(json.dumps(source_binding(REPO, source)))
+        rclone_sha = out([sys.executable, "-I", str(INSTALL / "qualified_rclone.py"), str(tmp / "rclone")])
+        package = tmp / "generation.tar"
+        package_args = ["--source", source, "--image", image]
+        receipt = json.loads(out([sys.executable, "-I", str(INSTALL / "generation_package.py"),
+                                  "assemble", "--repository", str(REPO), *package_args, "--fcd-sha256", fcd_sha,
+                                  "--rclone", str(tmp / "rclone"), "--rclone-sha256", rclone_sha,
+                                  "--output", str(package)]))
+        package_sha = receipt.get("package_sha256", "")
+        if not re.fullmatch(r"[0-9a-f]{64}", package_sha):
+            raise SystemExit("generation package did not report an immutable digest")
+        print("generation package sha256", package_sha, flush=True)
         print("fcd sha256", fcd_sha, flush=True)
         if a.dry_run:
-            print("dry run: built and checked; nothing sent to the host")
+            run([sys.executable, "-I", str(INSTALL / "generation_package.py"), "materialize", *package_args,
+                 "--package", str(package), "--package-sha256", package_sha, "--output", str(tmp / "payload")])
+            print("dry run: built and verified image and generation package")
             return 0
 
-        remote = REMOTE_ROOT + "/" + source
         ssh = ["ssh", "-o", "BatchMode=yes", a.host]
-        run(ssh + ["install -d -m 0700 " + shlex.quote(REMOTE_ROOT) + " " + shlex.quote(remote)])
-        run(["scp", "-q", "-o", "BatchMode=yes"] + [str(HERE / f) for f in SHIPPED] + [str(tmp / "fcd"), str(tmp / "assets.json"), a.host + ":" + remote + "/"])
+        run(ssh + ["install -d -m 0700 " + shlex.quote(REMOTE_ROOT)])
+        remote_prefix = REMOTE_ROOT + "/" + source + "."
+        remote = out(ssh + ["mktemp -d " + shlex.quote(remote_prefix + "XXXXXXXX")])
+        if not re.fullmatch(re.escape(remote_prefix) + r"[A-Za-z0-9]{8}", remote):
+            raise SystemExit("host did not return the expected release staging directory")
+        payload = remote + "/payload"
+        for filename in RECEIVER:
+            with (tmp / filename).open("wb") as stream:
+                run(git + ["show", source + ":tools/install/" + filename], stdout=stream)
+        run(["scp", "-q", "-o", "BatchMode=yes"] + [str(tmp / f) for f in RECEIVER]
+            + [str(package), str(tmp / "assets.json"), a.host + ":" + remote + "/"])
+        materialize = ["python3", "-I", remote + "/generation_package.py", "materialize", *package_args,
+                       "--package", remote + "/generation.tar", "--package-sha256", package_sha, "--output", payload]
+        run(ssh + [shlex.join(materialize)])
 
         print("importing image on host", flush=True)
         save = subprocess.Popen(["docker", "save", tag], stdout=subprocess.PIPE)
-        run(ssh + ["k3s ctr -n k8s.io images import -"], stdin=save.stdout, stdout=subprocess.DEVNULL)
-        save.stdout.close()
-        if save.wait() != 0:
+        try:
+            run(ssh + ["k3s ctr -n k8s.io images import -"], stdin=save.stdout, stdout=subprocess.DEVNULL)
+        finally:
+            save.stdout.close()
+            save_code = save.wait()
+        if save_code != 0:
             raise SystemExit("docker save failed")
-        digest = parse_digest(out(ssh + ["k3s ctr -n k8s.io images ls name==" + shlex.quote(tag)]), tag)
-        image = "localhost/firecontroller@" + digest
+        imported = parse_digest(out(ssh + ["k3s ctr -n k8s.io images ls name==" + shlex.quote(tag)]), tag)
+        if imported != digest:
+            raise SystemExit("host image digest differs from the verified generation package")
         # An imported OCI index gets no CRI repo digest from its tag alone; name
         # the digest reference explicitly so the deployment can select it.
         run(ssh + ["k3s ctr -n k8s.io images tag --force " + shlex.quote(tag) + " " + shlex.quote(image)], stdout=subprocess.DEVNULL)
 
-        host_cmd = ["python3", "-I", remote + "/deploy_host.py", "--source", source, "--image", image,
-                    "--fcd", remote + "/fcd", "--fcd-sha256", fcd_sha, "--assets", remote + "/assets.json",
+        host_cmd = ["python3", "-I", payload + "/deploy_host.py", "--source", source, "--image", image,
+                    "--fcd", payload + "/fcd", "--fcd-sha256", fcd_sha, "--assets", remote + "/assets.json",
                     "--drain-seconds", str(a.drain_seconds), "--memory-limit", a.memory_limit]
         if a.retention_mode is not None:
             host_cmd.extend(["--retention-mode", a.retention_mode])
         if a.remote_mcp_mode is not None:
             host_cmd.extend(["--remote-mcp-mode", a.remote_mcp_mode])
-        code = subprocess.run(ssh + [" ".join(shlex.quote(x) for x in host_cmd)]).returncode
-        if code == 0:
-            # Keep this and the previous deploy bundle; drop older ones.
-            prune = ("cd " + REMOTE_ROOT + " && ls -1dt */ | tail -n +3 | xargs -r rm -rf --")
-            run(ssh + [prune])
-        return code
+        return subprocess.run(ssh + [shlex.join(host_cmd)]).returncode
 
 
 if __name__ == "__main__":
