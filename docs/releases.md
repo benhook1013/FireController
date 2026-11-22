@@ -23,6 +23,22 @@ The installed wrappers, deployment and rollback all use the same local leases. B
 
 The focused source fixtures cover subprocess launch and rollback ordering, first-conversion refusal, and persistent recovery after an interrupted rollout. Installed qualification requires the effective systemd units, the packaged `fcd` running with its real arguments, and an isolated coordinated deployment and rollback.
 
+## Versioned installation payload
+
+Use [the generation packager](../tools/install/generation_package.py) to stage one Linux/amd64 payload containing the image's exact `fcd`, the qualified rclone binary, and the deployment helper archive from the same Git revision. Supply the image digest and independently verified executable hashes. The package records the OCI image reference so the image can be retrieved separately by digest. Service configuration, credentials, database files and backups stay outside the payload.
+
+```sh
+python3 tools/install/generation_package.py assemble --repository . \
+  --source "$RELEASE_SOURCE" --image "$RELEASE_IMAGE" \
+  --fcd "$RELEASE_FCD" --fcd-sha256 "$RELEASE_FCD_SHA256" \
+  --rclone "$RELEASE_RCLONE" --rclone-sha256 "$RELEASE_RCLONE_SHA256" \
+  --output "$RELEASE_PACKAGE"
+python3 tools/install/generation_package.py verify --package "$RELEASE_PACKAGE" \
+  --package-sha256 "$RELEASE_PACKAGE_SHA256" --source "$RELEASE_SOURCE" --image "$RELEASE_IMAGE"
+```
+
+Keep the package digest with the release receipt and supply that digest on the receiving host. Verification checks the exact inventory, hashes, executable architecture and nested helper archive without extracting or running its contents. A verified payload is ready for platform and service preflight. Installation and activation still require the deployment and backup checks above.
+
 ## Published artifacts
 
 The [CI workflow](../.github/workflows/ci.yml) runs on pull requests and pushes to `develop` and `main`. Its container job builds the Linux/amd64 image once and checks that actual image. After the required check families succeed, a separate job publishes that same saved image to `ghcr.io/benhook1013/firecontroller:sha-COMMIT`, where `COMMIT` is the full source revision. It does not rebuild after testing. Publication pulls the pushed tag back and selects its registry-qualified digest; a local Docker alias cannot become a deployment reference. Repository/source labels and the workflow's image-reference artifact bind the source commit to the registry digest. `develop` images are temporary development candidates; publishing from `main` does not create a versioned stable release.
