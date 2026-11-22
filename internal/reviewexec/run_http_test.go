@@ -314,3 +314,45 @@ func TestRunHTTPProjectsSelectedCLIWait(t *testing.T) {
 		t.Fatal("response projection changed retained state")
 	}
 }
+
+func TestRunHTTPProjectsHeldSelectionSubmission(t *testing.T) {
+	f := selectionFixture(t)
+	const key = "held-selection-post"
+	receipt, _ := selectionEnqueue(t, f, key, "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	a := f.start(t, attemptProject, Receipt{ID: selectionRead(t, f, receipt.ID).OperationID})
+	in := CLIAllowanceObservation{Anchor: attemptAnchor(attemptProject, 2), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 0, RollingWindowMS: 86400000, ChangedFiles: 2}
+	if err := f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "allowance_exhausted", ""); err != nil {
+		t.Fatal(err)
+	}
+	original := cliWaitRead(t, f, a.OperationID)
+	if original.Allowance == nil || original.Allowance.FullCapacityInMS == nil || *original.Allowance.FullCapacityInMS != 0 {
+		t.Fatal("fixture did not retain a held allowance", original)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/selections"
+	before := selectionCounts(t, f)
+	for _, version := range []string{"", "1", "2", "3", "4", "5", "unsupported"} {
+		t.Run(version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "POST", path, `{"channel":"cli"}`, key, "wait=1", version)
+			var state RunState
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.ID != a.OperationID || state.Operation.State != "held" {
+				t.Fatal("original held selection unavailable", w.Code, w.Body.String())
+			}
+			if version == "3" || version == "5" {
+				if encoded(state.Operation.Allowance) != encoded(original.Allowance) {
+					t.Fatal("negotiated held allowance changed", w.Body.String())
+				}
+			} else if state.Operation.Allowance != nil || strings.Contains(w.Body.String(), `"allowance":`) {
+				t.Fatal("held allowance escaped version negotiation", w.Body.String())
+			}
+		})
+	}
+	if encoded(original) != encoded(cliWaitRead(t, f, a.OperationID)) || selectionCounts(t, f) != before {
+		t.Fatal("response projection changed retained state or created new work")
+	}
+}

@@ -18,6 +18,14 @@ type RunState struct {
 	Operation *Operation `json:"operation,omitempty"`
 }
 
+func runStateForResponse(state RunState, version string) RunState {
+	if state.Operation != nil {
+		operation := operationForResponse(*state.Operation, version)
+		state.Operation = &operation
+	}
+	return state
+}
+
 func (e *Engine) readRunState(ctx context.Context, scope core.Scope, id string) (RunState, bool, error) {
 	run, err := e.ReadRun(ctx, scope, id)
 	if err != nil {
@@ -160,7 +168,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terminal {
-			core.WriteJSON(w, http.StatusOK, state)
+			core.WriteJSON(w, http.StatusOK, runStateForResponse(state, r.Header.Get(operationWaitHeader)))
 			return
 		}
 	}
@@ -199,9 +207,5 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.queuedRunResponseHeader(w, r, scope, state)
-	if state.Operation != nil {
-		operation := operationForResponse(*state.Operation, r.Header.Get(operationWaitHeader))
-		state.Operation = &operation
-	}
-	core.WriteJSON(w, http.StatusOK, state)
+	core.WriteJSON(w, http.StatusOK, runStateForResponse(state, r.Header.Get(operationWaitHeader)))
 }
