@@ -3,16 +3,16 @@ module github.com/benhook1013/FireController
 go 1.27.0
 
 require (
+	github.com/google/jsonschema-go v0.4.3
 	github.com/gorilla/securecookie v1.1.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/sys v0.50.0
 	modernc.org/libc v1.80.1
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
