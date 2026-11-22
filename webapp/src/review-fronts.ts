@@ -18,6 +18,9 @@ export interface ReviewFronts {
 export interface ReviewQueueBadge { kind: 'front' | 'closed' | 'queued' | 'held'; text: string; description: string; channels?: ('hosted' | 'cli')[] }
 export interface ReviewChannelPosition { text: string; description?: string }
 export const reviewFixesPending: ReviewChannelPosition = {text:'Fixes pending',description:'See the accepted findings in Review history.'};
+export function parentBaseMovedDescription(parentPullNumber?: number): string {
+  return parentPullNumber ? `Parent PR #${parentPullNumber} changed; this child still targets its earlier base.` : 'The parent changed; this child still targets its earlier base.';
+}
 
 // Queue position is useful even without a source frame, but is not admission.
 // Keep an established hold visible instead of suggesting another request.
@@ -91,6 +94,7 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   // Closure is retained PR/channel control state, independent of the source
   // snapshot that happens to be loading. Missing controls never mean closed.
   if (selected.length > 0 && selected.every(closed)) return [{kind:'closed',text:'Review closed',description:'Current configured channels allow no further rounds; this is not a merge-readiness verdict.'}];
+  if (pull.parent_base_moved) return [{kind:'held',text:'Parent changed',description:parentBaseMovedDescription(pull.parent_pull_number)}];
   if (!fronts?.configured || fronts.snapshot_id !== snapshot || !fronts.queue.includes(pull.number)) return [];
   const positions = new Map(fronts.queue.map((number, index) => [number, index]));
   const priorities = fronts.channels.flatMap(channel => {

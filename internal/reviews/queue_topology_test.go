@@ -1,14 +1,39 @@
 package reviews
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
+
+func setTopologyBranches(t *testing.T, f *apiFixture, branches map[int64]PullBranches) {
+	t.Helper()
+	for number, value := range branches {
+		var state, raw string
+		if err := f.store.DB().QueryRow(`SELECT state,metadata_json FROM review_pull_versions WHERE project_id=? AND number=?`, f.project, number).Scan(&state, &raw); err != nil {
+			t.Fatal(err)
+		}
+		metadata, err := ReadPullMetadata(raw, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata.Branches = &value
+		body, err := json.Marshal(metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.store.DB().Exec(`UPDATE review_pull_versions SET metadata_json=? WHERE project_id=? AND number=?`, string(body), f.project, number); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestQueueTopologyBeforePaging(t *testing.T) {
 	f := newAPIFixture(t)
@@ -163,5 +188,132 @@ func TestParentDisplayFallbackBoundaries(t *testing.T) {
 	child.base = "develop"
 	if got := displayParents([]queueNode{parent, child}, 7); got[2] != 0 {
 		t.Fatal("delivery base with missing child identity", got)
+	}
+}
+
+func TestParentBaseMovedProjectionUsesFullSnapshotAndPreservesOtherFacts(t *testing.T) {
+	f := newAPIFixture(t)
+	sha := func(c byte) string { return strings.Repeat(string(c), 40) }
+	child := samplePull(2, "moved child")
+	child.State, child.HeadSHA, child.BaseRef, child.BaseSHA, child.CIState = "open", sha('b'), "root", sha('c'), "failure"
+	child.MergeStateStatus = "CLEAN"
+	aligned := samplePull(3, "aligned child")
+	aligned.State, aligned.HeadSHA, aligned.BaseRef, aligned.BaseSHA = "open", sha('e'), "root", sha('a')
+	parent := samplePull(1, "parent outside first page")
+	parent.State, parent.HeadSHA, parent.BaseRef, parent.BaseSHA = "open", sha('a'), "develop", sha('d')
+	f.observe(t, reviewRequest(0, []PullInput{child, aligned, parent}), "parent-base-projection")
+	setTopologyBranches(t, f, map[int64]PullBranches{
+		2: {HeadRepositoryID: 701, HeadRef: "child", DeliveryRef: "develop"},
+		3: {HeadRepositoryID: 701, HeadRef: "aligned", DeliveryRef: "develop"},
+		1: {HeadRepositoryID: 701, HeadRef: "root", DeliveryRef: "develop"},
+	})
+
+	path := "/api/v1/projects/" + f.project + "/reviews/queue?view=recent&limit=1&include_merge_status=true"
+	w := f.call(http.MethodGet, path, f.readToken, "", nil)
+	var page struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Items) != 1 {
+		t.Fatalf("projected queue: %d %s", w.Code, w.Body.String())
+	}
+	var moved map[string]json.RawMessage
+	if err := json.Unmarshal(page.Items[0], &moved); err != nil {
+		t.Fatal(err)
+	}
+	var movedValue bool
+	if err := json.Unmarshal(moved["parent_base_moved"], &movedValue); err != nil || !movedValue || string(moved["number"]) != "2" {
+		t.Fatalf("parent outside the loaded page did not prove movement: %s", page.Items[0])
+	}
+	if string(moved["ci_state"]) != `"failure"` || !bytes.Contains(page.Items[0], []byte(`"merge_status":{"state":"ready"`)) {
+		t.Fatalf("parent movement overwrote independent CI or GitHub facts: %s", page.Items[0])
+	}
+	full := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/queue?limit=1&include_merge_status=true", f.readToken, "", nil)
+	var fullPage struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if full.Code != http.StatusOK || json.Unmarshal(full.Body.Bytes(), &fullPage) != nil || len(fullPage.Items) != 1 || !bytes.Contains(fullPage.Items[0], []byte(`"parent_base_moved":true`)) {
+		t.Fatalf("all-queue projection depended on its loaded page: %d %s", full.Code, full.Body.String())
+	}
+
+	all := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/queue?view=recent&limit=10&include_merge_status=true", f.readToken, "", nil)
+	var allPage struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if all.Code != http.StatusOK || json.Unmarshal(all.Body.Bytes(), &allPage) != nil {
+		t.Fatalf("full projected queue: %d %s", all.Code, all.Body.String())
+	}
+	for _, raw := range allPage.Items {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatal(err)
+		}
+		if string(item["number"]) == "3" && len(item["parent_base_moved"]) != 0 {
+			t.Fatalf("aligned base emitted a false hold: %s", raw)
+		}
+	}
+	detail := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/pulls/2?include_merge_status=true", f.readToken, "", nil)
+	var pull struct {
+		Pull PullSummary `json:"pull"`
+	}
+	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &pull) != nil || !pull.Pull.ParentBaseMoved {
+		t.Fatalf("detail omitted same-snapshot movement: %d %s", detail.Code, detail.Body.String())
+	}
+	legacy := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/queue?view=recent&limit=1", f.readToken, "", nil)
+	if legacy.Code != http.StatusOK || bytes.Contains(legacy.Body.Bytes(), []byte(`"parent_base_moved"`)) || bytes.Contains(legacy.Body.Bytes(), []byte(`"merge_status"`)) {
+		t.Fatalf("unopted response changed its native field set: %d %s", legacy.Code, legacy.Body.String())
+	}
+}
+
+func TestParentBaseMovedRejectsUnprovenRelationshipsAndIdentities(t *testing.T) {
+	f := newAPIFixture(t)
+	sha := func(c byte) string { return fmt.Sprintf("%040x", c) }
+	type row struct {
+		number            int64
+		state, head, base string
+		headSHA, baseSHA  string
+		headRepositoryID  int64
+	}
+	rows := []row{
+		{1, "open", "root", "develop", sha('a'), sha('d'), 701},
+		{2, "open", "duplicate", "develop", sha('b'), sha('d'), 701},
+		{3, "open", "duplicate", "develop", sha('c'), sha('d'), 701},
+		{4, "open", "ambiguous-child", "duplicate", sha('e'), sha('f'), 701},
+		{5, "open", "fork-parent", "develop", sha('g'), sha('d'), 702},
+		{6, "open", "fork-child", "fork-parent", sha('h'), sha('i'), 701},
+		{7, "open", "foreign-child", "root", sha('j'), sha('k'), 702},
+		{8, "closed", "terminal-parent", "develop", sha('l'), sha('d'), 701},
+		{9, "open", "terminal-child", "terminal-parent", sha('m'), sha('n'), 701},
+		{10, "unknown", "unknown-child", "root", sha('o'), sha('p'), 701},
+		{11, "open", "self", "self", sha('q'), sha('r'), 701},
+		{12, "open", "empty-base-child", "root", sha('s'), "", 701},
+		{13, "open", "empty-head-child", "root", "", sha('t'), 701},
+		{14, "open", "missing-sha-parent", "develop", "", sha('d'), 701},
+		{15, "open", "missing-sha-child", "missing-sha-parent", sha('u'), sha('v'), 701},
+	}
+	pulls := make([]PullInput, 0, len(rows))
+	branches := make(map[int64]PullBranches, len(rows))
+	for _, item := range rows {
+		pull := samplePull(item.number, "conservative parent proof")
+		pull.State, pull.HeadSHA, pull.BaseRef, pull.BaseSHA = item.state, item.headSHA, item.base, item.baseSHA
+		pulls = append(pulls, pull)
+		branches[item.number] = PullBranches{HeadRepositoryID: item.headRepositoryID, HeadRef: item.head, DeliveryRef: "develop"}
+	}
+	f.observe(t, reviewRequest(0, pulls), "parent-base-conservative")
+	setTopologyBranches(t, f, branches)
+	w := f.call(http.MethodGet, "/api/v1/projects/"+f.project+"/reviews/queue?include_merge_status=true&limit=100", f.readToken, "", nil)
+	var page struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil {
+		t.Fatalf("conservative queue: %d %s", w.Code, w.Body.String())
+	}
+	for _, raw := range page.Items {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatal(err)
+		}
+		if len(item["parent_base_moved"]) != 0 {
+			t.Fatalf("unproven relationship or incomplete SHA asserted a hold: %s", raw)
+		}
 	}
 }

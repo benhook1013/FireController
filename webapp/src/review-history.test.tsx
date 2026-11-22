@@ -120,20 +120,25 @@ describe('per-PR inline retained review history', () => {
       expect(qualified).not.toContain('unfinalized source evidence');
     }
   });
-  it('shows accepted severities on a retained partial CLI row alongside undecided findings', () => {
+  it('shows finalized accepted severities and keeps undecided partial totals unknown', () => {
     const value: ReviewRunSummary = {
       ...run('partial'), source: 'native-executor', outcome: 'failed', complete: false,
       attributable: false, finalized: false, found: 8, accepted: 5, routed: 0, retained_undecided: 1,
       accepted_severity: { critical: 1, major: 1, minor: 1, trivial: 1, unknown: 1, complete: true },
     };
     const render = (summary: ReviewRunSummary) => markup(<ReviewHistoryRow number={27} run={summary} snapshot={snapshot} head="head" />);
-    const html = render(value);
+    const pending = render(value);
+    expect(pending).toContain('Accepted: <strong>?</strong>');
+    expect(pending).toContain('Routed: <strong>?</strong>');
+    expect(pending).toContain('Partial review · 1 undecided');
+    const settled = {...value,finalized:true,retained_undecided:0};
+    const html = render(settled);
     expect(html).toContain('Accepted: <strong>1/1/1</strong>');
     expect(html).toContain('Critical');
     expect(html).toContain('severity unknown');
-    expect(html).toContain('Partial review · 1 undecided');
+    expect(html).toContain('Partial review');
     expect(html).toContain('Routed: <strong>0</strong>');
-    expect(render({...value, accepted_severity: undefined})).toContain('Accepted: <strong>5</strong>');
+    expect(render({...settled, accepted_severity: undefined})).toContain('Accepted: <strong>5</strong>');
   });
   it('shows review duration only when original timing is known and ordered', () => {
     expect(reviewDuration(run('timed'))).toBe('1m 0s');

@@ -29,6 +29,29 @@ describe('bounded recent and merged queue reads', () => {
     await expect(api.reviewQueue({view:'recent'})).rejects.toMatchObject({code:'invalid_response'});
     api.close();
   });
+  it('accepts a self-contained parent movement receipt without loading its parent and rejects invalid identity', async () => {
+    const api = await connected();
+    const child = { ...pull(3, 0, 'open'), parent_pull_number: 2, parent_base_moved: true };
+    vi.stubGlobal('fetch', vi.fn(async () => response(page([child], 0))));
+    expect((await api.reviewQueue({ view: 'recent' })).items[0]).toMatchObject({ number: 3, parent_pull_number: 2, parent_base_moved: true });
+
+    const invalid = [
+      { ...child, parent_base_moved: false },
+      { ...child, parent_base_moved: 'true' },
+      { ...child, parent_pull_number: undefined },
+      { ...child, parent_pull_number: 3 },
+      { ...child, state: 'closed' },
+      { ...child, head_sha: '' },
+      { ...child, base_sha: '' },
+      { ...child, base_sha: 'B'.repeat(40) },
+      { ...child, base_ref: '' },
+    ];
+    for (const value of invalid) {
+      vi.stubGlobal('fetch', vi.fn(async () => response(page([value], 0))));
+      await expect(api.reviewQueue({ view: 'recent' })).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    api.close();
+  });
   it('selects local views and preserves original positions and continuation', async () => {
     const api = await connected();
     const recent = page([pull(16, 15), pull(19, 18, 'open')], 18);

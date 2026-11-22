@@ -11,6 +11,8 @@ import (
 type queueNode struct {
 	number      int64
 	position    int
+	headSHA     string
+	baseSHA     string
 	state, base string
 	metadata    PullDisplayMetadata
 }
@@ -177,7 +179,7 @@ func readQueueNodes(ctx context.Context, tx *sql.Tx, project, snapshot string) (
 	if err := tx.QueryRowContext(ctx, `SELECT repository_id FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, project, snapshot).Scan(&repository); err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT p.number,p.position,p.state,p.base_ref,p.metadata_json FROM review_pulls p
+	rows, err := tx.QueryContext(ctx, `SELECT p.number,p.position,p.state,p.head_sha,p.base_ref,p.base_sha,p.metadata_json FROM review_pulls p
 	WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND NOT EXISTS(
 	SELECT 1 FROM review_retired_pulls r WHERE r.project_id=p.project_id AND r.snapshot_id=p.snapshot_id AND r.number=p.number) ORDER BY p.position`, project, snapshot)
 	if err != nil {
@@ -188,7 +190,7 @@ func readQueueNodes(ctx context.Context, tx *sql.Tx, project, snapshot string) (
 	for rows.Next() {
 		var n queueNode
 		var raw string
-		if err := rows.Scan(&n.number, &n.position, &n.state, &n.base, &raw); err != nil {
+		if err := rows.Scan(&n.number, &n.position, &n.state, &n.headSHA, &n.base, &n.baseSHA, &raw); err != nil {
 			return nil, 0, err
 		}
 		n.metadata, err = ReadPullMetadata(raw, n.state)
@@ -256,6 +258,39 @@ func displayParents(nodes []queueNode, repository int64) map[int64]int64 {
 		}
 	}
 	return parents
+}
+
+// parentBaseMovedFromParents marks only comparisons whose same-snapshot open
+// parent relationship and exact commit identities are all known. The parent
+// map is the existing conservative display relationship, not queue adjacency.
+func parentBaseMovedFromParents(nodes []queueNode, repository int64, parents map[int64]int64) map[int64]bool {
+	moved := make(map[int64]bool)
+	if repository <= 0 {
+		return moved
+	}
+	byNumber := make(map[int64]queueNode, len(nodes))
+	for _, n := range nodes {
+		byNumber[n.number] = n
+	}
+	for childNumber, parentNumber := range parents {
+		child, childOK := byNumber[childNumber]
+		parent, parentOK := byNumber[parentNumber]
+		if !childOK || !parentOK || child.state != "open" || parent.state != "open" ||
+			child.metadata.Branches == nil || parent.metadata.Branches == nil ||
+			child.metadata.Branches.HeadRepositoryID != repository || parent.metadata.Branches.HeadRepositoryID != repository ||
+			!canonicalReviewSHA(child.headSHA) || !canonicalReviewSHA(child.baseSHA) ||
+			!canonicalReviewSHA(parent.headSHA) || !canonicalReviewSHA(parent.baseSHA) {
+			continue
+		}
+		if child.baseSHA != parent.headSHA {
+			moved[childNumber] = true
+		}
+	}
+	return moved
+}
+
+func canonicalReviewSHA(value string) bool {
+	return value != "" && validSHA(value)
 }
 
 func orderedRecentNodes(nodes []queueNode, repository int64, cutoff time.Time) ([]queueNode, map[int64]int64) {

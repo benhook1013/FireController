@@ -31,7 +31,7 @@ import './review-queue.css';
 import './review-history.css';
 import { useReviewProgress, ReviewProgressView } from './review-progress-view';
 import type { ReviewActivityEvidence, ReviewProgressItem, ReviewRoundProgress, ReviewSourceRetry } from './review-progress';
-import { currentReviewFronts, reviewQueueBadges, reviewChannelPosition, type ReviewChannelPosition, type ReviewFronts, type ReviewQueueBadge } from './review-fronts';
+import { currentReviewFronts, parentBaseMovedDescription, reviewQueueBadges, reviewChannelPosition, type ReviewChannelPosition, type ReviewFronts, type ReviewQueueBadge } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
 import { useReviewQueueFrame } from './review-frame-view';
 import type { Project, ReviewGroup, ReviewChannel, ReviewRunCounts, ReviewAttemptSummary, ReviewAttemptItem, ReviewFinding, ReviewPullSummary, ReviewRunSummary, ReviewSnapshot } from './types';
@@ -111,7 +111,7 @@ export function runDisplayFingerprint(run: ReviewRunSummary, head: string): stri
     !head || !run.head_sha ? 'unknown' : head === run.head_sha ? 'same' : 'different']);
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
-  return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability, pull.merge_status,
+  return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability, pull.merge_status, ...(pull.parent_base_moved ? ['parent_base_moved'] : []),
     pull.diff, pull.parent_pull_number, pull.is_draft, pull.merged_at, pull.complete, pull.head_sha, pull.run_count, [pull.run_counts.hosted, pull.run_counts.cli, pull.run_counts.subagent, pull.run_counts.manual], pull.attempt_count,
     pull.latest_attempts.map(attempt => [attempt.channel, attempt.state, attempt.reason, attempt.finished_at || attempt.started_at]),
     pull.recent_runs.map(run => runDisplayFingerprint(run, pull.head_sha))]);
@@ -127,8 +127,7 @@ function partialCLIResult(run: ReviewRunSummary): boolean {
   return run.source === 'native-executor' && run.channel === 'cli' && ['failed', 'cancelled', 'rate_limited'].includes(run.outcome) && !run.complete && run.found > 0;
 }
 function visibleReviewCounts(run: ReviewRunSummary) {
-  const show = run.finalized || partialCLIResult(run);
-  return { accepted: show ? run.accepted : '?' as const, routed: show ? run.routed : '?' as const };
+  return { accepted: run.finalized ? run.accepted : '?' as const, routed: run.finalized ? run.routed : '?' as const };
 }
 function partialPendingText(count?: number): string {
   return count === undefined ? ' · Adjudication status unknown' : count > 0 ? ' · ' + count + ' undecided · Needs adjudication' : '';
@@ -206,6 +205,7 @@ function reviewCIDisplay(pull: ReviewPullSummary) {
 export function ReviewMergeStatus({pull}: {pull:ReviewPullSummary}) {
   if (pull.state === 'merged' || pull.state === 'closed') return null;
   const status=pull.merge_status ?? {state:'unknown' as const,reason:'merge_state_unknown'};
+  if (pull.parent_base_moved && status.state === 'ready') return <span title={parentBaseMovedDescription(pull.parent_pull_number)} className="badge review-fact-pill review-mergeability review-fact-unknown">Merge: Parent changed</span>;
   const labels:Record<string,string>={github_behind:'Behind',github_dirty:'Conflicts',github_draft:'Draft',draft:'Draft',github_unstable:'Checks failing',github_has_hooks:'Hooks'};
   const states={ready:'Ready',blocked:'Blocked',pending:'Waiting',unknown:'Unknown'};
   const colours={ready:'mergeable',blocked:'conflicting',pending:'pending',unknown:'unknown'};
@@ -233,7 +233,8 @@ function reviewCITooltip(pull: ReviewPullSummary, display: ReturnType<typeof rev
   const gate = pull.observation?.ci_gate_ref;
   const scope = gate && pull.base_ref && gate !== pull.base_ref ? `Checks for ${gate} on the PR against ${pull.base_ref}.` : '';
   const checked = pull.observation?.ci_checked_at ? `Last checked ${time(pull.observation.ci_checked_at)}.` : '';
-  return [display.detail, scope, checked].filter(Boolean).join(' ') || undefined;
+  const detail = pull.parent_base_moved ? `Parent PR #${pull.parent_pull_number} changed; this CI is for the earlier base.` : display.detail;
+  return [detail, scope, checked].filter(Boolean).join(' ') || undefined;
 }
 
 function ReviewBaseTarget({ pull }: { pull: ReviewPullSummary }) {
@@ -251,7 +252,8 @@ function ReviewBaseTarget({ pull }: { pull: ReviewPullSummary }) {
 export function ReviewPullFacts({ pull, status }: { pull: ReviewPullSummary; status?: ReviewQueueBadge }) {
   const missing = missingPullFacts(pull);
   const ci = reviewCIDisplay(pull);
-  return <div className="review-pull-facts">{pull.state === 'merged' || pull.state === 'closed' ? <span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span> : pull.state === 'open' && status && !(pull.is_draft && status.kind === 'queued') ? <span className={`badge review-position-${status.kind}`} title={status.description}>{status.text}</span> : null}{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}<span className="badge review-fact-pill review-diff"><ReviewBaseTarget pull={pull} />{pull.diff && <> · {pull.review_size ? <span className={`review-file-count${pull.review_size.above_suggested || pull.review_size.excess_files ? ' review-size-exceeded' : ''}`} title={reviewSizeTooltip(pull)}>{pull.diff.files.toLocaleString('en-US')}</span> : pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</>}</span>{pull.state !== 'merged' && <span title={reviewCITooltip(pull, ci)} className={`badge review-fact-pill review-ci review-fact-${ci.state}`}>{ci.label}{pull.observation?.ci_gate_ref ? ` · ${pull.observation.ci_gate_ref}` : ""}</span>}<ReviewMergeStatus pull={pull} /><ReviewObservationBadge value={pull.observation} />{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
+  const parentMoved = pull.state === 'open' && pull.parent_base_moved === true;
+  return <div className="review-pull-facts">{pull.state === 'merged' || pull.state === 'closed' ? <span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span> : null}{parentMoved && <span className="badge review-position-held" title={parentBaseMovedDescription(pull.parent_pull_number)}>Parent changed</span>}{pull.state === 'open' && status && status.text !== 'Parent changed' && !(pull.is_draft && status.kind === 'queued') ? <span className={`badge review-position-${status.kind}`} title={status.description}>{status.text}</span> : null}{pull.is_draft === true && pull.state === 'open' && <span className="badge review-state-draft">Draft</span>}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}<span className="badge review-fact-pill review-diff"><ReviewBaseTarget pull={pull} />{pull.diff && <> · {pull.review_size ? <span className={`review-file-count${pull.review_size.above_suggested || pull.review_size.excess_files ? ' review-size-exceeded' : ''}`} title={reviewSizeTooltip(pull)}>{pull.diff.files.toLocaleString('en-US')}</span> : pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</>}</span>{pull.state !== 'merged' && <span title={reviewCITooltip(pull, ci)} className={`badge review-fact-pill review-ci review-fact-${pull.parent_base_moved ? 'unknown' : ci.state}`}>{pull.parent_base_moved ? 'CI for previous base' : ci.label}{!pull.parent_base_moved && pull.observation?.ci_gate_ref ? ` · ${pull.observation.ci_gate_ref}` : ""}</span>}<ReviewMergeStatus pull={pull} /><ReviewObservationBadge value={pull.observation} />{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Global stored positions preserve gaps in filtered pages; legacy pages require known predecessors.
 export function reviewQueueDistances(items: ReviewPullSummary[], firstPage: boolean, headPosition?: number): (number | undefined)[] {
@@ -296,7 +298,7 @@ export function ReviewQueueRow({ pull, snapshot, order, progress, fronts, channe
   const front = order?.distance === 1;
   const badges = reviewQueueBadges(pull,snapshot,fronts,progress,channels);
   const incoming = anchor && pull.state === 'open' && progress?.pull_number === pull.number ? progress.incoming_routes_pending : undefined;
-  return <ReviewRowDisplay id={anchor ? `review-pr-${pull.number}` : undefined} lifecycle={pull.state} rail={rail ?? !!order} position={position} positionLabel={order && (order.distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`)} number={pull.number} title={pull.title} url={external} className={`${pull.state==='open' && pull.is_draft ? 'review-row-draft ' : ''}${front ? 'review-row-front ' : ''}${badges[0] ? `review-status-${badges[0].kind} ` : ''}${highlight}`} facts={<ReviewPullFacts pull={pull} status={badges[0]} />} footer={<div className="review-row-footer-controls">{pull.state==='open' && <ReviewPullSchedulingControl number={pull.number} />}{incoming !== undefined && incoming > 0 && <Link className="review-details-link" to={reviewLink(home, 'pulls', pull.number, snapshot)}>{incoming} incoming routed {incoming === 1 ? 'finding' : 'findings'}</Link>}{footer === undefined ? <ReviewHistoryLink number={pull.number} snapshot={snapshot} /> : footer}</div>}><ReviewRunsView summaryPreview={deferPreview ? 'nearby' : 'eager'} readingPrefix={anchor ? `review-pr-${pull.number}` : undefined} number={pull.number} snapshot={snapshot} head={pull.head_sha} historical={pull.state === 'merged' || pull.state === 'closed'} attempts={pull.latest_attempts} recentRuns={pull.recent_runs} expected={pull.run_count} channelTotals={pull.run_counts} progress={progress} positions={{hosted:reviewChannelPosition(pull,snapshot,'hosted',fronts,progress),cli:reviewChannelPosition(pull,snapshot,'cli',fronts,progress)}} /></ReviewRowDisplay>;
+  return <ReviewRowDisplay id={anchor ? `review-pr-${pull.number}` : undefined} lifecycle={pull.state} rail={rail ?? !!order} position={position} positionLabel={order && (order.distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`)} number={pull.number} title={pull.title} url={external} className={`${pull.state==='open' && pull.is_draft ? 'review-row-draft ' : ''}${front ? 'review-row-front ' : ''}${badges[0] ? `review-status-${badges[0].kind} ` : ''}${highlight}`} facts={<ReviewPullFacts pull={pull} status={badges[0]} />} footer={<div className="review-row-footer-controls">{pull.state==='open' && <ReviewPullSchedulingControl number={pull.number} />}{incoming !== undefined && incoming > 0 && <Link className="review-details-link" to={reviewLink(home, 'pulls', pull.number, snapshot)}>{incoming} incoming routed {incoming === 1 ? 'finding' : 'findings'}</Link>}{footer === undefined ? <ReviewHistoryLink number={pull.number} snapshot={snapshot} /> : footer}</div>}><ReviewRunsView summaryPreview={deferPreview ? 'nearby' : 'eager'} readingPrefix={anchor ? `review-pr-${pull.number}` : undefined} number={pull.number} snapshot={snapshot} head={pull.head_sha} parentBaseMoved={pull.parent_base_moved === true} parentPullNumber={pull.parent_pull_number} historical={pull.state === 'merged' || pull.state === 'closed'} attempts={pull.latest_attempts} recentRuns={pull.recent_runs} expected={pull.run_count} channelTotals={pull.run_counts} progress={progress} positions={{hosted:reviewChannelPosition(pull,snapshot,'hosted',fronts,progress),cli:reviewChannelPosition(pull,snapshot,'cli',fronts,progress)}} /></ReviewRowDisplay>;
 }
 export function reviewQueueQuery(session: Session, key: readonly string[], view: 'recent' | 'merged', cursor = '', snapshot = 'current', fresh = false) {
   return { queryKey: [...key, 'reviews', snapshot, 'queue', view, cursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.reviewQueue({ limit: pageSize, view, ...(cursor ? { cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity, refetchInterval: 60_000, ...(fresh ? { refetchOnMount: 'always' as const } : {}) };
@@ -477,10 +479,10 @@ function RunningReviewPill({ evidence, attemptID, channel, attention, submittedA
     {date ? estimated ? <span className="review-pill-age">~ <RelativeTime value={date} label="Estimated start (request submission acknowledged)" /></span> : <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
   </ReviewRoundPillDisplay>{attention && <div id={detailID} popover="auto" className="review-attention-detail"><p>{description}</p><button type="button" popoverTarget={detailID} popoverTargetAction="hide">Close</button></div>}</>;
 }
-function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal, previewPending, announcePreviewLoading }: {
+function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, parentBaseMoved, parentPullNumber, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal, previewPending, announcePreviewLoading }: {
   channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[];
   snapshot: string; head: string; loading: boolean; failed: boolean; highlights: Map<string, string>;
-  historical?: boolean; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition;
+  historical?: boolean; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition; parentBaseMoved?: boolean; parentPullNumber?: number;
   readingAnchor?: string; updateFailed?: boolean; notice?: ReactNode; capacity?: number; laneRef?: RefObject<HTMLElement | null>;
   recentRuns: ReviewRunSummary[]; recentSnapshot: string; currentTotal: number; previewPending?: boolean; announcePreviewLoading?: boolean;
 }) {
@@ -509,6 +511,8 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const terminalStatus = status?.text === 'Closed' || status?.text === 'Cap reached';
   const candidateBadge = (returned && status?.activity) || attemptPill || terminalStatus ? undefined : status;
   const waiting = historical || (progress?.source_retry && !progress.wait?.paused) ? undefined : progress?.wait;
+  const waitingForParent = parentBaseMoved && !historical && !activeAttempt && !waiting && !terminalStatus &&
+    (!candidateBadge || ['Queued', 'Up next', 'Queue position', 'Source unverified'].includes(candidateBadge.text));
   const partials = channel === 'cli' ? recentRuns.filter(partialCLIResult).reverse() : [];
   const completed = runs.filter(run => run.channel === channel && run.outcome === 'completed');
   const pills = [
@@ -532,8 +536,8 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   // Never attach a new operation's state to an unrelated earlier completion.
   // Aggregate pending work may belong to an older run. Keep it separate from
   // every captured result unless that result's own retained fields establish it.
-  const currentStatus = !attemptPill && (waiting || badge)
-    ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
+  const currentStatus = !attemptPill && (waiting || waitingForParent || badge)
+    ? <>{waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} />}{waitingForParent ? <ReviewAttemptBadge channel={channel} status={{text:'Waiting for parent',description:parentBaseMovedDescription(parentPullNumber)}} /> : badge && <ReviewAttemptBadge channel={channel} status={badge} />}</> : undefined;
   const slots = capacity - Number(attemptPill);
   const visiblePills = slots > 0 ? pills.slice(-slots) : [];
   const placeholders = previewPending ? Math.max(0, Math.min(currentTotal, slots) - visiblePills.length) : 0;
@@ -596,9 +600,9 @@ function useReviewPreviewInRange(deferred: boolean) {
   return { ref, inRange: !deferred || near };
 }
 
-export function ReviewRunsView({ number, snapshot, head, attempts, recentRuns = [], detail = false, compact = false, historical = false, progress, channelTotals, positions = {}, readingPrefix, summaryPreview }: { summaryPreview?: 'eager' | 'nearby'; historical?: boolean; readingPrefix?: string; number: number; snapshot: string; head: string; attempts: ReviewAttemptSummary[]; recentRuns?: ReviewRunSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem; channelTotals: ReviewRunCounts; positions?: Partial<Record<ReviewChannel, ReviewChannelPosition>> }) {
+export function ReviewRunsView({ number, snapshot, head, parentBaseMoved, parentPullNumber, attempts, recentRuns = [], detail = false, compact = false, historical = false, progress, channelTotals, positions = {}, readingPrefix, summaryPreview }: { summaryPreview?: 'eager' | 'nearby'; historical?: boolean; readingPrefix?: string; number: number; snapshot: string; head: string; parentBaseMoved?: boolean; parentPullNumber?: number; attempts: ReviewAttemptSummary[]; recentRuns?: ReviewRunSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem; channelTotals: ReviewRunCounts; positions?: Partial<Record<ReviewChannel, ReviewChannelPosition>> }) {
   const { ref, inRange } = useReviewPreviewInRange(summaryPreview === 'nearby');
-  const lane = (channel: ReviewChannel, title: string) => <ChannelReviewLane key={channel} summaryPreview={!!summaryPreview} inRange={inRange} readingAnchor={readingPrefix ? `${readingPrefix}-${channel}` : undefined} number={number} channel={channel} title={title} attempts={attempts} recentRuns={recentRuns} snapshot={snapshot} head={head} compact={compact} historical={historical} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} positionHint={positions[channel]} />;
+  const lane = (channel: ReviewChannel, title: string) => <ChannelReviewLane key={channel} summaryPreview={!!summaryPreview} inRange={inRange} readingAnchor={readingPrefix ? `${readingPrefix}-${channel}` : undefined} number={number} channel={channel} title={title} attempts={attempts} recentRuns={recentRuns} snapshot={snapshot} head={head} compact={compact} historical={historical} parentBaseMoved={parentBaseMoved} parentPullNumber={parentPullNumber} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} positionHint={positions[channel]} />;
   const otherChannels = ([['manual', 'Manual reviews'], ['subagent', 'Subagent Reviews']] as const).filter(([channel]) => channelTotals[channel] > 0 || attempts.some(attempt => attempt.channel === channel));
   return <section ref={ref} className={compact ? 'review-history delivery-head-history' : detail ? 'panel review-history' : 'review-history'} aria-label={`PR #${number} recent review rounds`}>{detail && <div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>}<div className="review-lanes">{lane('hosted', 'Hosted CodeRabbit')}{lane('cli', 'CLI CodeRabbit')}{!compact && otherChannels.map(([channel, title]) => lane(channel, title))}</div></section>;
 }
@@ -629,7 +633,7 @@ export function reviewDuration(run: ReviewRunSummary): string | undefined {
   return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
 export function ReviewAcceptedCounts({ run }: { run: ReviewRunSummary }) {
-  if (!run.finalized && !partialCLIResult(run)) return <span className="review-count review-count-accepted">Accepted: <strong>?</strong></span>;
+  if (!run.finalized) return <span className="review-count review-count-accepted">Accepted: <strong>?</strong></span>;
   const counts = run.accepted_severity;
   if (!counts?.complete) return <span className="review-count review-count-accepted" title="Accepted severity breakdown unavailable for this retained record">Accepted: <strong>{run.accepted}</strong></span>;
   return <span className="review-count review-count-accepted" title={`${run.accepted} accepted · Major / Minor / Trivial`}>

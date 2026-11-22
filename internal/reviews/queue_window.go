@@ -139,7 +139,7 @@ func queueWindowPositions(ctx context.Context, tx *sql.Tx, project string, curso
 	return positions, rows.Err()
 }
 
-func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int, displayStart, topology bool) (QueueResponse, error) {
+func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, view, token string, limit int, displayStart, topology, mergeProjection bool) (QueueResponse, error) {
 	filter := "reviews.queue:" + view + ":v1"
 	topology = topology && view == "recent"
 	history := view == "merged"
@@ -186,12 +186,21 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 
 		var positions []int
 		var parents map[int64]int64
+		var movedBases map[int64]bool
 		var displayPositions map[int]int
-		if topology || history {
-			nodes, repository, err := readQueueNodes(ctx, tx, scope.ProjectID, meta.SnapshotID)
+		var nodes []queueNode
+		var repository int64
+		if topology || history || mergeProjection {
+			nodes, repository, err = readQueueNodes(ctx, tx, scope.ProjectID, meta.SnapshotID)
 			if err != nil {
 				return err
 			}
+			if mergeProjection && !topology && !history {
+				parents = displayParents(nodes, repository)
+				movedBases = parentBaseMovedFromParents(nodes, repository, parents)
+			}
+		}
+		if topology || history {
 			var ordered []queueNode
 			if history {
 				ordered = mergedQueueNodes(nodes)
@@ -199,6 +208,9 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 				cutoff, _ := time.Parse(time.RFC3339Nano, cursor.Cutoff)
 				nodes = savedQueueNodes(nodes, configured)
 				ordered, parents = orderedRecentNodesMode(nodes, repository, cutoff, sortMode)
+				if mergeProjection {
+					movedBases = parentBaseMovedFromParents(nodes, repository, parents)
+				}
 			}
 			displayPositions = make(map[int]int)
 			headSeen := false
@@ -264,6 +276,10 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			if displayPositions != nil {
 				position = displayPositions[position]
 				item.ParentPullNumber = parents[item.Number]
+			}
+			if movedBases[item.Number] {
+				item.ParentPullNumber = parents[item.Number]
+				item.ParentBaseMoved = true
 			}
 			item.QueuePosition, item.Complete = &position, complete != 0
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {

@@ -62,7 +62,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 				core.WriteError(w, validationError("Use recent or merged for the queue view."))
 				return
 			}
-			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1", r.Header.Get("X-FC-Queue-Topology") == "v1")
+			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1", r.Header.Get("X-FC-Queue-Topology") == "v1", query.Get("include_merge_status") == "true")
 			if err == nil {
 				err = attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth)
 			}
@@ -88,6 +88,8 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			return
 		}
 		response := QueueResponse{ProjectID: scope.ProjectID, Items: make([]PullSummary, 0, limit)}
+		var parents map[int64]int64
+		var movedBases map[int64]bool
 		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			meta, found, err := selectSnapshot(ctx, tx, scope.ProjectID, snapshotID)
 			if err != nil {
@@ -101,6 +103,14 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			}
 			response.Configured = true
 			setMetaQueue(&response, meta)
+			if query.Get("include_merge_status") == "true" {
+				nodes, repository, err := readQueueNodes(ctx, tx, scope.ProjectID, meta.SnapshotID)
+				if err != nil {
+					return err
+				}
+				parents = displayParents(nodes, repository)
+				movedBases = parentBaseMovedFromParents(nodes, repository, parents)
+			}
 			rows, err := tx.QueryContext(ctx, `SELECT p.number,p.title,p.state,p.head_sha,p.base_ref,p.base_sha,p.ci_state,p.mergeability,p.complete,p.run_count,p.attempt_count,p.recent_runs_json,p.latest_attempts_json,p.metadata_json,p.position
 				FROM review_pulls p WHERE p.project_id=? AND p.snapshot_id=? AND p.delivery_selected=1 AND p.position>? AND NOT EXISTS (
 					SELECT 1 FROM review_retired_pulls retired WHERE retired.project_id=p.project_id AND retired.snapshot_id=p.snapshot_id AND retired.number=p.number
@@ -128,6 +138,10 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 					return err
 				}
 				item.Diff, item.IsDraft, item.MergedAt, item.mergeStateStatus = m.Diff, m.IsDraft, m.MergedAt, m.MergeStateStatus
+				if movedBases[item.Number] {
+					item.ParentPullNumber = parents[item.Number]
+					item.ParentBaseMoved = true
+				}
 				item.Complete = complete != 0
 				if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &item); err != nil {
 					return err
@@ -229,7 +243,11 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err != nil {
 				return err
 			}
-			response.Pull.ParentPullNumber = displayParents(nodes, repository)[number]
+			parents := displayParents(nodes, repository)
+			response.Pull.ParentPullNumber = parents[number]
+			if query.Get("include_merge_status") == "true" {
+				response.Pull.ParentBaseMoved = parentBaseMovedFromParents(nodes, repository, parents)[number]
+			}
 			if err := fillChannelRunCounts(ctx, tx, scope.ProjectID, meta, &response.Pull); err != nil {
 				return err
 			}

@@ -1089,11 +1089,11 @@ try {
   // Process attention is separate from the captured partial result's adjudication.
   checkpoint = 'result-process-attention';
   await expect(resultCLI.getByLabel('cli current review state', {exact:true}).locator('.review-attempt-state')).toHaveText('Needs agent attention');
-  const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/1\/0 .*Partial review/});
+  const partialLink = resultCLI.getByRole('link',{name:/^Open cli run live-cli-partial: 3\/\?\/\? .*Partial review/});
   checkpoint = 'result-partial-link';
   await expect(partialLink).toHaveCount(1);
   checkpoint = 'result-partial-counts';
-  await expect(partialLink.locator('strong')).toHaveText('3/1/0');
+  await expect(partialLink.locator('strong')).toHaveText('3/?/?');
   checkpoint = 'result-partial-status';
   // Compact summaries do not include the timeline finding inventory.
   await expect(partialLink.locator('.review-pill-status')).toHaveText('Partial');
@@ -1317,13 +1317,13 @@ try {
   checkpoint = 'partial-history-and-findings';
   const partialRow = page.locator('.review-history-row').filter({hasText:'Partial review'});
   await expect(partialRow).toContainText('1 undecided');
-  await expect(partialRow).toContainText('Accepted: 0/1/0');
+  await expect(partialRow).toContainText('Accepted: ?');
   const partialDetails = partialRow.getByRole('link',{name:/run details/});
   await expect(partialDetails).toHaveAttribute('href',partialURL);
   await partialDetails.click();
   await expect(page.getByRole('heading',{name:'Review findings',exact:true})).toBeVisible();
   await expect(page.getByText('Partial finding undecided',{exact:true})).toBeVisible();
-  await expect(page.locator('.review-run-summary')).toContainText('Accepted: 1 · Routed: 0');
+  await expect(page.locator('.review-run-summary')).toContainText('Accepted: ? · Routed: ?');
   checkpoint = 'reviews-return';
   await page.getByRole('navigation', {name:'Project navigation'}).getByRole('link', {name:'Review queue', exact:true}).click();
   checkpoint = 'reviews-heading';

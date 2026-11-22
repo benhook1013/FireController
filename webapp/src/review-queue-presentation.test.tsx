@@ -7,7 +7,7 @@ import { PresentationContext } from './presentation-context';
 import { ReviewFindingView, ReviewPullFacts, ReviewQueueRow, ReviewQueueView, ReviewRunsView, formatQueueDistance, groupReviewQueue, missingPullFacts, reviewQueueDistances, reviewQueueHashTarget, reviewQueueQuery } from './review-workspace';
 import type { ReviewFronts } from './review-fronts';
 import type { ReviewProgressItem } from './review-progress';
-import type { Presentation, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewQueue } from './types';
+import type { Presentation, ReviewAttemptSummary, ReviewFinding, ReviewPullSummary, ReviewQueue, ReviewRunSummary } from './types';
 
 const key = ['fc', 'connection', 'instance', 'project', 'actor'];
 const pull = (number: number, state: ReviewPullSummary['state'] = 'open'): ReviewPullSummary => ({ number, title: `Change ${number}`, state, head_sha: 'a'.repeat(40), base_ref: 'main', base_sha: 'b'.repeat(40), ci_state: 'success', mergeability: 'mergeable', complete: true, run_count: 0, run_counts: { hosted: 0, cli: 0, subagent: 0, manual: 0 }, attempt_count: 0, recent_runs: [], latest_attempts: [] });
@@ -26,6 +26,12 @@ function markup(node: React.ReactNode, queue?: ReviewQueue, presentation?: Prese
 }
 const queue = (items: ReviewPullSummary[]): ReviewQueue => ({ items, has_more: false, configured: true, project_id: 'project', snapshot_id: 'snapshot', revision: 1, source: 'stored', observed_at: '2026-10-19T00:00:00Z', recorded_at: '2026-10-19T00:00:00Z' });
 const fronts = (): ReviewFronts => ({ project_id: 'project', configured: true, repository_id: 1, configuration_revision: 1, policy_revision: 1, snapshot_id: 'snapshot', queue: [1, 2, 3], channels: [{ channel: 'hosted', state: 'ready', pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main', queued_priority: {pull_number:2,head_sha:pull(2).head_sha,base_sha:pull(2).base_sha,base_ref:'main'} }] });
+const stackedFronts = (): ReviewFronts => {
+  const value = fronts();
+  value.queue = [2, 3];
+  value.channels = (['hosted', 'cli'] as const).map(channel => ({ channel, state: 'ready' as const, pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main', queued_priority: { pull_number: 2, head_sha: pull(2).head_sha, base_sha: pull(2).base_sha, base_ref: 'main' } }));
+  return value;
+};
 
 describe('truthful stored review presentation', () => {
   it('shows actual branch targets for stack heads and preserves explicit parent PR links', () => {
@@ -355,6 +361,59 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('review-pull-facts"><span class="badge review-position-closed"');
     expect(html.match(/class="badge review-position-closed"/gu)).toHaveLength(1);
     expect(html).not.toContain('review-position-front');
+  });
+  it('holds a moved child without relying on a loaded parent row and keeps aligned queue labels unchanged', () => {
+    const child = { ...pull(3), parent_pull_number: 2, parent_base_moved: true as const };
+    const held = markup(<ReviewQueueView />, queue([child]), undefined, { fronts: stackedFronts() });
+    const row = held.match(/<li id="review-pr-3"[\s\S]*?<\/li>/u)![0];
+    expect(row).toContain('>Parent changed</span>');
+    expect(row).toContain('title="Parent PR #2 changed; this child still targets its earlier base."');
+    expect(row).toMatch(/aria-label="hosted current review state"><span[^>]*>Waiting for parent<\/span>/u);
+    expect(row).toMatch(/aria-label="cli current review state"><span[^>]*>Waiting for parent<\/span>/u);
+    expect(row).not.toContain('>Queued</span>');
+
+    const alignedChild = { ...pull(3), parent_pull_number: 2, base_sha: pull(2).head_sha };
+    const aligned = markup(<ReviewQueueView />, queue([alignedChild]), undefined, { fronts: stackedFronts() });
+    const alignedRow = aligned.match(/<li id="review-pr-3"[\s\S]*?<\/li>/u)![0];
+    expect(alignedRow).toContain('>Queued</span>');
+    expect(alignedRow).not.toContain('Parent changed');
+    expect(alignedRow).not.toContain('Waiting for parent');
+  });
+  it('keeps old CI and merge-ready facts from reading as current proof after the parent moves', () => {
+    const observation = { state: 'current' as const, ci_checked_at: '2026-10-28T12:12:35Z', ci_gate_ref: 'main', ci_gate_state: 'success' as const };
+    const moved = { ...pull(3), parent_pull_number: 2, parent_base_moved: true as const, observation, merge_status: { state: 'ready' as const, reason: 'github_clean' } };
+    const html = markup(<ReviewPullFacts pull={moved} />);
+    expect(html).toContain('>CI for previous base</span>');
+    expect(html).toContain('review-ci review-fact-unknown');
+    expect(html).toContain('title="Parent PR #2 changed; this CI is for the earlier base. Last checked');
+    expect(html).toContain('Last checked');
+    expect(html).toContain('>Merge: Parent changed</span>');
+    expect(html).not.toContain('>Merge: Ready</span>');
+    const conflict = markup(<ReviewPullFacts pull={{ ...moved, merge_status: { state: 'blocked', reason: 'github_dirty' } }} />);
+    expect(conflict).toContain('>Merge: Conflicts</span>');
+    expect(conflict).not.toContain('>Merge: Parent changed</span>');
+
+    const aligned = markup(<ReviewPullFacts pull={{ ...moved, parent_base_moved: undefined }} />);
+    expect(aligned).toContain('>Required CI: Success · main</span>');
+    expect(aligned).toContain('>Merge: Ready</span>');
+    expect(aligned).not.toContain('CI for previous base');
+  });
+  it('preserves active work, closed channels, completed rounds and incoming routed-finding data', () => {
+    const completed: ReviewRunSummary = { source: 'native-executor', id: 'completed-run', pull_number: 3, source_run_id: 'completed-source-run', channel: 'hosted', head_sha: pull(3).head_sha, reviewer: 'reviewer', scope: 'full', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-20T00:00:00Z', finished_at: '2026-10-20T00:01:00Z', found: 1, accepted: 1, routed: 0, finalized: true, fixed: 1, current_accepted: 1, current_pending_fixes: 0 };
+    const active: ReviewAttemptSummary = { source_attempt_id: 'active-attempt', channel: 'hosted', head_sha: pull(3).head_sha, state: 'active', started_at: '2026-10-21T00:00:00Z', finished_at: '', duration_seconds: null, source_run_id: '', trigger_id: 'trigger', provider_review_id: '' };
+    const child = { ...pull(3), parent_pull_number: 2, parent_base_moved: true as const, run_count: 1, run_counts: { ...pull(3).run_counts, hosted: 1 }, recent_runs: [completed], attempt_count: 1, latest_attempts: [active] };
+    const progress: ReviewProgressItem = { pull_number: 3, incoming_routes_pending: 1, channels: (['hosted', 'cli'] as const).map(channel => ({ channel, configured: true, revision: 1, epoch: 1, closed: false, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 })) };
+    const live = markup(<ReviewQueueView />, queue([child]), undefined, { fronts: stackedFronts(), progress: [progress] });
+    expect(live).toContain('aria-label="hosted execution: Reviewing"');
+    expect(live).toContain('>1/1/0</strong>');
+    expect(live).toContain('1 incoming routed finding');
+    expect(live).toMatch(/aria-label="cli current review state"><span[^>]*>Waiting for parent<\/span>/u);
+
+    const closedProgress: ReviewProgressItem = { pull_number: 3, channels: (['hosted', 'cli'] as const).map(channel => ({ channel, configured: true, revision: 1, epoch: 1, closed: true, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 })) };
+    const closed = markup(<ReviewQueueView />, queue([{ ...pull(3), parent_pull_number: 2, parent_base_moved: true }]), undefined, { fronts: stackedFronts(), progress: [closedProgress] });
+    expect(closed).toContain('>Parent changed</span>');
+    expect(closed).toContain('>Review closed</span>');
+    expect(closed).not.toContain('Waiting for parent');
   });
   it('resolves only exact row anchors already present in the loaded queue', () => {
     const items = [pull(1, 'merged'), pull(2)];

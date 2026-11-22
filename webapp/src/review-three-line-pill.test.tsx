@@ -38,8 +38,9 @@ describe('three-line review state pills',()=>{
  it('keeps real partial-case semantics without completed credit',()=>{
   const partial={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,found:15,accepted:0,fixed:0,retained_undecided:15};
   const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'coverage_incomplete'}],{...progress,retained_adjudication_pending:true});
-  expect(html).toContain('<strong>15/0/0</strong>');expect(html).toContain('Partial · Needs adjudication');expect(html).toContain('Needs adjudication');expect(html).toContain('No completed round');
+  expect(html).toContain('<strong>15/?/?</strong>');expect(html).toContain('Partial · Needs adjudication');expect(html).toContain('Needs adjudication');expect(html).toContain('No completed round');
   expect(html).not.toContain('>Finished</span>');expect(html).not.toContain('review-pill-zero');
+  expect(markup([{...partial,finalized:true,retained_undecided:0,accepted:3,routed:2}])).toContain('<strong>15/3/2</strong>');
  });
  it('separates an unsettled returned partial result from failed-attempt attention',()=>{
   const partial={...completed,found:3,accepted:1,routed:0,fixed:0,retained_undecided:1,outcome:'failed' as const,complete:false,attributable:false,finalized:false};
