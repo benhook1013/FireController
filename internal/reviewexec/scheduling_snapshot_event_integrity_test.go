@@ -23,7 +23,7 @@ func schedulingEventSnapshotFixture(t *testing.T) *sql.Tx {
 	for _, statement := range []string{
 		"CREATE TABLE metadata(key,value)",
 		"INSERT INTO metadata VALUES ('schema:review_scheduling','2')",
-		"CREATE TABLE events(sequence INTEGER PRIMARY KEY, project_id, resource_id, event_type, revision, actor_id, payload_json)",
+		"CREATE TABLE events(sequence INTEGER PRIMARY KEY, project_id, resource_id, event_type, revision, actor_id, payload_json, created_at)",
 		"CREATE TABLE review_scheduling(project_id,revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at)",
 		"CREATE TABLE review_pull_scheduling(project_id,pull_number,revision,paused,reason,actor_id,updated_at)",
 		"CREATE TABLE review_automatic_selections(selection_id,project_id,scheduling_revision,basis_sha256,settled_basis_sha256,pull_number,pull_basis_sha256,actor_id,worker_id,credential_id)",
@@ -116,7 +116,7 @@ func TestOrphanResumeRequiresNativeRevisionWithoutChangingCompatibility(t *testi
 		{"null", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := tx.QueryRowContext(t.Context(), `SELECT '2', ?, '{"pull_number":2,"paused":false}', 1`, tc.revision)
+			row := tx.QueryRowContext(t.Context(), `SELECT 'test-project', '2', ?, '{"pull_number":2,"paused":false}', 1, 'test-actor', ?`, tc.revision, stamp())
 			err := validateOrphanPullSchedulingEvent(row)
 			if tc.valid {
 				if err != nil {
@@ -126,5 +126,51 @@ func TestOrphanResumeRequiresNativeRevisionWithoutChangingCompatibility(t *testi
 				attemptCode(t, err, "storage_unavailable")
 			}
 		})
+	}
+}
+
+func TestSchedulingSnapshotValidatesLatestOrphanResume(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		revision any
+		actor    any
+		at       any
+	}{
+		{"text-revision", "1", "test-actor", stamp()},
+		{"invalid-actor", int64(3), "invalid actor", stamp()},
+		{"blob-actor", int64(3), []byte("test-actor"), stamp()},
+		{"invalid-time", int64(3), "test-actor", "not-time"},
+		{"blob-time", int64(3), "test-actor", []byte(stamp())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := schedulingEventSnapshotFixture(t)
+			const insert = `INSERT INTO events(project_id,resource_id,event_type,revision,actor_id,payload_json,created_at)
+				VALUES ('test-project','2','review.pull_scheduling_updated',?,?,'{"pull_number":2,"paused":false}',?)`
+			if _, err := tx.ExecContext(t.Context(), insert, int64(2), "test-actor", stamp()); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSchedulingSnapshot(t.Context(), tx); err != nil {
+				t.Fatalf("valid legacy resume rejected: %v", err)
+			}
+			if _, err := tx.ExecContext(t.Context(), insert, tc.revision, tc.actor, tc.at); err != nil {
+				t.Fatal(err)
+			}
+			attemptCode(t, ValidateSchedulingSnapshot(t.Context(), tx), "storage_unavailable")
+		})
+	}
+}
+
+func TestOrphanResumeRejectsBlobResourceInSnapshotAndRestore(t *testing.T) {
+	tx := schedulingEventSnapshotFixture(t)
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO metadata VALUES('restore:state','inactive');
+		INSERT INTO events(project_id,resource_id,event_type,revision,actor_id,payload_json,created_at)
+		VALUES ('test-project',X'32','review.pull_scheduling_updated',1,'test-actor','{"pull_number":2,"paused":false}',?)`, stamp()); err != nil {
+		t.Fatal(err)
+	}
+	attemptCode(t, ValidateSchedulingSnapshot(t.Context(), tx), "storage_unavailable")
+	attemptCode(t, RestoreHistoricalPullResumes(t.Context(), tx), "storage_unavailable")
+	var rows int
+	if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM review_pull_scheduling`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("invalid resource produced a projection: %d %v", rows, err)
 	}
 }

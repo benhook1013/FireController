@@ -374,6 +374,55 @@ func TestAutomaticSourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 	}
 }
 
+func TestAutomaticCLISourceRetryRejectsBlobSchedulingRevisionAfterSourceIO(t *testing.T) {
+	f, r := cliSourceRetryFixture(t)
+	ageSourceRetry(t, f, r.ID)
+	schedulingCLIGenerate(t, f, true)
+	beforeBasis := snapshotTable(t, f, "review_automatic_selections")
+	beforeFront := snapshotTable(t, f, "review_front_frames")
+	var checked bool
+	reader := &refreshTestReader{repository: func(ctx context.Context, _ int64) (reviewprovider.Repository, error) {
+		admissionSQL(t, f, `UPDATE review_scheduling SET revision=CAST(revision AS BLOB) WHERE project_id=?`, r.ProjectID)
+		err := f.e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			current, err := readRun(ctx, tx, r.ProjectID, r.ID)
+			if err != nil {
+				return err
+			}
+			if current.State != "selecting" || current.Revision != 5 {
+				t.Fatalf("expected an in-flight source retry, got %+v", current)
+			}
+			var storageClass, revisionHex string
+			if err := tx.QueryRowContext(ctx, `SELECT typeof(revision),hex(revision) FROM review_scheduling WHERE project_id=?`, r.ProjectID).Scan(&storageClass, &revisionHex); err != nil {
+				return err
+			}
+			if storageClass != "blob" || revisionHex != "31" {
+				t.Fatal("expected a BLOB containing 1, got", storageClass, revisionHex)
+			}
+			checked = true
+			_, err = automaticSourceRecoveryFence(ctx, tx, current)
+			return err
+		})
+		if !automaticProjectRefused(err) {
+			t.Errorf("source retry fence accepted a malformed scheduling revision: %v", err)
+		}
+		return reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, nil
+	}}
+	selectionNext(t, f, reader)
+	got := selectionRead(t, f, r.ID)
+	if !checked || got.State != "held" || got.Reason != "automatic_scheduling_unavailable" || got.Revision != 6 || got.OperationID != "" {
+		t.Fatal("expected a local refusal at retry settlement", got)
+	}
+	if beforeBasis != snapshotTable(t, f, "review_automatic_selections") || beforeFront != snapshotTable(t, f, "review_front_frames") || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 0 {
+		t.Fatal("refused retry retained front frame, basis, or child changes")
+	}
+	admissionSQL(t, f, `UPDATE review_scheduling SET revision=1 WHERE project_id=?`, r.ProjectID)
+	ageSourceRetry(t, f, r.ID)
+	schedulingCLIGenerate(t, f, false)
+	if afterRepair := selectionRead(t, f, r.ID); afterRepair.State != got.State || afterRepair.Reason != got.Reason || afterRepair.Revision != got.Revision {
+		t.Fatal("repair reopened the refused retry", afterRepair)
+	}
+}
+
 func TestAutomaticSourceRetryAcceptanceOrderSurvivesClockRollback(t *testing.T) {
 	f, r := sourceRetryFixture(t)
 	ageSourceRetry(t, f, r.ID)

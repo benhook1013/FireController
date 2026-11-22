@@ -128,6 +128,7 @@ type Engine struct {
 	independentProbeMu         sync.Mutex
 	independentProbeActive     bool
 	independentProbeLast       time.Time
+	independentProbeNext       map[independentProbeKey]time.Time
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	draftProbeCursor           string

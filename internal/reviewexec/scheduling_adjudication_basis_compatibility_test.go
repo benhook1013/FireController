@@ -2,8 +2,9 @@ package reviewexec
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
+	"encoding/hex"
 	"testing"
 )
 
@@ -31,10 +32,10 @@ func TestAutomaticAdjudicationBasisPreservesValidRetainedDigest(t *testing.T) {
 		id, project, channel, body string
 		pull                       int
 	}{
-		{"e1", "p", "cli", `{"capture":{"review":{"Findings":[]}}}`, 2},
-		{"e2", "p", "hosted", `{"capture":{"review":{"Findings":[{"Title":"Valid finding"}]}}}`, 2},
-		{"e3", "p", "hosted", `{"capture":{"review":{"Findings":null}}}`, 2},
 		{"e4", "p", "cli", `{"capture":{"review":{"Findings":[{"Title":"Valid finding"}]}}}`, 2},
+		{"e1", "p", "cli", `{"capture":{"review":{"Findings":[]}}}`, 2},
+		{"e3", "p", "hosted", `{"capture":{"review":{"Findings":null}}}`, 2},
+		{"e2", "p", "hosted", `{"capture":{"review":{"Findings":[{"Title":"Valid finding"}]}}}`, 2},
 		{"e5", "p", "hosted", `{"capture":{"review":{"Findings":[]}}}`, 4},
 		{"e6", "q", "cli", `{"capture":{"review":{"Findings":[{"Title":"Valid finding"}]}}}`, 2},
 	} {
@@ -48,33 +49,20 @@ func TestAutomaticAdjudicationBasisPreservesValidRetainedDigest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, channel := range []string{"cli", "hosted"} {
-		label := automaticAdjudicationBasisLabel(channel)
-		var before, after bytes.Buffer
-		before.WriteString(label)
-		before.WriteByte(0)
-		rows, err := tx.QueryContext(t.Context(), label, "p", 2)
-		if err != nil {
+	// Freeze the original query label, NUL separator, and ordered JSON rows.
+	// CLI includes e1, e2, e4; Hosted includes e2, e3, e4.
+	for _, tc := range []struct{ channel, digest string }{
+		{"cli", "4dc8d8a0206132b93a7fc669f6bfa0046ce6e1891faf238a0626313e21415d99"},
+		{"hosted", "1b1e87c3e6f25b7e538a6e0197be5baf4d1a945228126d45ef4d2141664a5eb2"},
+	} {
+		var actual bytes.Buffer
+		label := automaticAdjudicationBasisLabel(tc.channel)
+		if err := automaticBasisAppender(t.Context(), tx, &actual, tc.channel, 1)(label, false, "p", 2); err != nil {
 			t.Fatal(err)
 		}
-		for rows.Next() {
-			var id string
-			var revision int64
-			if err = rows.Scan(&id, &revision); err != nil {
-				t.Fatal(err)
-			}
-			if err = json.NewEncoder(&before).Encode([]any{id, revision}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err = rows.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err = automaticBasisAppender(t.Context(), tx, &after, channel, 1)(label, false, "p", 2); err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(before.Bytes(), after.Bytes()) {
-			t.Fatalf("%s changed valid digest input", channel)
+		sum := sha256.Sum256(actual.Bytes())
+		if got := hex.EncodeToString(sum[:]); got != tc.digest {
+			t.Fatalf("%s changed valid digest input: got %s, want %s; input %q", tc.channel, got, tc.digest, actual.Bytes())
 		}
 	}
 }

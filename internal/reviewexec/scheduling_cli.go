@@ -94,6 +94,13 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 			continue
 		}
 		if err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "overloaded" && ctx.Err() == nil {
+				// Preserve this account's turn for the next pass while
+				// allowing other accounts to plan independent requests.
+				selectedAccounts[account] = true
+				continue
+			}
 			return generated, err
 		}
 		if worked {

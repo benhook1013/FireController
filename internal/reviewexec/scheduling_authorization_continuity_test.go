@@ -75,7 +75,7 @@ func TestRetainedAutomaticAuthorizationSurvivesUnrelatedLaneToggle(t *testing.T)
 
 func TestRetainedAutomaticAuthorizationRequiresCompleteAuthorityAndHistory(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, fault := range []string{"lane-disabled", "lane-off-on", "missing-initial", "missing-middle", "missing-current", "duplicate-revision", "original-actor", "current-actor", "malformed-payload", "duplicate-channel", "fractional-revision", "null-lane", "revoked-original", "lost-manage", "retired-original", "revoked-current", "mismatched-child", "unselected"} {
+		for _, fault := range []string{"lane-disabled", "lane-off-on", "missing-initial", "missing-middle", "missing-current", "duplicate-revision", "original-actor", "current-actor", "malformed-payload", "duplicate-channel", "case-alias-channel", "fractional-revision", "null-lane", "revoked-original", "lost-manage", "retired-original", "revoked-current", "mismatched-child", "unselected"} {
 			t.Run(channel+"/"+fault, func(t *testing.T) {
 				f, r := continuityFixture(t, channel, fault != "unselected")
 				switch fault {
@@ -107,6 +107,9 @@ func TestRetainedAutomaticAuthorizationRequiresCompleteAuthorityAndHistory(t *te
 					admissionSQL(t, f, `UPDATE events SET payload_json='{}' WHERE event_type='review.scheduling_updated' AND revision=2`)
 				case "duplicate-channel":
 					admissionSQL(t, f, `UPDATE events SET payload_json='{"automatic_hosted":false,"automatic_hosted":true,"automatic_cli":false,"automatic_cli":true}' WHERE event_type='review.scheduling_updated' AND revision=2`)
+				case "case-alias-channel":
+					continuityConfigure(t, f, 2, true, true)
+					admissionSQL(t, f, `UPDATE events SET payload_json='{"automatic_hosted":false,"AUTOMATIC_HOSTED":true,"automatic_cli":false,"AUTOMATIC_CLI":true}' WHERE event_type='review.scheduling_updated' AND revision=2`)
 				case "fractional-revision":
 					admissionSQL(t, f, `UPDATE events SET revision=1.5 WHERE event_type='review.scheduling_updated' AND revision=2`)
 				case "null-lane":

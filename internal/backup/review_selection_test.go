@@ -380,6 +380,17 @@ func TestSelectionQuarantineInventoryKeepsV1Restore(t *testing.T) {
 	assertCurrentSummaryInventoryRefused(t, bundle, false)
 }
 
+func TestSelectionQuarantineInventoryRefusesV1NameCollision(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	if _, err := f.store.DB().Exec(`DROP TABLE review_selection_quarantine;
+	  UPDATE metadata SET value='1' WHERE key='schema:review_selection'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	mutateBundleSQL(t, bundle.Path, `CREATE INDEX Review_Selection_Quarantine ON projects(id)`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}
+
 func TestSelectionQuarantineInventoryRetainsAutomaticChildWithoutAuthority(t *testing.T) {
 	f, _, _ := schedulingBackupFixture(t)
 	ctx := t.Context()

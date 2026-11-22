@@ -15,7 +15,7 @@ import (
 // scheduler selection and the serialized attempt claim use this same snapshot
 // check; allow_out_of_order concerns dependencies, not scheduling priority.
 func (e *Engine) earlierQueuedReviewIntent(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64) (*Operation, error) {
-	return e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, nil)
+	return e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, nil, nil, false)
 }
 
 type queuePriorityKey struct {
@@ -27,12 +27,12 @@ type queuePriorityKey struct {
 // An empty predecessor set can be reused only inside one read transaction.
 // Binding-dependent decisions still run separately for every candidate.
 func (e *Engine) earlierQueuedReviewIntentInSnapshot(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64, empty map[queuePriorityKey]bool) (*Operation, error) {
-	return e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, empty, nil)
+	return e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, empty, nil, true)
 }
 
 type queuePriorityPreflight struct {
 	cause                  error
-	predecessor            Operation
+	predecessors           []Operation
 	configuration          Configuration
 	revision, repositoryID int64
 }
@@ -40,7 +40,7 @@ type queuePriorityPreflight struct {
 func (p *queuePriorityPreflight) Error() string { return p.cause.Error() }
 func (p *queuePriorityPreflight) Unwrap() error { return p.cause }
 
-func (e *Engine) earlierQueuedReviewIntentWithWitness(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64, empty map[queuePriorityKey]bool, witness *independentClaimWitness) (*Operation, error) {
+func (e *Engine) earlierQueuedReviewIntentWithWitness(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64, empty map[queuePriorityKey]bool, witness *independentClaimWitness, collectPreflight bool) (*Operation, error) {
 	position := slices.Index(c.Queue, o.PullNumber)
 	if !validChannel(o.Channel) || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
 		return nil, nil
@@ -89,6 +89,8 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 	if err != nil || !valid {
 		return nil, err
 	}
+	var preflight *queuePriorityPreflight
+	var repositoryID int64
 	for _, id := range ids {
 		earlier, err := readOperation(ctx, tx, o.ProjectID, id)
 		if err != nil {
@@ -101,20 +103,31 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 				!independentClaimPair(c, revision, earlier, o) {
 				return nil, err
 			}
-			var repoID int64
-			if readErr := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, o.ProjectID).Scan(&repoID); readErr != nil {
-				return nil, readErr
+			if repositoryID == 0 {
+				if readErr := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, o.ProjectID).Scan(&repositoryID); readErr != nil {
+					return nil, readErr
+				}
 			}
-			if witness != nil && witness.matches(e.sampleExecutionTime(), repoID, c, revision, earlier, o) {
+			if witness != nil && witness.matches(e.sampleExecutionTime(), repositoryID, c, revision, earlier, o) {
 				continue
 			}
-			// This still fences all non-supervisor callers. The supervisor
-			// may perform a separate bounded, trusted observation outside SQL.
-			return nil, &queuePriorityPreflight{err, earlier, c, revision, repoID}
+			if preflight == nil {
+				preflight = &queuePriorityPreflight{cause: err, configuration: c, revision: revision, repositoryID: repositoryID}
+			}
+			preflight.predecessors = append(preflight.predecessors, earlier)
+			// Only the supervisor's read pass collects additional pairs for
+			// one trusted observation outside the claim transaction.
+			if !collectPreflight {
+				return nil, preflight
+			}
+			continue
 		}
 		if valid {
 			return &earlier, nil
 		}
+	}
+	if preflight != nil {
+		return nil, preflight
 	}
 	return nil, nil
 }
