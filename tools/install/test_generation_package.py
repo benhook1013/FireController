@@ -41,11 +41,20 @@ class GenerationPackageTests(unittest.TestCase):
         sources = {module: b'import os\n' for module in deploy_helper_package.module_inventory(SOURCE)}
         with patch.object(deploy_helper_package, 'source_at', return_value=sources):
             self.helpers = deploy_helper_package.assemble(self.root, SOURCE)
+        extractor = patch.object(generation_package, '_extract_fcd', side_effect=self.extract_fcd)
+        self.extractor = extractor.start()
+        self.addCleanup(extractor.stop)
+
+    def extract_fcd(self, image, source, output):
+        self.assertEqual((image, source), (IMAGE, SOURCE))
+        output = Path(output)
+        output.write_bytes(self.fcd.read_bytes())
+        output.chmod(0o555)
 
     def assemble(self, output=None, *, fcd_sha256=None):
         with patch.object(deploy_helper_package, 'assemble', return_value=self.helpers) as nested:
             receipt = generation_package.assemble(
-                self.root, SOURCE, IMAGE, self.fcd, fcd_sha256 or digest(self.fcd),
+                self.root, SOURCE, IMAGE, fcd_sha256 or digest(self.fcd),
                 self.rclone, digest(self.rclone), output or self.output)
         nested.assert_called_once()
         return receipt
@@ -66,6 +75,8 @@ class GenerationPackageTests(unittest.TestCase):
             self.assertEqual(len(archive.getmembers()), len(MEMBERS))
             self.assertEqual(set(archive.getnames()), MEMBERS)
             self.assertTrue(all(member.isfile() for member in archive.getmembers()))
+            with archive.extractfile('fcd') as daemon:
+                self.assertEqual(daemon.read(), self.fcd.read_bytes())
         receipt = generation_package.verify(self.output, digest(self.output), SOURCE, IMAGE)
         self.assert_receipt(receipt, self.output)
 
@@ -120,4 +131,12 @@ class GenerationPackageTests(unittest.TestCase):
     def test_failed_assembly_does_not_publish_a_file(self):
         with self.assertRaises(generation_package.Invalid):
             self.assemble(fcd_sha256='0' * 64)
+        self.assertFalse(self.output.exists())
+
+    def test_pin_for_other_image_daemon_does_not_publish_a_file(self):
+        other_image_sha256 = hashlib.sha256(elf(62, b'other image daemon')).hexdigest()
+        self.assertNotEqual(other_image_sha256, digest(self.fcd))
+        with self.assertRaises(generation_package.Invalid):
+            self.assemble(fcd_sha256=other_image_sha256)
+        self.extractor.assert_called_once()
         self.assertFalse(self.output.exists())

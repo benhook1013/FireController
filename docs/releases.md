@@ -25,12 +25,12 @@ The focused source fixtures cover subprocess launch and rollback ordering, first
 
 ## Versioned installation payload
 
-Use [the generation packager](../tools/install/generation_package.py) to stage one Linux/amd64 payload containing the image's exact `fcd`, the qualified rclone binary, and the deployment helper archive from the same Git revision. Supply the image digest and independently verified executable hashes. The package records the OCI image reference so the image can be retrieved separately by digest. Service configuration, credentials, database files and backups stay outside the payload.
+Use [the generation packager](../tools/install/generation_package.py) to stage one Linux/amd64 payload containing the image's exact `fcd`, the qualified rclone binary, and the deployment helper archive from the same Git revision. Supply a locally loaded image digest and independently verified executable hashes. The packager verifies the image's source label and extracts `fcd` from an immutable, never-started local container. The package records the OCI image reference so the image can be retrieved separately by digest. Service configuration, credentials, database files and backups stay outside the payload.
 
 ```sh
 python3 tools/install/generation_package.py assemble --repository . \
   --source "$RELEASE_SOURCE" --image "$RELEASE_IMAGE" \
-  --fcd "$RELEASE_FCD" --fcd-sha256 "$RELEASE_FCD_SHA256" \
+  --fcd-sha256 "$RELEASE_FCD_SHA256" \
   --rclone "$RELEASE_RCLONE" --rclone-sha256 "$RELEASE_RCLONE_SHA256" \
   --output "$RELEASE_PACKAGE"
 python3 tools/install/generation_package.py verify --package "$RELEASE_PACKAGE" \

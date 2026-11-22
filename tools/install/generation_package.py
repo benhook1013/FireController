@@ -128,10 +128,46 @@ def verify(package, expected_sha256, source, image):
         raise Invalid("generation package unreadable or invalid") from error
 
 
-def assemble(repository, source, image, fcd, fcd_sha256, rclone, rclone_sha256, output):
-    """Publish one verified payload without replacing an existing destination."""
+def _docker(*args):
+    try:
+        return subprocess.run(["docker", *args], check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Invalid("local Docker image operation failed: " + " ".join(args[:2])) from error
+
+
+def _extract_fcd(image, source, output):
+    format_string = ('[{{json .Id}},{{json .RepoDigests}},'
+                     '{{json (index .Config.Labels "org.opencontainers.image.revision")}},'
+                     '{{json .Os}},{{json .Architecture}}]')
+    try:
+        image_id, references, revision, os_name, architecture = json.loads(
+            _docker("image", "inspect", "--format", format_string, image))
+    except (TypeError, ValueError) as error:
+        raise Invalid("local Docker image identity unavailable") from error
+    if (not isinstance(image_id, str) or not image_id.startswith("sha256:") or not DIGEST.fullmatch(image_id[7:])
+            or not isinstance(references, list) or image not in references
+            or (revision, os_name, architecture) != (source, "linux", "amd64")):
+        raise Invalid("local Docker image does not match the exact release and platform")
+    container = _docker("create", "--pull=never", "--platform=linux/amd64", "--network=none", image_id)
+    if not DIGEST.fullmatch(container):
+        raise Invalid("local Docker did not return a container identity")
+    try:
+        _docker("cp", container + ":/fcd", str(output))
+    finally:
+        _docker("rm", "--volumes", container)
+
+
+def assemble(repository, source, image, fcd_sha256, rclone, rclone_sha256, output):
+    """Extract the selected image's daemon and publish one verified payload."""
     _validate_pins(source, image, fcd_sha256, rclone_sha256)
-    executables = {"fcd": (Path(fcd), fcd_sha256), "rclone": (Path(rclone), rclone_sha256)}
+    with tempfile.TemporaryDirectory(prefix="firecontroller-package-image-") as directory:
+        fcd = Path(directory) / "fcd"
+        _extract_fcd(image, source, fcd)
+        executables = {"fcd": (fcd, fcd_sha256), "rclone": (Path(rclone), rclone_sha256)}
+        return _assemble_payload(repository, source, image, executables, Path(output))
+
+
+def _assemble_payload(repository, source, image, executables, output):
     try:
         pins = {role: platform_prerequisites.executable_pin(str(path.absolute()), digest)
                 for role, (path, digest) in executables.items()}
@@ -143,10 +179,10 @@ def assemble(repository, source, image, fcd, fcd_sha256, rclone, rclone_sha256, 
         raise Invalid("deployment helpers unavailable at the exact source revision") from error
     manifest = {
         "schema": 1, "source": source, "image": image, "platform": "linux/amd64",
-        "sha256": {"fcd": fcd_sha256, "rclone": rclone_sha256, HELPERS: hashlib.sha256(helpers).hexdigest()},
+        "sha256": {**{role: digest for role, (_, digest) in executables.items()},
+                   HELPERS: hashlib.sha256(helpers).hexdigest()},
     }
     manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
-    output = Path(output)
     try:
         descriptor, name = tempfile.mkstemp(prefix="." + output.name + ".", dir=output.parent)
         temporary = Path(name)
@@ -186,14 +222,14 @@ def main(argv=None):
     for command in (build, check):
         command.add_argument("--source", required=True)
         command.add_argument("--image", required=True)
-    for flag in ("repository", "fcd", "fcd-sha256", "rclone", "rclone-sha256", "output"):
+    for flag in ("repository", "fcd-sha256", "rclone", "rclone-sha256", "output"):
         build.add_argument("--" + flag, required=True)
     check.add_argument("--package", required=True)
     check.add_argument("--package-sha256", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "assemble":
-            result = assemble(args.repository, args.source, args.image, args.fcd, args.fcd_sha256,
+            result = assemble(args.repository, args.source, args.image, args.fcd_sha256,
                               args.rclone, args.rclone_sha256, args.output)
         else:
             result = verify(args.package, args.package_sha256, args.source, args.image)
