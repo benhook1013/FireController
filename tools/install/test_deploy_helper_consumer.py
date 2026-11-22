@@ -30,21 +30,28 @@ class ConsumerTests(unittest.TestCase):
                     if kind == 'path': member.name = '../kubernetes.py'
                     if kind == 'contents': body = b'x'*len(body)
                     if kind == 'link': member.type = tarfile.SYMTYPE; member.linkname = '/etc/passwd'
+                elif member.name == 'helper_generation.py' and kind == 'missing_generation':
+                    continue
                 dst.addfile(member, io.BytesIO(body))
                 if kind == 'duplicate' and member.name == 'kubernetes.py': dst.addfile(member, io.BytesIO(body))
         return output.getvalue()
 
-    def test_real_current_package_consumed_without_switch_authority(self):
-        revision = '81b2906e45c6f9cc9ff51bc35cee1ff31b88eed0'
-        raw, _ = p.assemble(Path(__file__).resolve().parents[2], revision)
-        result = c.verify(raw, hashlib.sha256(raw).hexdigest(), revision)
-        self.assertEqual(result['verified_modules'], 17)
-        self.assertFalse(result['platform_verified'])
-        self.assertFalse(result['generation_switch_ready'])
+    def test_retained_packages_consumed_without_switch_authority(self):
+        for revision, count in (
+            ('81b2906e45c6f9cc9ff51bc35cee1ff31b88eed0', 17),
+            ('0fbc6d9afab241761145cd1e272f14d529f2d891', 20),
+            ('31c9ff51c77f82ea05231a35958f1cf616f0decb', 20),
+        ):
+            with self.subTest(revision=revision):
+                raw, _ = p.assemble(Path(__file__).resolve().parents[2], revision)
+                result = c.verify(raw, hashlib.sha256(raw).hexdigest(), revision)
+                self.assertEqual(result['verified_modules'], count)
+                self.assertFalse(result['platform_verified'])
+                self.assertFalse(result['generation_switch_ready'])
 
     def test_tampering_refused_even_when_outer_digest_reselected(self):
         raw = self.archive()
-        for kind in ('authority','source','missing','path','contents','link','duplicate'):
+        for kind in ('authority', 'source', 'missing', 'missing_generation', 'path', 'contents', 'link', 'duplicate'):
             with self.subTest(kind=kind):
                 changed = self.mutate(raw, kind)
                 with self.assertRaises(c.Invalid): c.verify(changed, hashlib.sha256(changed).hexdigest(), 'a'*40)

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Host side of the fixed FireController deploy. Run by deploy.py, not by hand.
 
-Steps, all under one deploy lock plus the shared backup phase lock (managed
-backups and the offsite batch wait while a deploy holds it):
+Steps, all under one deploy lock, the helper-generation lease and the shared
+backup phase lock (managed backups and the offsite batch wait while a deploy
+holds it):
 
 1. Snapshot the live database (SQLite online backup) as the rollback point.
 2. Rehearse the new binary's migrations on a copy of that snapshot.
-3. Install the new fcd for the backup helpers and repoint their drop-ins.
+3. Stage the immutable helper generation and reconcile both stable role wrappers, keeping the verified old selection.
 4. Drain and replace the deployment image (kubernetes.py), then verify.
 """
 import argparse
@@ -19,6 +20,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -26,11 +28,17 @@ import time
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import helper_generation
+
 DATA_DB = Path("/var/lib/firecontroller/data/firecontroller.sqlite")
 SNAPSHOTS = Path("/var/lib/firecontroller/predeploy")
 WORK = Path("/var/lib/firecontroller/predeploy-work")
 HELPER_RELEASES = Path("/var/lib/firecontroller/operator-offsite-v1/releases")
 PHASE_LOCK = Path("/var/lib/firecontroller/operator-offsite-v1/coordination/phase.lock")
+HELPER_ROOT = HELPER_RELEASES.parent
+HELPER_LAUNCHER = HELPER_ROOT / "helper_generation.py"
+HELPER_SELECTOR = HELPER_ROOT / "helper-generation.json"
 DEPLOY_LOCK = Path("/root/firecontroller-deploy/deploy.lock")
 INSTANCE_FILE = Path("/root/firecontroller-operations/dot-deploy/instance")
 CREDENTIAL = Path("/var/lib/firecontroller/data/bootstrap-admin.token")
@@ -38,6 +46,10 @@ URL = "https://controller.firedevops.net"
 DROPINS = {
     "backup-health": Path("/etc/systemd/system/firecontroller-backup-health.service.d/50-develop-release.conf"),
     "offsite-batch": Path("/etc/systemd/system/firecontroller-offsite-batch.service.d/60-backup-phase.conf"),
+}
+HELPER_UNITS = {
+    "backup-health": "firecontroller-backup-health.service",
+    "offsite-batch": "firecontroller-offsite-batch.service",
 }
 KEEP_SNAPSHOTS = 2
 KUBECTL = ["k3s", "kubectl", "-n", "firecontroller"]
@@ -74,6 +86,32 @@ def flock_wait(path, timeout, sleep=time.sleep, clock=time.monotonic):
                 f.close()
                 raise DeployError("timed out waiting for " + str(path) + "; nothing was changed")
             sleep(5)
+
+
+def _helper_unit_inactive(unit):
+    """Require a complete, secret-free effective systemd state response."""
+    properties = ("LoadState", "ActiveState", "SubState", "MainPID")
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", unit, "--no-pager"]
+            + ["--property=" + value for value in properties],
+            check=True, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise DeployError("could not verify effective systemd state for " + unit) from error
+    values = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in properties:
+            if key in values:
+                raise DeployError("systemd returned duplicate state for " + unit)
+            values[key] = value
+    if set(values) != set(properties):
+        raise DeployError("systemd returned incomplete effective state for " + unit)
+    if (values["LoadState"] != "loaded" or values["ActiveState"] != "inactive"
+            or values["SubState"] != "dead" or values["MainPID"] != "0"):
+        raise DeployError("first helper conversion requires " + unit + " to be inactive; retry after it exits")
 
 
 def snapshot(source, root, label, keep=KEEP_SNAPSHOTS):
@@ -115,50 +153,311 @@ def rehearse_migration(fcd, snapshot_path, work_root=WORK):
         return result
 
 
-def repoint_dropin(text, source, fcd_sha):
-    """Point a helper drop-in at releases/<source>/fcd (and its --sha256 when present)."""
-    pattern = re.compile(r"/releases/[0-9a-f]{40}/fcd\b")
-    if len(pattern.findall(text)) != 1:
-        raise DeployError("helper drop-in must name exactly one fcd release path")
-    out = pattern.sub("/releases/" + source + "/fcd", text)
-    digests = re.findall(r"--sha256 [0-9a-f]{64}", out)
-    if len(digests) > 1:
-        raise DeployError("helper drop-in names more than one --sha256")
-    if digests:
-        out = out.replace(digests[0], "--sha256 " + fcd_sha)
-    return out
+def _atomic_replace(path, content, mode, uid, gid):
+    """Write one same-directory replacement while preserving the file identity policy."""
+    path = Path(path)
+    fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".deploy.tmp", dir=str(path.parent))
+    temporary = Path(name)
+    try:
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
-def install_helpers(fcd, source, fcd_sha, releases=HELPER_RELEASES, dropins=DROPINS, reload=True):
-    updates = []
-    for name, path in dropins.items():
-        before = path.read_text()
-        after = repoint_dropin(before, source, fcd_sha)
-        if after != before:
-            updates.append((name, path, after, path.stat().st_mode & 0o777))
+def _record_or_none(selector, releases):
+    if selector.exists() or selector.is_symlink():
+        try:
+            return helper_generation.verify_record(helper_generation.read_record(selector), releases)
+        except helper_generation.GenerationError as error:
+            raise DeployError(str(error)) from error
+    return None
+
+
+def _ensure_helper_generation_lease(selector, phase_lock, releases, dropins, launcher):
+    """Create the lease only for a validated legacy first-conversion pair."""
+    selector = Path(selector)
+    releases = Path(releases)
+    lease = helper_generation.lease_path(selector)
+    if lease.exists() or lease.is_symlink():
+        try:
+            return helper_generation.ensure_generation_lease(selector, phase_lock)
+        except (OSError, helper_generation.GenerationError) as error:
+            raise DeployError("existing helper generation lease is invalid: " + str(error)) from error
+    fence = helper_generation.manager_fence_path(selector)
+    if selector.exists() or selector.is_symlink() or fence.exists() or fence.is_symlink():
+        raise DeployError("installed helpers are missing their stable lease; refusing to recreate it")
+    templates = []
+    try:
+        for name, role in (("backup-health", "health"), ("offsite-batch", "batch")):
+            config = helper_generation.classify_dropin(
+                Path(dropins[name]).read_text(), role, launcher, selector, releases)
+            if config["state"] != "legacy":
+                raise DeployError("converted helper wrappers require their existing lease and selector")
+            templates.append(helper_generation.coherent_template(role, config["argv"], releases))
+    except (KeyError, OSError, helper_generation.GenerationError) as error:
+        raise DeployError("cannot provision first-conversion helper lease: " + str(error)) from error
+    if templates[0] != templates[1]:
+        raise DeployError("cannot provision first-conversion lease for mismatched helper role templates")
+    try:
+        return helper_generation.ensure_generation_lease(selector, phase_lock)
+    except (OSError, helper_generation.GenerationError) as error:
+        raise DeployError("could not establish helper generation lease: " + str(error)) from error
+
+
+def _install_helpers_locked(fcd, source, fcd_sha, releases=HELPER_RELEASES, dropins=DROPINS, reload=True,
+                            selector=HELPER_SELECTOR, launcher=HELPER_LAUNCHER, phase_lock=PHASE_LOCK):
+    """Stage static wrappers and reconcile manager without activating a candidate.
+
+    Both legacy launch shapes are parsed and verified before any file is changed.
+    During conversion the selector stays on the coherent old fcd until both role
+    wrappers have been written and systemd has reconciled them. The candidate is
+    selected only after the controller rollout is independently verified.
+    """
+    releases = Path(releases)
+    selector = Path(selector)
+    launcher = Path(launcher)
+    if not helper_generation.SOURCE.fullmatch(source) or not helper_generation.SHA256.fullmatch(fcd_sha):
+        raise DeployError("helper source or sha256 is malformed")
+    if (not Path(fcd).is_file() or Path(fcd).is_symlink()
+            or not Path(fcd).stat().st_mode & 0o111 or sha256(fcd) != fcd_sha):
+        raise DeployError("candidate fcd does not match its source hash")
+
+    roles = {"backup-health": "health", "offsite-batch": "batch"}
+    parsed = {}
+    templates = {}
+    try:
+        for name, role in roles.items():
+            path = Path(dropins[name])
+            text = path.read_text()
+            config = helper_generation.classify_dropin(text, role, launcher, selector, releases)
+            parsed[name] = {"role": role, "path": path, "text": text, "mode": path.stat().st_mode & 0o777,
+                            "uid": path.stat().st_uid, "gid": path.stat().st_gid, **config}
+            templates[name] = helper_generation.coherent_template(role, config["argv"], releases)
+    except (KeyError, OSError, helper_generation.GenerationError) as error:
+        raise DeployError("helper drop-in preflight failed: " + str(error)) from error
+
+    old_generations = list(templates.values())
+    if any(value != old_generations[0] for value in old_generations[1:]):
+        raise DeployError("backup-health and offsite-batch do not reference one coherent old fcd generation")
+    old_generation = old_generations[0]
+    selector_record = _record_or_none(selector, releases)
+    try:
+        phase_info = Path(phase_lock).lstat()
+        helper_generation.validate_generation_lease(selector, phase_info.st_gid)
+        if (selector_record is not None
+                and helper_generation._selector_group(selector) != phase_info.st_gid):
+            raise helper_generation.GenerationError("generation selector group differs from the backup phase lock")
+        fenced = helper_generation.manager_fenced(selector, phase_lock)
+    except (OSError, helper_generation.GenerationError) as error:
+        raise DeployError("helper lease or first-conversion fence is unavailable: " + str(error)) from error
+    try:
+        selector_parent = selector.parent.lstat()
+    except OSError as error:
+        raise DeployError("helper selector directory is unavailable") from error
+    if (not stat.S_ISDIR(selector_parent.st_mode) or stat.S_ISLNK(selector_parent.st_mode)
+            or selector_parent.st_mode & 0o022):
+        raise DeployError("helper selector directory must be trusted and not group/world writable")
+    states = {item["state"] for item in parsed.values()}
+    if fenced and states != {"wrapper"}:
+        raise DeployError("legacy helper commands reappeared after the manager fence; refusing automatic conversion")
+    if selector_record is None:
+        if states != {"legacy"}:
+            raise DeployError("converted helper wrappers require their existing generation selector")
+        try:
+            lock_info = Path(phase_lock).lstat()
+        except OSError as error:
+            raise DeployError("existing backup phase lock is unavailable") from error
+        if not stat.S_ISREG(lock_info.st_mode) or Path(phase_lock).is_symlink():
+            raise DeployError("backup phase lock must be an existing regular file")
+        if not (lock_info.st_mode & 0o444):
+            raise DeployError("backup phase lock grants no read access for the private selector")
+    else:
+        if states == {"legacy"} and selector_record["current"] != old_generation:
+            raise DeployError("legacy helper drop-ins do not match the existing selected generation")
+        if len(states) > 1 and selector_record["current"] != old_generation:
+            raise DeployError("interrupted helper conversion no longer selects its verified old generation")
 
     target = releases / source / "fcd"
-    if target.exists():
-        if sha256(target) != fcd_sha:
-            raise DeployError("existing helper binary for this source has a different hash")
-    else:
-        # An earlier interrupted attempt may have created the release directory.
-        target.parent.mkdir(mode=0o755, exist_ok=True)
-        tmp = target.with_suffix(".tmp")
-        shutil.copy2(fcd, tmp)
-        os.chmod(tmp, 0o555)
-        if sha256(tmp) != fcd_sha:
-            raise DeployError("helper binary copy hash mismatch")
-        tmp.replace(target)
-    for _, path, content, mode in updates:
-        tmp = path.with_suffix(".deploy.tmp")
-        tmp.write_text(content)
-        os.chmod(tmp, mode)
-        tmp.replace(path)
-    # All files may already match after an interruption before the last reload.
+    try:
+        if target.parent.exists() or target.parent.is_symlink():
+            release_info = target.parent.lstat()
+            if not stat.S_ISDIR(release_info.st_mode) or stat.S_ISLNK(release_info.st_mode):
+                raise DeployError("helper source release must be a regular non-symlink directory")
+        if target.exists() or target.is_symlink():
+            target_mode = target.lstat().st_mode
+            if (not stat.S_ISREG(target_mode) or stat.S_ISLNK(target_mode) or not target_mode & 0o111
+                    or target_mode & 0o222 or sha256(target) != fcd_sha):
+                raise DeployError("existing helper binary for this source has a different hash or file type")
+        else:
+            target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(prefix=".fcd.", suffix=".deploy.tmp", dir=str(target.parent))
+            os.close(fd)
+            tmp = Path(name)
+            try:
+                shutil.copy2(fcd, tmp)
+                os.chmod(tmp, 0o555)
+                if sha256(tmp) != fcd_sha:
+                    raise DeployError("helper binary copy hash mismatch")
+                os.replace(tmp, target)
+            except BaseException:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+    except OSError as error:
+        raise DeployError("could not stage helper release: " + str(error)) from error
+
+    try:
+        launcher.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        launcher_source = HERE / "helper_generation.py"
+        launcher_text = launcher_source.read_text()
+        launcher_mode = 0o555
+        if launcher.exists() or launcher.is_symlink():
+            info = launcher.lstat()
+            if not stat.S_ISREG(info.st_mode) or launcher.is_symlink():
+                raise DeployError("stable helper launcher must be a regular non-symlink file")
+            if launcher.read_text() != launcher_text or stat.S_IMODE(info.st_mode) != launcher_mode:
+                _atomic_replace(launcher, launcher_text, launcher_mode, info.st_uid, info.st_gid)
+        else:
+            _atomic_replace(launcher, launcher_text, launcher_mode, os.geteuid(), os.getegid())
+    except OSError as error:
+        raise DeployError("could not install stable helper launcher: " + str(error)) from error
+
+    if selector_record is None:
+        try:
+            selector_record = helper_generation.write_record(selector, old_generation, access_from=phase_lock)
+        except (OSError, helper_generation.GenerationError) as error:
+            raise DeployError("could not initialize verified old helper selection: " + str(error)) from error
+
+    updates = []
+    for name, item in parsed.items():
+        if item["state"] == "wrapper":
+            continue
+        try:
+            after = helper_generation.render_dropin(item["text"], item["role"], item["argv"],
+                                                    launcher, selector, releases)
+            if after != item["text"]:
+                _atomic_replace(item["path"], after, item["mode"], item["uid"], item["gid"])
+                updates.append(name)
+        except (OSError, helper_generation.GenerationError) as error:
+            raise DeployError("could not install " + name + " helper wrapper: " + str(error)) from error
+
     if reload:
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=60)
-    return [name for name, _, _, _ in updates]
+        # On first conversion, legacy processes launched before daemon-reload
+        # never held the new generation lease. Do not activate any candidate
+        # until both effective units are confirmed stopped. Their state output
+        # is restricted to non-secret systemd properties.
+        if not fenced:
+            converted = {}
+            for name, role in roles.items():
+                path = Path(dropins[name])
+                try:
+                    converted[name] = helper_generation.classify_dropin(
+                        path.read_text(), role, launcher, selector, releases)
+                except (OSError, helper_generation.GenerationError) as error:
+                    raise DeployError("could not verify reconciled " + name + " wrapper: " + str(error)) from error
+            if any(item["state"] != "wrapper" for item in converted.values()):
+                raise DeployError("both helper roles must use the new launch path before fencing")
+            state_errors = []
+            for name in roles:
+                try:
+                    _helper_unit_inactive(HELPER_UNITS[name])
+                except DeployError as error:
+                    state_errors.append(str(error))
+            if state_errors:
+                raise DeployError("first helper conversion could not prove both units inactive: "
+                                  + "; ".join(state_errors))
+            try:
+                helper_generation.write_manager_fence(selector, phase_lock)
+            except (OSError, helper_generation.GenerationError) as error:
+                raise DeployError("could not record first-conversion manager fence: " + str(error)) from error
+    return updates
+
+
+def install_helpers(fcd, source, fcd_sha, releases=HELPER_RELEASES, dropins=DROPINS, reload=True,
+                    selector=HELPER_SELECTOR, launcher=HELPER_LAUNCHER, phase_lock=PHASE_LOCK,
+                    lock_wait=1200):
+    """Run the staging/reload helper operation under generation-then-phase custody."""
+    lease = _ensure_helper_generation_lease(selector, phase_lock, releases, dropins, launcher)
+    with contextlib.ExitStack() as held:
+        deadline = time.monotonic() + lock_wait
+        held.enter_context(flock_wait(lease, lock_wait))
+        held.enter_context(flock_wait(phase_lock, max(0, deadline - time.monotonic())))
+        return _install_helpers_locked(fcd, source, fcd_sha, releases, dropins, reload,
+                                       selector, launcher, phase_lock)
+
+
+def _select_verified_helper_generation_locked(selector, releases, source, fcd_sha):
+    """Select a verified candidate; caller must hold generation then phase locks."""
+    candidate = {"source": source, "sha256": fcd_sha}
+    try:
+        helper_generation.verify_generation(candidate, releases)
+        record = helper_generation.verify_record(helper_generation.read_record(selector), releases)
+        if record["pending"] is not None and record["pending"]["candidate"] != candidate:
+            raise DeployError("pending rollout selects a different verified helper candidate")
+        if record["current"] != candidate:
+            return helper_generation.write_record(selector, candidate, record["current"])
+        if record["pending"] is not None:
+            return helper_generation.write_record(selector, candidate, record["previous"])
+        return record
+    except (OSError, helper_generation.GenerationError) as error:
+        raise DeployError("could not select the verified helper generation: " + str(error)) from error
+
+
+def _begin_helper_rollout_locked(selector, releases, previous_source, previous_image, source, sha, image):
+    record = _record_or_none(selector, releases)
+    if record is None or record["current"]["source"] != previous_source or record["pending"] is not None:
+        raise DeployError("active controller and helper generations must agree before rollout")
+    candidate = {"source": source, "sha256": sha}
+    try:
+        helper_generation.verify_generation(candidate, releases)
+        helper_generation.write_record(selector, record["current"], record["previous"], pending={
+            "candidate": candidate, "image": image, "old_image": previous_image,
+        })
+    except (OSError, helper_generation.GenerationError) as error:
+        raise DeployError("could not persist helper rollout hold: " + str(error)) from error
+
+
+def _reconcile_pending_helpers_locked(selector, releases, observed_source, observed_image, args):
+    record = _record_or_none(selector, releases)
+    if record is None or record["pending"] is None:
+        return False
+    pending = record["pending"]
+    candidate = pending["candidate"]
+    if (observed_source, observed_image) == (record["current"]["source"], pending["old_image"]):
+        verify(observed_source, observed_image)
+        helper_generation.write_record(selector, record["current"], record["previous"])
+        log("helper_rollout_reconciled", source=observed_source, image=observed_image)
+        return False
+    if (observed_source, observed_image) != (candidate["source"], pending["image"]):
+        raise DeployError("cannot reconcile helpers until one of the recorded controller images is verified")
+    if (args.source, args.fcd_sha256, args.image) != (candidate["source"], candidate["sha256"], pending["image"]):
+        raise DeployError("retry the exact pending controller image and helper before deploying a different release")
+    verify(observed_source, observed_image)
+    verify_assets(args.assets)
+    _select_verified_helper_generation_locked(selector, releases, candidate["source"], candidate["sha256"])
+    log("helper_rollout_reconciled", source=observed_source, image=observed_image)
+    return True
 
 
 def kubectl_json(*args):
@@ -203,25 +502,40 @@ def verify_assets(binding_path):
     return verify_live(binding, binding["source"], fetch("/"), fetch)
 
 
-def prune_after_deploy(keep_images, releases=HELPER_RELEASES, dropins=None, keep_recent=2):
+def prune_after_deploy(keep_images, releases=HELPER_RELEASES, dropins=None, keep_recent=2,
+                       selector=HELPER_SELECTOR, launcher=HELPER_LAUNCHER):
     """Remove FireController images and helper binaries no longer in use.
 
     Keeps the given image digests (current and previous), helper releases named
     by any FireController systemd unit or drop-in, and the newest `keep_recent`.
     """
+    generation = _record_or_none(Path(selector), releases)
+    if generation is not None and generation["pending"] is not None:
+        raise DeployError("cannot safely prune while a helper rollout is pending")
     removed_images = 0
     listing = subprocess.run(["k3s", "ctr", "-n", "k8s.io", "images", "ls"], check=True, capture_output=True, text=True, timeout=60).stdout
     for line in listing.splitlines()[1:]:
         cols = line.split()
-        if len(cols) >= 3 and cols[0].startswith("localhost/firecontroller") and cols[2] not in keep_images:
+        if (len(cols) >= 3 and cols[0].startswith(("localhost/firecontroller:", "localhost/firecontroller@"))
+                and cols[2] not in keep_images):
             subprocess.run(["k3s", "ctr", "-n", "k8s.io", "images", "rm", cols[0]], capture_output=True, timeout=60)
             removed_images += 1
     referenced = set()
     units = list(Path("/etc/systemd/system").glob("firecontroller-*.service")) + list(Path("/etc/systemd/system").glob("firecontroller-*.service.d/*.conf"))
     for unit in (dropins if dropins is not None else units):
-        referenced |= set(re.findall(r"/releases/([0-9a-f]{40})/", Path(unit).read_text()))
+        text = Path(unit).read_text()
+        referenced |= set(re.findall(r"/releases/([0-9a-f]{40})/", text))
+        try:
+            referenced |= helper_generation.referenced_sources(text, launcher, selector, releases)
+        except helper_generation.GenerationError as error:
+            raise DeployError("cannot safely prune helper releases: " + str(error)) from error
+    if generation is not None:
+        referenced.add(generation["current"]["source"])
+        if generation["previous"] is not None:
+            referenced.add(generation["previous"]["source"])
     dirs = sorted((d for d in releases.iterdir() if d.is_dir() and not d.is_symlink()), key=lambda d: d.stat().st_mtime)
-    keep = referenced | {d.name for d in dirs[-keep_recent:]}
+    recent = dirs[-keep_recent:] if keep_recent else []
+    keep = referenced | {d.name for d in recent}
     removed_releases = [d.name for d in dirs if d.name not in keep]
     for name in removed_releases:
         shutil.rmtree(releases / name)
@@ -249,13 +563,22 @@ def main(argv=None):
     DEPLOY_LOCK.parent.mkdir(mode=0o700, exist_ok=True)
     DEPLOY_LOCK.touch(mode=0o600, exist_ok=True)
     with contextlib.ExitStack() as held:
-        held.enter_context(flock_wait(DEPLOY_LOCK, 0))
+        deploy_lock = held.enter_context(flock_wait(DEPLOY_LOCK, 0))
+        try:
+            generation_lease = _ensure_helper_generation_lease(
+                HELPER_SELECTOR, PHASE_LOCK, HELPER_RELEASES, DROPINS, HELPER_LAUNCHER)
+        except (OSError, helper_generation.GenerationError) as error:
+            raise DeployError("could not establish helper generation lease: " + str(error)) from error
+        lock_deadline = time.monotonic() + a.lock_wait
+        helper_lock = held.enter_context(flock_wait(generation_lease, a.lock_wait))
         log("waiting_for_backup_phase_lock")
-        held.enter_context(flock_wait(PHASE_LOCK, a.lock_wait))
+        backup_lock = held.enter_context(flock_wait(PHASE_LOCK, max(0, lock_deadline - time.monotonic())))
         before = kubectl_json("get", "deployment", "firecontroller")
         old_source = before["spec"]["template"]["metadata"].get("annotations", {}).get("firecontroller.dev/source-commit", "unknown")
         old_image = controller_image(before)
         log("locked", previous_source=old_source, previous_image=old_image)
+        if _reconcile_pending_helpers_locked(HELPER_SELECTOR, HELPER_RELEASES, old_source, old_image, a):
+            return 0
 
         label = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + old_source[:8]
         snap = snapshot(DATA_DB, SNAPSHOTS, label)
@@ -263,7 +586,7 @@ def main(argv=None):
 
         log("migration_rehearsed", **rehearse_migration(a.fcd, snap))
 
-        log("helpers", repointed=install_helpers(a.fcd, a.source, a.fcd_sha256))
+        log("helpers_staged", wrappers_updated=_install_helpers_locked(a.fcd, a.source, a.fcd_sha256))
 
         instance = INSTANCE_FILE.read_text().strip()
         rollout_cmd = [sys.executable, "-I", str(HERE / "kubernetes.py"), "--image", a.image, "--source-revision", a.source,
@@ -274,17 +597,44 @@ def main(argv=None):
         if a.remote_mcp_mode is not None:
             rollout_cmd.extend(["--remote-mcp-mode", a.remote_mcp_mode])
         rollout_cmd.extend(["--kubectl", "k3s", "kubectl"])
-        rollout = subprocess.run(rollout_cmd, capture_output=True, text=True, timeout=a.drain_seconds + 600)
+        _begin_helper_rollout_locked(HELPER_SELECTOR, HELPER_RELEASES, old_source, old_image,
+                                    a.source, a.fcd_sha256, a.image)
+        try:
+            lock_descriptors = tuple(lock.fileno() for lock in (deploy_lock, helper_lock, backup_lock))
+            rollout = subprocess.run(rollout_cmd, capture_output=True, text=True,
+                                     timeout=a.drain_seconds + 600, pass_fds=lock_descriptors)
+        except (OSError, subprocess.SubprocessError) as error:
+            log("rollout_failed_reconciliation_required", state="unknown", helper_state="held",
+                error=str(error)[:300], rollback_image=old_image, rollback_snapshot=str(snap))
+            return 1
         if rollout.returncode != 0:
-            log("rollout_failed", stderr=rollout.stderr[-600:], rollback_image=old_image, rollback_snapshot=str(snap))
+            log("rollout_failed_reconciliation_required", state="unknown", helper_state="held",
+                stderr=rollout.stderr[-600:], rollback_image=old_image, rollback_snapshot=str(snap))
             return 1
         log("rolled_out", result=rollout.stdout.strip()[-300:])
-        checked = verify(a.source, a.image)
-        assets = verify_assets(a.assets)
-        log("verified", source=a.source, image=a.image, assets=assets, **checked)
+        try:
+            checked = verify(a.source, a.image)
+            assets = verify_assets(a.assets)
+        except (DeployError, OSError, subprocess.SubprocessError) as error:
+            log("rollout_unverified_reconciliation_required", state="unknown", helper_state="held",
+                error=str(error)[:300], rollback_image=old_image, rollback_snapshot=str(snap))
+            return 1
+        # The image and its embedded source are now independently observed.
+        # Keep the old helper generation until this point, and write the new
+        # selection while both the generation and phase locks remain held.
+        try:
+            selected = _select_verified_helper_generation_locked(HELPER_SELECTOR, HELPER_RELEASES,
+                                                                  a.source, a.fcd_sha256)
+        except DeployError as error:
+            log("helper_selection_failed_reconciliation_required", state="image_verified",
+                helper_state="held", error=str(error)[:300], rollback_image=old_image,
+                rollback_snapshot=str(snap))
+            return 1
+        log("verified", source=a.source, image=a.image, assets=assets,
+            helper_generation=selected["current"]["source"], **checked)
         try:
             log("pruned", **prune_after_deploy({a.image.split("@", 1)[1], old_image.split("@", 1)[1]}))
-        except (OSError, subprocess.SubprocessError) as e:
+        except (DeployError, OSError, subprocess.SubprocessError) as e:
             log("prune_skipped", error=str(e)[:200])  # the deploy itself already succeeded
     return 0
 

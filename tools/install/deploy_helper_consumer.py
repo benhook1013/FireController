@@ -4,9 +4,9 @@ import io
 import json
 import re
 import tarfile
-from deploy_helper_package import Invalid, LIMIT, MODULES, inspect_sources
+from deploy_helper_package import Invalid, LIMIT, MODULES, inspect_sources, module_inventory
 
-MAX_ARCHIVE = 72 << 20
+MAX_ARCHIVE = (len(MODULES) + 1) * LIMIT
 FIELDS = {'schema', 'source', 'scope', 'sha256', 'local_imports',
           'python_version_used_for_static_inventory', 'unresolved',
           'rendered_operation_verified', 'closure_verified', 'installation_ready'}
@@ -29,7 +29,7 @@ def verify(raw, expected_digest, expected_source):
             or not re.fullmatch('[0-9a-f]{40}', expected_source)
             or hashlib.sha256(raw).hexdigest() != expected_digest):
         raise Invalid('independently pinned package bytes and source required')
-    expected = {name + '.py' for name in MODULES} | {'manifest.json'}
+    expected = {name + '.py' for name in module_inventory(expected_source)} | {'manifest.json'}
     files = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as archive:
@@ -57,7 +57,7 @@ def verify(raw, expected_digest, expected_source):
                    ('installation_ready', 'closure_verified', 'rendered_operation_verified'))):
         raise Invalid('unsupported package authority or identity')
     hashes = {name: hashlib.sha256(body).hexdigest() for name, body in files.items()}
-    imports = inspect_sources({name[:-3]: body for name, body in files.items()})
+    imports = inspect_sources({name[:-3]: body for name, body in files.items()}, expected_source)
     if manifest['sha256'] != hashes or manifest['local_imports'] != imports:
         raise Invalid('package contents disagree with manifest')
     # These are required follow-up obligations, not evidence supplied by a package.

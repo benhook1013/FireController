@@ -35,7 +35,7 @@ class DeploymentPackageTests(unittest.TestCase):
         self.assertFalse(manifest['installation_ready'])
         self.assertFalse(manifest['closure_verified'])
         with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-            self.assertEqual(len(archive.getmembers()), 18)
+            self.assertEqual(len(archive.getmembers()), 22)
             for member in archive:
                 self.assertTrue(member.isfile())
                 body = archive.extractfile(member).read()
@@ -43,13 +43,18 @@ class DeploymentPackageTests(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(body).hexdigest(), manifest['sha256'][member.name])
                 else: self.assertEqual(json.loads(body), manifest)
 
-    def test_actual_current_source_not_dirty_checkout(self):
+    def test_retained_sources_are_packaged_from_git(self):
         repo = Path(__file__).resolve().parents[2]
-        revision = '81b2906e45c6f9cc9ff51bc35cee1ff31b88eed0'
-        raw, manifest = p.assemble(repo, revision)
-        self.assertEqual(len(manifest['sha256']), 17)
-        self.assertGreater(len(raw), 100000)
-        self.assertEqual(manifest['source'], revision)
+        for revision, count in (
+            ('81b2906e45c6f9cc9ff51bc35cee1ff31b88eed0', 17),
+            ('0fbc6d9afab241761145cd1e272f14d529f2d891', 20),
+            ('31c9ff51c77f82ea05231a35958f1cf616f0decb', 20),
+        ):
+            with self.subTest(revision=revision):
+                raw, manifest = p.assemble(repo, revision)
+                self.assertEqual(len(manifest['sha256']), count)
+                self.assertGreater(len(raw), 100000)
+                self.assertEqual(manifest['source'], revision)
 
     def test_nonimmutable_revision_refused(self):
         for revision in ('HEAD', '81b2906e', '-' + 'a' * 39):

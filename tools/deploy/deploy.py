@@ -6,9 +6,10 @@
 
 Locally: require a clean checkout at origin/develop, build the image from the
 repository Dockerfile, extract its fcd and the browser asset binding. Then ship
-the image and host script over SSH and run deploy_host.py, which snapshots the
-database, rehearses migrations, moves the backup helpers, drains and swaps the
-image, and verifies the live service. No per-release operation files.
+the image and host scripts over SSH and run deploy_host.py, which snapshots the
+database, rehearses migrations, reconciles the shared helper-generation
+selector, drains and swaps the image, and verifies the live service. No
+per-release operation files.
 """
 import argparse
 import json
@@ -25,7 +26,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 HOST = "root@77.42.29.156"
 REMOTE_ROOT = "/root/firecontroller-deploy"
-SHIPPED = ["deploy_host.py", "kubernetes.py", "browser_asset_binding.py"]
+SHIPPED = ["deploy_host.py", "kubernetes.py", "browser_asset_binding.py", "helper_generation.py"]
 
 
 def run(args, **kw):

@@ -12,7 +12,20 @@ import subprocess
 import sys
 import tarfile
 
-MODULES = frozenset('artifact_operation artifact_retention artifact_schedule bounded_rehearsal coordinator_split_adapter failed_equivalent failed_equivalent_repair image_layers kubernetes prepare_rehearsal prepare_successor prepared_image_content prepared_release rehearsal_operation render_split_coordinator supervised_equivalent supervised_failure'.split())
+ORIGINAL_MODULES = frozenset('''
+    artifact_operation artifact_retention artifact_schedule bounded_rehearsal
+    coordinator_split_adapter failed_equivalent failed_equivalent_repair
+    image_layers kubernetes prepare_rehearsal prepare_successor
+    prepared_image_content prepared_release rehearsal_operation
+    render_split_coordinator supervised_equivalent supervised_failure
+'''.split())
+DEPLOY_MODULES = ORIGINAL_MODULES | {'browser_asset_binding', 'deploy', 'deploy_host'}
+MODULES = DEPLOY_MODULES | {'helper_generation'}
+RETAINED_INVENTORIES = {
+    '81b2906e45c6f9cc9ff51bc35cee1ff31b88eed0': ORIGINAL_MODULES,
+    '0fbc6d9afab241761145cd1e272f14d529f2d891': DEPLOY_MODULES,
+    '31c9ff51c77f82ea05231a35958f1cf616f0decb': DEPLOY_MODULES,
+}
 LIMIT = 4 << 20
 
 
@@ -20,8 +33,13 @@ class Invalid(ValueError):
     pass
 
 
-def inspect_sources(sources):
-    if set(sources) != MODULES:
+def module_inventory(revision):
+    return RETAINED_INVENTORIES.get(revision, MODULES)
+
+
+def inspect_sources(sources, revision=None):
+    modules = module_inventory(revision)
+    if set(sources) != modules:
         raise Invalid('exact deployment module inventory required')
     imports = {}
     for name, raw in sorted(sources.items()):
@@ -42,7 +60,7 @@ def inspect_sources(sources):
             else:
                 continue
             for imported in names:
-                if imported in MODULES:
+                if imported in modules:
                     local.add(imported)
                 elif imported not in sys.stdlib_module_names:
                     raise Invalid('unqualified external Python dependency')
@@ -64,10 +82,11 @@ def source_at(repository, revision):
               for path in tracked if path.endswith('.py')
               and not path.removeprefix('tools/deploy/').startswith('test_')
               and path != 'tools/deploy/split_test_fixture.py'}
-    if actual != MODULES:
+    modules = module_inventory(revision)
+    if actual != modules:
         raise Invalid('deployment source inventory changed; explicit review required')
     sources = {}
-    for name in sorted(MODULES):
+    for name in sorted(modules):
         path = 'tools/deploy/' + name + '.py'
         entry = git('ls-tree', revision, '--', path).decode().strip().split()
         if len(entry) != 4 or entry[0] not in ('100644', '100755') or entry[1] != 'blob' or entry[3] != path:
@@ -84,7 +103,7 @@ def source_at(repository, revision):
 
 def assemble(repository, revision):
     sources = source_at(repository, revision)
-    imports = inspect_sources(sources)
+    imports = inspect_sources(sources, revision)
     manifest = {
         'schema': 1, 'source': revision,
         'scope': 'declared-deployment-helper-static-imports',

@@ -123,15 +123,21 @@ class RemoteMCPForwardingTests(unittest.TestCase):
                 snap = root / "snapshot"
                 snap.write_bytes(b"fixture-snapshot")
                 stack.enter_context(mock.patch.object(deploy_host, "DEPLOY_LOCK", root / "deploy.lock"))
+                stack.enter_context(mock.patch.object(deploy_host, "_ensure_helper_generation_lease", return_value=root / "helper.lease"))
                 stack.enter_context(mock.patch.object(deploy_host, "INSTANCE_FILE", instance))
                 stack.enter_context(mock.patch.object(deploy_host, "sha256", return_value=digest))
-                stack.enter_context(mock.patch.object(deploy_host, "flock_wait", side_effect=lambda *a: contextlib.nullcontext()))
+                held = [contextlib.nullcontext(mock.Mock(fileno=lambda fd=fd: fd)) for fd in (10, 11, 12)]
+                stack.enter_context(mock.patch.object(deploy_host, "flock_wait", side_effect=held))
                 stack.enter_context(mock.patch.object(deploy_host, "kubectl_json", return_value=before))
                 stack.enter_context(mock.patch.object(deploy_host, "snapshot", return_value=snap))
                 stack.enter_context(mock.patch.object(deploy_host, "rehearse_migration", return_value={}))
-                stack.enter_context(mock.patch.object(deploy_host, "install_helpers"))
+                stack.enter_context(mock.patch.object(deploy_host, "_install_helpers_locked"))
+                stack.enter_context(mock.patch.object(deploy_host, "_reconcile_pending_helpers_locked", return_value=False))
+                stack.enter_context(mock.patch.object(deploy_host, "_begin_helper_rollout_locked"))
                 stack.enter_context(mock.patch.object(deploy_host, "verify", return_value={}))
                 stack.enter_context(mock.patch.object(deploy_host, "verify_assets"))
+                stack.enter_context(mock.patch.object(deploy_host, "_select_verified_helper_generation_locked",
+                                                      return_value={"current": {"source": revision}}))
                 stack.enter_context(mock.patch.object(deploy_host, "prune_after_deploy", return_value={}))
                 stack.enter_context(mock.patch.object(deploy_host, "log"))
                 run = stack.enter_context(mock.patch.object(deploy_host.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "{}")))
@@ -143,6 +149,7 @@ class RemoteMCPForwardingTests(unittest.TestCase):
                 command = run.call_args.args[0]
                 self.assert_mode(command, mode)
                 self.assertEqual(command[-3:], ["--kubectl", "k3s", "kubectl"])
+                self.assertEqual(run.call_args.kwargs["pass_fds"], (10, 11, 12))
 
 
 class DrainDeadlineTests(unittest.TestCase):
