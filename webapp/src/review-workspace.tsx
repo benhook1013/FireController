@@ -127,7 +127,8 @@ function partialCLIResult(run: ReviewRunSummary): boolean {
   return run.source === 'native-executor' && run.channel === 'cli' && ['failed', 'cancelled', 'rate_limited'].includes(run.outcome) && !run.complete && run.found > 0;
 }
 function visibleReviewCounts(run: ReviewRunSummary) {
-  return { accepted: run.finalized ? run.accepted : '?' as const, routed: run.finalized ? run.routed : '?' as const };
+  const settled = run.finalized || partialCLIResult(run) && run.retained_undecided === 0;
+  return { accepted: settled ? run.accepted : '?' as const, routed: settled ? run.routed : '?' as const };
 }
 function partialPendingText(count?: number): string {
   return count === undefined ? ' · Adjudication status unknown' : count > 0 ? ' · ' + count + ' undecided · Needs adjudication' : '';
@@ -447,9 +448,13 @@ function reviewStart(run: ReviewRunSummary): { value: string; label: string } | 
   return { value: run.started_at, label: run.source === 'native-executor' && run.channel === 'hosted' ? 'Assumed start (review requested)' : 'Started' };
 }
 export function reviewRunPillStatus(run: ReviewRunSummary): string {
-  if (partialCLIResult(run)) return run.retained_undecided === undefined ? "Partial" : run.retained_undecided > 0 ? "Partial · Needs adjudication" : (run.current_pending_fixes ?? 0) > 0 ? "Partial · Fixes pending" : "Partial";
-  if (!run.complete || !run.attributable) return "Incomplete";
-  if (!run.finalized) return "Needs adjudication";
+  if (partialCLIResult(run)) {
+    if ((run.retained_undecided ?? 0) > 0) return "Needs adjudication";
+    if (!run.finalized && run.retained_undecided === undefined && (run.current_pending_fixes ?? 0) === 0) return "Status unknown";
+  } else {
+    if (!run.complete || !run.attributable) return "Incomplete";
+    if (!run.finalized) return "Needs adjudication";
+  }
   return run.current_pending_fixes === undefined ? "Reviewed" : run.current_pending_fixes > 0 ? "Fixes pending" : "Finished";
 }
 function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSummary; snapshot: string; head: string; highlights: Map<string, string> }) {
@@ -633,7 +638,7 @@ export function reviewDuration(run: ReviewRunSummary): string | undefined {
   return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
 export function ReviewAcceptedCounts({ run }: { run: ReviewRunSummary }) {
-  if (!run.finalized) return <span className="review-count review-count-accepted">Accepted: <strong>?</strong></span>;
+  if (visibleReviewCounts(run).accepted === '?') return <span className="review-count review-count-accepted">Accepted: <strong>?</strong></span>;
   const counts = run.accepted_severity;
   if (!counts?.complete) return <span className="review-count review-count-accepted" title="Accepted severity breakdown unavailable for this retained record">Accepted: <strong>{run.accepted}</strong></span>;
   return <span className="review-count review-count-accepted" title={`${run.accepted} accepted · Major / Minor / Trivial`}>

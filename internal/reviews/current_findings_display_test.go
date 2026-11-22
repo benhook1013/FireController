@@ -196,8 +196,8 @@ func TestCurrentFindingsDisplayPartialRetainedInventory(t *testing.T) {
 	currentFindingsDisplayRead(t, f, "/pulls/1", &pull)
 	compact := pull.Pull.RecentRuns[0]
 	assertCurrentFindingCounts(t, compact, 1, 1)
-	if compact.RetainedUndecided != nil {
-		t.Fatal("compact partial undecided semantics changed")
+	if compact.RetainedUndecided == nil || *compact.RetainedUndecided != 0 {
+		t.Fatal("opted-in compact display must expose the retained undecided count")
 	}
 	var timeline RunsResponse
 	currentFindingsDisplayRead(t, f, "/pulls/1/runs?view=timeline", &timeline)

@@ -2,7 +2,7 @@ package reviews
 
 import "testing"
 
-func TestCompactPartialInventoryRemainsUnknownUntilTimelineRead(t *testing.T) {
+func TestOrdinaryCompactPartialInventoryOmitsBrowserDisplayCounts(t *testing.T) {
 	f := newAPIFixture(t)
 	run := nativeUndecidedRun("compact-partial", 1)
 	run.Outcome, run.Complete, run.Attributable = "failed", false, false
@@ -11,6 +11,10 @@ func TestCompactPartialInventoryRemainsUnknownUntilTimelineRead(t *testing.T) {
 	nativeRead(t, f, "/pulls/1", &pull)
 	if len(pull.Pull.RecentRuns) != 1 || pull.Pull.RecentRuns[0].RetainedUndecided != nil {
 		t.Fatal("compact summary must not claim an inventory it did not read")
+	}
+	currentFindingsDisplayRead(t, f, "/pulls/1", &pull)
+	if len(pull.Pull.RecentRuns) != 1 || pull.Pull.RecentRuns[0].RetainedUndecided == nil || *pull.Pull.RecentRuns[0].RetainedUndecided != 1 {
+		t.Fatal("opted-in display must include the retained undecided inventory")
 	}
 	var timeline RunsResponse
 	nativeRead(t, f, "/pulls/1/runs?view=timeline&limit=10", &timeline)

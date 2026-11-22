@@ -1095,8 +1095,9 @@ try {
   checkpoint = 'result-partial-counts';
   await expect(partialLink.locator('strong')).toHaveText('3/?/?');
   checkpoint = 'result-partial-status';
-  // Compact summaries do not include the timeline finding inventory.
-  await expect(partialLink.locator('.review-pill-status')).toHaveText('Partial');
+  // The same compact browser read includes the retained undecided count.
+  await expect(partialLink.locator('.review-pill-status')).toHaveText('Adjudicating');
+  await expect(partialLink).toHaveCSS('border-top-style', 'dashed');
   checkpoint = 'result-partial-time';
   await expect(partialLink.locator('time')).toHaveAttribute('datetime',activityStart);
   const partialURL = await partialLink.getAttribute('href');

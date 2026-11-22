@@ -34,7 +34,8 @@ func attachRunDisplay(ctx context.Context, tx *sql.Tx, project, snapshot string,
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT r.id,count(f.source_finding_id),
  coalesce(sum(CASE WHEN f.disposition='accepted' THEN 1 ELSE 0 END),0),
- coalesce(sum(CASE WHEN f.disposition='accepted' AND f.fix_sha='' AND f.operational_proof_json='null' THEN 1 ELSE 0 END),0)
+ coalesce(sum(CASE WHEN f.disposition='accepted' AND f.fix_sha='' AND f.operational_proof_json='null' THEN 1 ELSE 0 END),0),
+ coalesce(sum(CASE WHEN f.disposition='unadjudicated' THEN 1 ELSE 0 END),0)
  FROM json_each(?) selected JOIN review_runs r ON r.id=selected.value
  LEFT JOIN review_finding_versions f ON f.project_id=r.project_id AND f.run_id=r.id
  AND f.pull_number=r.pull_number AND f.run_version_revision=r.version_revision
@@ -45,12 +46,17 @@ func attachRunDisplay(ctx context.Context, tx *sql.Tx, project, snapshot string,
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		var total, accepted, pending int64
-		if err := rows.Scan(&id, &total, &accepted, &pending); err != nil {
+		var total, accepted, pending, undecided int64
+		if err := rows.Scan(&id, &total, &accepted, &pending, &undecided); err != nil {
 			return err
 		}
 		for _, run := range runs[id] {
-			if run.Complete && total == run.Found || isPartialCLIResult(*run) && total > 0 {
+			partial := isPartialCLIResult(*run) && total > 0
+			if partial {
+				retainedUndecided := undecided
+				run.RetainedUndecided = &retainedUndecided
+			}
+			if run.Complete && total == run.Found || partial {
 				// Partial CLI projections describe retained findings only, not a completed round.
 				currentAccepted, currentPending := accepted, pending
 				run.CurrentAccepted, run.CurrentPendingFixes = &currentAccepted, &currentPending

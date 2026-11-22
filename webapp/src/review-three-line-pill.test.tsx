@@ -38,20 +38,20 @@ describe('three-line review state pills',()=>{
  it('keeps real partial-case semantics without completed credit',()=>{
   const partial={...completed,outcome:'failed' as const,complete:false,attributable:false,finalized:false,found:15,accepted:0,fixed:0,retained_undecided:15};
   const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'coverage_incomplete'}],{...progress,retained_adjudication_pending:true});
-  expect(html).toContain('<strong>15/?/?</strong>');expect(html).toContain('Partial · Needs adjudication');expect(html).toContain('Needs adjudication');expect(html).toContain('No completed round');
+  expect(html).toContain('<strong>15/?/?</strong>');expect(html).toContain('>Adjudicating</span>');expect(html).toContain('Needs adjudication');expect(html).toContain('No completed round');
   expect(html).not.toContain('>Finished</span>');expect(html).not.toContain('review-pill-zero');
   expect(markup([{...partial,finalized:true,retained_undecided:0,accepted:3,routed:2}])).toContain('<strong>15/3/2</strong>');
  });
  it('separates an unsettled returned partial result from failed-attempt attention',()=>{
   const partial={...completed,found:3,accepted:1,routed:0,fixed:0,retained_undecided:1,outcome:'failed' as const,complete:false,attributable:false,finalized:false};
   const html=markup([partial],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
-  expect(html).toContain('Partial · Needs adjudication');
+  expect(html).toContain('>Adjudicating</span>');
   expect(html).toContain('aria-label="cli current review state"');
   expect(html).toContain('Needs agent attention');
   expect(html).toContain('0 runs');
   expect(html).not.toContain('review-pill-running');
   const compact=markup([{...partial,retained_undecided:undefined}],[{...attempt,state:'failed',finished_at:partial.finished_at,reason:'capture_retained'}]);
-  expect(compact).toContain('review-pill-status">Partial</span>');
+  expect(compact).toContain('review-pill-status">Status unknown</span>');
   expect(compact).not.toContain('Adjudication unknown');
   expect(compact).not.toContain('Partial · Needs adjudication');
  });
@@ -258,10 +258,13 @@ describe('current finding obligations remain distinct from frozen counts', () =>
  });
  it('keeps partial retained adjudication and fix obligations without completed credit', () => {
   const partial = {...completed, outcome:'failed' as const, complete:false, attributable:false, finalized:false, retained_undecided:0, accepted:3, current_accepted:2, current_pending_fixes:0};
-  expect(reviewRunPillStatus(partial)).toBe('Partial');
-  expect(reviewRunPillStatus({...partial,current_pending_fixes:1})).toBe('Partial · Fixes pending');
-  expect(reviewRunPillStatus({...partial,retained_undecided:1})).toBe('Partial · Needs adjudication');
-  expect(reviewRunPillStatus({...partial,current_pending_fixes:undefined})).toBe('Partial');
+  expect(reviewRunPillStatus(partial)).toBe('Finished');
+  expect(reviewRunPillStatus({...partial,current_pending_fixes:1})).toBe('Fixes pending');
+  expect(reviewRunPillStatus({...partial,retained_undecided:1})).toBe('Needs adjudication');
+  expect(reviewRunPillStatus({...partial,current_pending_fixes:undefined})).toBe('Reviewed');
+  const fixes = markup([{...partial,found:17,accepted:13,current_pending_fixes:13}]);
+  expect(fixes).toContain('review-pill-partial');
+  expect(fixes).toContain('<strong>17/13/0</strong><span class="review-pill-status">Fixes pending</span>');
  });
 });
 
