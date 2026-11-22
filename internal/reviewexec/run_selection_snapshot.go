@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -16,6 +17,10 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 	if err := validateSelectionPhysical(ctx, q); err != nil {
 		return err
 	}
+	if err := validateSelectionQuarantine(ctx, q); err != nil {
+		return err
+	}
+
 	var bad bool
 	// Storage classes and empty keys are checked before scanned string keysets.
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections s LEFT JOIN projects p ON p.id=s.project_id LEFT JOIN workers w ON w.project_id=s.project_id AND w.id=s.worker_id WHERE p.id IS NULL OR w.id IS NULL OR NOT EXISTS(SELECT 1 FROM credentials c WHERE c.principal_id=s.actor_id))`).Scan(&bad); err != nil {
@@ -151,4 +156,76 @@ func validateSelectionPhysical(ctx context.Context, q EvidenceQuery) error {
 		return runUnavailable()
 	}
 	return nil
+}
+
+func validateSelectionQuarantine(ctx context.Context, q EvidenceQuery) error {
+	var version string
+	if err := q.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil {
+		return err
+	}
+	var objects int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE tbl_name='review_selection_quarantine' AND sql IS NOT NULL`).Scan(&objects); err != nil {
+		return err
+	}
+	if version == "1" && objects == 0 {
+		var danglingMarker bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections
+		   WHERE reason='linked_selection_quarantined')`).Scan(&danglingMarker); err != nil {
+			return err
+		}
+		if danglingMarker {
+			return runUnavailable()
+		}
+		return nil
+	}
+	if version != "2" || objects != 1 {
+		return runUnavailable()
+	}
+	var ddl string
+	if err := q.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE name='review_selection_quarantine' AND type='table' AND length(CAST(sql AS BLOB))<=16384`).Scan(&ddl); err != nil {
+		return err
+	}
+	if ddl != selectionQuarantineTableSQL {
+		return runUnavailable()
+	}
+	var inconsistent bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(
+	   SELECT 1 FROM review_selections s WHERE s.reason='linked_selection_quarantined' AND NOT EXISTS
+	     (SELECT 1 FROM review_selection_quarantine d WHERE d.selection_id=s.id AND d.project_id=s.project_id)
+	   UNION ALL
+	   SELECT 1 FROM review_selection_quarantine d JOIN review_selections s ON s.operation_id=d.original_operation_id
+	   UNION ALL
+	   SELECT 1 FROM review_selection_quarantine d JOIN review_selections s ON s.id=d.selection_id
+	      JOIN review_operations o ON o.id=d.original_operation_id
+	   WHERE o.project_id<>s.project_id OR o.actor_id<>s.actor_id OR o.worker_id<>s.worker_id OR
+	      o.channel<>s.channel OR o.configuration_revision<>s.configuration_revision OR
+	      o.policy_revision<>s.policy_revision OR o.capability_fingerprint<>s.capability_fingerprint OR
+	      (s.expected_pull_number<>0 AND o.pull_number<>s.expected_pull_number))`).Scan(&inconsistent); err != nil {
+		return err
+	}
+	if inconsistent {
+		return runUnavailable()
+	}
+	rows, err := q.QueryContext(ctx, `SELECT CASE WHEN typeof(d.original_operation_id)='text' AND length(CAST(d.original_operation_id AS BLOB))<=128 THEN d.original_operation_id END,
+	  d.original_state,d.observed_revision,s.state,s.reason,s.operation_id,s.revision,s.project_id,d.project_id
+	  FROM review_selection_quarantine d LEFT JOIN review_selections s ON s.id=d.selection_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var link, oldState, state, reason, project, reportedProject string
+		var revision, observed, currentLink any
+		if err := rows.Scan(&link, &oldState, &observed, &state, &reason, &currentLink, &revision, &project, &reportedProject); err != nil {
+			return err
+		}
+		old, oldOK := observed.(int64)
+		now, nowOK := revision.(int64)
+		if !identifier.MatchString(link) || oldState != "queued" && oldState != "selecting" || !oldOK || !nowOK || old < 1 ||
+			(old < math.MaxInt64 && now != old+1 || old == math.MaxInt64 && now != old) ||
+			state != "held" || reason != "linked_selection_quarantined" || currentLink != nil || project != reportedProject {
+			return runUnavailable()
+		}
+	}
+	return rows.Err()
 }

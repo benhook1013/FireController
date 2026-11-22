@@ -279,6 +279,12 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 		if o.State != "queued" {
 			return Operation{}, nil
 		}
+		if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+			if automaticProjectRefused(err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
 		configuration, ok := configurations[o.ProjectID]
 		if !ok {
 			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)

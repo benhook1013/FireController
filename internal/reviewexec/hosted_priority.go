@@ -120,6 +120,14 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 }
 
 func (e *Engine) hostedPriorityBinding(ctx context.Context, tx *sql.Tx, o Operation) (bool, error) {
+	// A proved custody hold is already ineligible; do not let it consult or
+	// block unrelated source or provider evidence.
+	if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+		if isLinkedSelectionCustodyHeld(err) {
+			return false, nil
+		}
+		return false, err
+	}
 	var err error
 	if o.Channel == "hosted" {
 		var installed bool

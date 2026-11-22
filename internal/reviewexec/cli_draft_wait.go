@@ -88,6 +88,9 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 		if current.State != "queued" || current.Revision != o.Revision {
 			return conflict()
 		}
+		if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+			return err
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND operation_id=?)`, o.ProjectID, o.ID).Scan(&selected); err != nil || selected {
 			return err
 		}
@@ -97,6 +100,9 @@ func (e *Engine) checkCLIDraft(ctx context.Context, o Operation, drivers map[str
 	if err != nil {
 		var refusal *core.Error
 		if errors.As(err, &refusal) {
+			if refusal.Code == linkedSelectionCustodyHeld {
+				return false, false, false, err
+			}
 			if refusal.Code == "overloaded" {
 				// The worker still defers this row but must not acknowledge
 				// exhausted work when storage prevented the readiness read.

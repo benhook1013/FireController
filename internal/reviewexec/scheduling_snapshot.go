@@ -116,7 +116,24 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if bad {
 		return schedulingUnavailable()
 	}
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections a LEFT JOIN review_selections s ON s.id=a.selection_id LEFT JOIN review_scheduling c ON c.project_id=a.project_id LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id IS NULL OR s.project_id<>a.project_id OR s.channel NOT IN(`+channels+`) OR s.actor_id<>a.actor_id OR s.worker_id<>a.worker_id OR c.project_id IS NULL OR a.scheduling_revision>c.revision OR (a.pull_number=0 AND (a.pull_basis_sha256<>'' OR s.state='selected')) OR (a.pull_number<>0 AND (s.state<>'selected' OR o.id IS NULL OR o.pull_number<>a.pull_number OR o.project_id<>a.project_id OR o.channel<>s.channel OR o.actor_id<>a.actor_id OR o.worker_id<>a.worker_id)))`).Scan(&bad)
+	var selectionVersion string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&selectionVersion); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	custodyJoin, linked, held := "", "s.operation_id", "0"
+	if selectionVersion == "2" {
+		custodyJoin = " LEFT JOIN review_selection_quarantine q ON q.selection_id=s.id AND q.project_id=s.project_id"
+		linked = "COALESCE(s.operation_id,q.original_operation_id)"
+		// The record is only a backup provenance exception. Runtime readers
+		// separately fence this operation; the held row cannot authorize it.
+		held = "(s.state='held' AND s.reason='linked_selection_quarantined' AND s.operation_id IS NULL AND q.selection_id IS NOT NULL)"
+	}
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections a LEFT JOIN review_selections s ON s.id=a.selection_id`+custodyJoin+`
+		LEFT JOIN review_scheduling c ON c.project_id=a.project_id LEFT JOIN review_operations o ON o.id=`+linked+`
+		WHERE s.id IS NULL OR s.project_id<>a.project_id OR s.channel NOT IN(`+channels+`) OR s.actor_id<>a.actor_id OR s.worker_id<>a.worker_id OR c.project_id IS NULL
+		OR a.scheduling_revision>c.revision OR (a.pull_number=0 AND (a.pull_basis_sha256<>'' OR s.state='selected'))
+		OR (a.pull_number<>0 AND ((s.state<>'selected' AND NOT `+held+`) OR o.id IS NULL OR o.pull_number<>a.pull_number
+			OR o.project_id<>a.project_id OR o.channel<>s.channel OR o.actor_id<>a.actor_id OR o.worker_id<>a.worker_id)))`).Scan(&bad)
 	if err != nil {
 		return err
 	}

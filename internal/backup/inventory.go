@@ -233,7 +233,7 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_scheduling": 2, "review_fronts": 1, "project_management": 1, "worker_retirements": 1, "review_selection": 1, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_scheduling": 2, "review_fronts": 1, "project_management": 1, "worker_retirements": 1, "review_selection": 2, "review_adoption_obligations": 2, "review_round_adoption": 1, "review_rounds": 5, "review_comparison": 2, "review_route_policy": 1, "public_site": 1, "project_presentation": 1, "project_map": 1, "jobs": 6, "inbox": 1, "reviews": 11, "review_policy": 1, "review_execution": 10, "review_execution_indexes": 4, "review_evidence": 4, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
 	"review_scheduling":                {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
 	"review_pull_scheduling":           {"review_scheduling", 1, "project_id pull_number revision paused reason actor_id updated_at"},
@@ -241,6 +241,7 @@ var tables = map[string]tableVersion{
 	"review_front_frames":              {"review_fronts", 1, "project_id channel repository_id configuration_revision checked_at source_observed_at complete source_reason prefix_json"},
 	"review_operation_waits":           {"review_execution", 9, "operation_id baseline_attempt_id retry_not_before paused"},
 	"worker_retirements":               {"worker_retirements", 1, "project_id worker_id retired_at actor_id"},
+	"review_selection_quarantine":      {"review_selection", 2, "selection_id project_id original_operation_id original_state observed_revision"},
 	"review_selections":                {"review_selection", 1, "id project_id actor_id worker_id channel configuration_revision policy_revision capability_fingerprint expected_pull_number state reason revision operation_id created_at updated_at"},
 	"review_hosted_discovery_state":    {"reviews", 11, "project_id repository_id pull_number cutoff_at initialized_at"},
 	"review_pull_versions":             {"reviews", 4, "project_id number version_revision title state head_sha base_ref base_sha ci_state mergeability complete run_count attempt_count recent_runs_json latest_attempts_json"},
@@ -1322,6 +1323,7 @@ var canonicalForeignKeys = map[string][]foreignKey{
 	"review_automatic_selections":   {canonicalFK("review_selections", "selection_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_front_frames":           {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION")},
 	"review_operation_waits":        {canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "baseline_attempt_id", "id", "NO ACTION")},
+	"review_selection_quarantine":   {canonicalFK("review_selections", "selection_id", "id", "NO ACTION"), canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_selections":             {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_operations", "operation_id", "id", "NO ACTION"), canonicalFK("review_execution_config", "project_id,configuration_revision", "project_id,revision", "NO ACTION"), canonicalFK("review_policy_config", "project_id,policy_revision", "project_id,revision", "NO ACTION")},
 	"review_hosted_discovery_state": {canonicalFK("projects", "project_id", "id", "CASCADE")},
 	"review_pull_versions":          {canonicalFK("review_snapshots", "project_id,version_revision", "project_id,revision", "NO ACTION")},
