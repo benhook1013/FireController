@@ -576,10 +576,10 @@ func (e *Engine) skipUnavailableConfiguration(ctx context.Context, o Operation, 
 	return true
 }
 
-// Invalid retained identity flags refuse only their operation. Storage and
+// Invalid retained operation identity refuses only its candidate. Storage and
 // context errors must still fail the scan rather than masquerade as corruption.
 func (e *Engine) skipUnavailableOperation(ctx context.Context, o Operation, err error) bool {
-	if !isStoredUnavailable(err, storedOperationIdentity) {
+	if !isStoredUnavailable(err, storedOperationIdentity) && !isRetainedOperationDecodeError(err) {
 		return false
 	}
 	now := e.sampleExecutionTime()
@@ -689,7 +689,7 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) {
+			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error
@@ -748,6 +748,10 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			var recoverable *PreparationRecoveryError
 			if errors.As(err, &recoverable) {
 				return err
+			}
+			if ctx.Err() == nil && e.skipUnavailableOperation(ctx, o, err) {
+				// The retained identity does not support settling this preparation.
+				continue
 			}
 			state := "held"
 			reason := preparationReason(err)
