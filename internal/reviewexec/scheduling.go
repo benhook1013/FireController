@@ -293,6 +293,18 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 	}
 	return out, err
 }
+
+// A pull-specific retained control refusal is distinct from project
+// scheduling, a query error, or another member of the queue.
+type pullSchedulingStateError struct {
+	err     error
+	project string
+	pull    int64
+}
+
+func (e *pullSchedulingStateError) Error() string { return e.err.Error() }
+func (e *pullSchedulingStateError) Unwrap() error { return e.err }
+
 func readPullScheduling(ctx context.Context, tx *sql.Tx, project string, pull int64) (s PullScheduling, err error) {
 	s.ProjectID = project
 	s.PullNumber = pull
@@ -311,11 +323,11 @@ func readPullScheduling(ctx context.Context, tx *sql.Tx, project string, pull in
 	s.ActorID, actorOK = actor.(string)
 	s.UpdatedAt, updatedOK = updated.(string)
 	if !revisionOK || !pausedOK || !reasonOK || !actorOK || !updatedOK || pausedValue < 0 || pausedValue > 1 {
-		return s, schedulingRecordUnavailable()
+		return s, &pullSchedulingStateError{schedulingRecordUnavailable(), project, pull}
 	}
 	s.Paused = pausedValue == 1
 	if s.Revision < 1 || !identifier.MatchString(s.ActorID) || !roundTime(s.UpdatedAt) || !validSchedulingReason(s.Reason) || !s.Paused && s.Reason != "" {
-		return s, schedulingRecordUnavailable()
+		return s, &pullSchedulingStateError{schedulingRecordUnavailable(), project, pull}
 	}
 	return s, nil
 }

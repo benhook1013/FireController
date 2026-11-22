@@ -134,6 +134,62 @@ func TestSchedulingBackupRetainsNativeControlsAndInactiveRestore(t *testing.T) {
 	backupCode(t, err, "forbidden")
 }
 
+func TestSchedulingRestorePreservesHistoricalPullResumeRevision(t *testing.T) {
+	f := newRestoreFixture(t)
+	e := selectionInventoryEngine(t, f.store)
+	scope := routePolicyInventoryScope(t, f)
+	zero, one := int64(0), int64(1)
+	paused, resumed := true, false
+	for _, pull := range []int64{2, 4} {
+		if _, err := e.ConfigurePullScheduling(t.Context(), scope, "initial-pull-pause", pull,
+			reviewexec.PullSchedulingRequest{ExpectedRevision: &zero, Paused: &paused, Reason: "Fixture pause"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.ConfigurePullScheduling(t.Context(), scope, "historical-pull-resume", 4,
+		reviewexec.PullSchedulingRequest{ExpectedRevision: &one, Paused: &resumed}); err != nil {
+		t.Fatal(err)
+	}
+	event := restoreRows(t, f.store.DB(), `SELECT project_id,4,revision,0,'',actor_id,created_at
+		FROM events WHERE event_type='review.pull_scheduling_updated' AND resource_id='4' AND revision=2`)
+	if len(event) != 1 || len(event[0]) != 7 {
+		t.Fatalf("expected one historical resume event, got %v", event)
+	}
+	if _, err := f.store.DB().Exec(`DELETE FROM review_pull_scheduling WHERE project_id=? AND pull_number=4`, f.project); err != nil {
+		t.Fatal(err)
+	}
+	const controls = `SELECT project_id,pull_number,revision,paused,reason,actor_id,updated_at FROM review_pull_scheduling ORDER BY pull_number`
+	const journal = `SELECT * FROM events ORDER BY sequence`
+	sourceControls, sourceJournal := restoreRows(t, f.store.DB(), controls), restoreRows(t, f.store.DB(), journal)
+	if len(sourceControls) != 1 {
+		t.Fatalf("expected one untouched control, got %v", sourceControls)
+	}
+	bundle := restoreBundle(t, f)
+	immutable := restoreTree(t, bundle.Path)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal("valid legacy bundle no longer inspectable", err)
+	}
+	destination := filepath.Join(t.TempDir(), "inactive-resume")
+	if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
+		t.Fatal("valid legacy bundle no longer restorable", err)
+	}
+	dst, err := openSnapshot(t.Context(), filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	want := [][]any{sourceControls[0], event[0]}
+	if got := restoreRows(t, dst, controls); !reflect.DeepEqual(want, got) {
+		t.Fatalf("restored controls lost canonical revision or attribution: got %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(sourceJournal, restoreRows(t, dst, journal)) {
+		t.Fatal("offline restore appended or rewrote historical events")
+	}
+	if !reflect.DeepEqual(sourceControls, restoreRows(t, f.store.DB(), controls)) || !reflect.DeepEqual(immutable, restoreTree(t, bundle.Path)) {
+		t.Fatal("restore mutated source controls or validated bundle")
+	}
+}
+
 func TestSchedulingBackupHistoricalAuthorizersRemainHistory(t *testing.T) {
 	f, _, credential := schedulingBackupFixture(t)
 	for _, kind := range []string{"revoked", "demoted", "retired"} {

@@ -3,11 +3,12 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-	"github.com/benhook1013/FireController/internal/strictjson"
+	"errors"
 	"strconv"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // ValidateSchedulingSnapshot checks retained control/attribution, not current
@@ -115,7 +116,24 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	if bad {
 		return schedulingUnavailable()
 	}
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections a LEFT JOIN review_selections s ON s.id=a.selection_id LEFT JOIN review_scheduling c ON c.project_id=a.project_id LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id IS NULL OR s.project_id<>a.project_id OR s.channel NOT IN(`+channels+`) OR s.actor_id<>a.actor_id OR s.worker_id<>a.worker_id OR c.project_id IS NULL OR a.scheduling_revision>c.revision OR (a.pull_number=0 AND (a.pull_basis_sha256<>'' OR s.state='selected')) OR (a.pull_number<>0 AND (s.state<>'selected' OR o.id IS NULL OR o.pull_number<>a.pull_number OR o.project_id<>a.project_id OR o.channel<>s.channel OR o.actor_id<>a.actor_id OR o.worker_id<>a.worker_id)))`).Scan(&bad)
+	var selectionVersion string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&selectionVersion); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	custodyJoin, linked, held := "", "s.operation_id", "0"
+	if selectionVersion == "2" {
+		custodyJoin = " LEFT JOIN review_selection_quarantine q ON q.selection_id=s.id AND q.project_id=s.project_id"
+		linked = "COALESCE(s.operation_id,q.original_operation_id)"
+		// The record is only a backup provenance exception. Runtime readers
+		// separately fence this operation; the held row cannot authorize it.
+		held = "(s.state='held' AND s.reason='linked_selection_quarantined' AND s.operation_id IS NULL AND q.selection_id IS NOT NULL)"
+	}
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections a LEFT JOIN review_selections s ON s.id=a.selection_id`+custodyJoin+`
+		LEFT JOIN review_scheduling c ON c.project_id=a.project_id LEFT JOIN review_operations o ON o.id=`+linked+`
+		WHERE s.id IS NULL OR s.project_id<>a.project_id OR s.channel NOT IN(`+channels+`) OR s.actor_id<>a.actor_id OR s.worker_id<>a.worker_id OR c.project_id IS NULL
+		OR a.scheduling_revision>c.revision OR (a.pull_number=0 AND (a.pull_basis_sha256<>'' OR s.state='selected'))
+		OR (a.pull_number<>0 AND ((s.state<>'selected' AND NOT `+held+`) OR o.id IS NULL OR o.pull_number<>a.pull_number
+			OR o.project_id<>a.project_id OR o.channel<>s.channel OR o.actor_id<>a.actor_id OR o.worker_id<>a.worker_id)))`).Scan(&bad)
 	if err != nil {
 		return err
 	}
@@ -186,9 +204,8 @@ func scanSchedulingSnapshot(row interface{ Scan(...any) error }, destinations ..
 // retained event instead proves a pause or cannot be read as that identity.
 // Rank every event before projecting its native revision; never fall back to
 // an older valid resume when the winning revision cannot be trusted.
-func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `WITH orphan AS (
-		SELECT e.project_id,e.resource_id,e.revision,
+const orphanPullSchedulingSQL = `WITH orphan AS (
+		SELECT e.project_id,e.resource_id,e.revision,e.sequence,
 			CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END AS payload,
 			ROW_NUMBER() OVER (PARTITION BY e.project_id,e.resource_id ORDER BY e.revision DESC,e.sequence DESC) AS newest,
 			COUNT(*) OVER (PARTITION BY e.project_id,e.resource_id,e.revision) AS matches
@@ -196,7 +213,10 @@ func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
 			ON s.project_id=e.project_id AND s.pull_number=CAST(e.resource_id AS INTEGER)
 			AND CAST(s.pull_number AS TEXT)=e.resource_id
 		WHERE e.event_type='review.pull_scheduling_updated' AND s.pull_number IS NULL
-	)
+	)`
+
+func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, orphanPullSchedulingSQL+`
 	SELECT resource_id,CASE WHEN typeof(revision)='integer' THEN revision END,payload,matches FROM orphan WHERE newest=1`)
 	if err != nil {
 		return err
@@ -221,6 +241,10 @@ func validateOrphanPullSchedulingEvent(row interface{ Scan(...any) error }) erro
 	if err := row.Scan(&resource, &revision, &payload, &matches); err != nil {
 		return err
 	}
+	return validateOrphanPullResume(resource, revision, payload, matches)
+}
+
+func validateOrphanPullResume(resource string, revision any, payload sql.NullString, matches int64) error {
 	nativeRevision, revisionOK := revision.(int64)
 	pull, err := strconv.ParseInt(resource, 10, 32)
 	if err != nil || pull < 1 || strconv.FormatInt(pull, 10) != resource || !revisionOK || nativeRevision < 1 || matches != 1 ||
@@ -228,6 +252,69 @@ func validateOrphanPullSchedulingEvent(row interface{ Scan(...any) error }) erro
 		return schedulingUnavailable()
 	}
 	return nil
+}
+
+// RestoreHistoricalPullResumes preserves the CAS revision of valid legacy
+// resume events on an offline restored copy. The caller owns its restore
+// transaction. No event, credential, or project scheduling authority changes.
+func RestoreHistoricalPullResumes(ctx context.Context, tx *sql.Tx) error {
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='restore:state'`).Scan(&state); err != nil {
+		return err
+	}
+	if state != "inactive" {
+		return schedulingUnavailable()
+	}
+	var version string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='schema:review_scheduling'`).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Older backups may omit the scheduling domain altogether.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if version != "1" && version != "2" {
+		return schedulingUnavailable()
+	}
+	const candidates = `
+	FROM orphan o JOIN events e ON e.sequence=o.sequence
+	WHERE o.newest=1`
+	rows, err := tx.QueryContext(ctx, orphanPullSchedulingSQL+`
+	SELECT o.project_id,o.resource_id,CASE WHEN typeof(o.revision)='integer' THEN o.revision END,o.payload,o.matches,
+		CASE WHEN typeof(e.actor_id)='text' THEN e.actor_id END,
+		CASE WHEN typeof(e.created_at)='text' THEN e.created_at END`+candidates)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var project, resource string
+		var revision any
+		var resumePayload, actor, createdAt sql.NullString
+		var matches int64
+		if err := rows.Scan(&project, &resource, &revision, &resumePayload, &matches, &actor, &createdAt); err != nil {
+			return err
+		}
+		if err := validateOrphanPullResume(resource, revision, resumePayload, matches); err != nil {
+			return err
+		}
+		if !identifier.MatchString(project) || !actor.Valid || !identifier.MatchString(actor.String) || !createdAt.Valid || !roundTime(createdAt.String) {
+			return schedulingUnavailable()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	// Both reads are in the same transaction, and no projection was inserted
+	// until the complete set was validated. Keep the source event sequence.
+	_, err = tx.ExecContext(ctx, orphanPullSchedulingSQL+`
+	INSERT INTO review_pull_scheduling(project_id,pull_number,revision,paused,reason,actor_id,updated_at)
+	SELECT o.project_id,CAST(o.resource_id AS INTEGER),o.revision,0,'',e.actor_id,e.created_at`+candidates)
+	return err
 }
 
 func validPullSchedulingPayload(payload sql.NullString, pull int64, paused bool) bool {
