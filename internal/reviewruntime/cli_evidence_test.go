@@ -268,6 +268,24 @@ func makeCompleteCLICapture(t *testing.T, workspace reviewworkspace.Workspace, r
 	return reviewprocess.Capture{Stdout: []byte(stdout.String()), ExitCode: 0, Started: true}
 }
 
+func makeCompleteCLIEmptyFindingCapture(t *testing.T, workspace reviewworkspace.Workspace, reviewed []string) reviewprocess.Capture {
+	t.Helper()
+	lines := []map[string]any{
+		{"type": "review_context", "reviewType": "committed", "currentBranch": "HEAD", "baseBranch": workspace.ComparisonRef, "workingDirectory": workspace.Directory},
+		{"type": "complete", "status": "review_completed", "outcome": "completed", "findings": 0, "reviewedFiles": reviewed},
+	}
+	var stdout strings.Builder
+	for _, line := range lines {
+		encoded, err := json.Marshal(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout.Write(encoded)
+		stdout.WriteByte('\n')
+	}
+	return reviewprocess.Capture{Stdout: []byte(stdout.String()), ExitCode: 0, Started: true, Exited: true}
+}
+
 func makeIncompleteCLICapture(t *testing.T, workspace reviewworkspace.Workspace) reviewprocess.Capture {
 	t.Helper()
 	encoded, err := json.Marshal(map[string]any{"type": "review_context", "reviewType": "committed", "currentBranch": "HEAD", "baseBranch": workspace.ComparisonRef, "workingDirectory": workspace.Directory})
@@ -372,8 +390,54 @@ func TestRetainCLIWorkspaceCaptureAndImmutableEvidence(t *testing.T) {
 	assertCoreErrorCode(t, err, "capture_conflict")
 }
 
-func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testing.T) {
+func TestRetainCLIQualifiesTrustedPositivePartialCoverageWithZeroFindings(t *testing.T) {
 	f := newCLIEvidenceFixture(t)
+	attempt, workspace := f.startAdmitted(t, 2)
+	changed := mustChangedFiles(t, f.manager, workspace)
+	if len(changed) != 2 || changed[0] != "reviewed.txt" || changed[1] != "second.txt" {
+		t.Fatalf("fixture does not have the expected complete source comparison: %v", changed)
+	}
+	claims := []string{"reviewed.txt"}
+	capture := makeCompleteCLIEmptyFindingCapture(t, workspace, claims)
+	if capture.ExitCode != 0 || !capture.Started || !capture.Exited {
+		t.Fatal("partial-coverage fixture lacks confirmed successful process completion")
+	}
+	started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+	result, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
+	if err != nil || result.Outcome != "failed" || result.Complete || result.Reason != reviewexec.CLIUsablePartialReason || result.Receipt.State != "captured" {
+		t.Fatalf("trusted partial CLI result was not retained: %+v %v", result, err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	if err != nil || evidence.Anchor != *attempt.Anchor || evidence.Capture.ExpectedAnchor != *attempt.Anchor || evidence.Capture.Review.Outcome != "failed" || evidence.Capture.Review.Complete || evidence.Capture.Review.ReportedFindings != 0 || len(evidence.Capture.Review.Findings) != 0 || !reflect.DeepEqual(evidence.Capture.Review.ReviewedFiles, claims) || !reflect.DeepEqual(evidence.Capture.Review.CoverageLimits, []string{cliPartialCoverageLimit}) {
+		t.Fatalf("partial comparison or valid zero-finding result was not retained honestly: %+v %v", evidence.Capture.Review, err)
+	}
+	if strings.Contains(evidence.Capture.Review.CoverageLimits[0], "reviewed.txt") || strings.Contains(evidence.Capture.Review.CoverageLimits[0], "second.txt") {
+		t.Fatal("partial coverage explanation disclosed provider path claims")
+	}
+	loaded, _, err := f.captures.Read(t.Context(), attempt.ID)
+	if err != nil || !bytes.Equal(loaded.Capture.Stdout, capture.Stdout) || loaded.Capture.ExitCode != 0 || !loaded.Capture.Started || !loaded.Capture.Exited {
+		t.Fatal("retaining the derived partial result changed its immutable raw capture", err)
+	}
+}
+
+func TestRetainCLIQualifiesTrustedPositivePartialCoverageWithFindings(t *testing.T) {
+	f := newCLIEvidenceFixture(t)
+	attempt, workspace := f.startAdmitted(t, 2)
+	claims := []string{"reviewed.txt"}
+	capture := makeCompleteCLICapture(t, workspace, claims)
+	capture.Exited = true
+	started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
+	result, err := RetainCLI(t.Context(), f.captures, f.engine, f.manager, attempt, workspace, capture, started, finished)
+	if err != nil || result.Outcome != "failed" || result.Complete || result.Reason != reviewexec.CLIUsablePartialReason {
+		t.Fatalf("trusted partial CLI result with findings was not retained: %+v %v", result, err)
+	}
+	evidence, err := f.engine.ReadReviewEvidence(t.Context(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
+	if err != nil || evidence.Capture.Review.ReportedFindings != 1 || len(evidence.Capture.Review.Findings) != 1 || evidence.Capture.Review.Findings[0].Title != "Synthetic finding" || !reflect.DeepEqual(evidence.Capture.Review.ReviewedFiles, claims) || !reflect.DeepEqual(evidence.Capture.Review.CoverageLimits, []string{cliPartialCoverageLimit}) {
+		t.Fatalf("partial comparison discarded findings, source claims or limitation: %+v %v", evidence.Capture.Review, err)
+	}
+}
+
+func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testing.T) {
 	tests := []struct {
 		name    string
 		prepare func(t *testing.T, attempt reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture)
@@ -381,16 +445,28 @@ func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testi
 		reason  string
 	}{
 		{
-			name: "missing-reviewed-file",
+			name: "partial-without-confirmed-exit",
 			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
 				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt"})
 			}, outcome: "failed", reason: "coverage_incomplete",
 		},
 		{
-			name: "extra-reviewed-file",
+			name: "empty-reviewed-files",
 			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
-				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt", "second.txt", "invented.txt"})
+				return workspace, makeCompleteCLICapture(t, workspace, []string{})
 			}, outcome: "failed", reason: "coverage_incomplete",
+		},
+		{
+			name: "foreign-reviewed-file",
+			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
+				return workspace, makeCompleteCLICapture(t, workspace, []string{"invented.txt"})
+			}, outcome: "failed", reason: "coverage_incomplete",
+		},
+		{
+			name: "duplicate-reviewed-file",
+			prepare: func(t *testing.T, _ reviewexec.Attempt, workspace reviewworkspace.Workspace) (reviewworkspace.Workspace, reviewprocess.Capture) {
+				return workspace, makeCompleteCLICapture(t, workspace, []string{"reviewed.txt", "reviewed.txt"})
+			}, outcome: "uncertain", reason: "capture_invalid",
 		},
 		{
 			name: "malformed-structured-output",
@@ -425,9 +501,10 @@ func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testi
 			}, outcome: "uncertain", reason: "source_changed",
 		},
 	}
-	for i, tc := range tests {
+	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			attempt, workspace := f.startAdmitted(t, int64(3+i))
+			f := newCLIEvidenceFixture(t)
+			attempt, workspace := f.startAdmitted(t, 2)
 			usedWorkspace, capture := tc.prepare(t, attempt, workspace)
 			started, finished := time.Now().Add(-time.Second).UTC(), time.Now().UTC()
 			before := cliAttemptState(t, f.store, attempt.ID)
@@ -441,6 +518,12 @@ func TestRetainCLIWithholdsCompleteCoverageOnCaptureOrWorkspaceMismatch(t *testi
 			stored, err := f.engine.ReadReviewEvidence(context.Background(), f.scopeWithAccess(t, f.reader, false, "read"), result.Receipt.ID)
 			if err != nil || stored.Capture.Review.Outcome != tc.outcome || stored.Capture.Review.Complete || stored.Capture.CaptureBytes < 1 {
 				t.Fatalf("incomplete evidence was not retained honestly: %+v %v", stored, err)
+			}
+			if tc.name == "duplicate-reviewed-file" {
+				loaded, _, readErr := f.captures.Read(t.Context(), attempt.ID)
+				if readErr != nil || !bytes.Contains(loaded.Capture.Stdout, []byte(`"reviewedFiles":["reviewed.txt","reviewed.txt"]`)) || len(stored.Capture.Review.ReviewedFiles) != 0 {
+					t.Fatal("duplicate claims were trusted or the original invalid capture was not retained", readErr)
+				}
 			}
 			if cliCount(t, f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, attempt.ID) != 1 || cliCount(t, f.store, `SELECT count(*) FROM events WHERE resource_id=? AND event_type='review.captured'`, result.Receipt.ID) != 1 {
 				t.Fatal("retained incomplete evidence did not have exactly one ledger row and event")

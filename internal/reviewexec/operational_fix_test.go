@@ -132,8 +132,23 @@ func TestOperationalFixNativeProjectionReadback(t *testing.T) {
 	body, err := f.e.RecordOperationalFix(t.Context(), writer, "operational", id, r)
 	adjudicationReceipt(t, body, err, id, "operational_fix_recorded", 2)
 	adjudicationComplete(t, f, a)
-	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	assertAutoFinalizedAndPublished(t, f, id, 3, FindingCounts{Found: 1, Accepted: 1})
+	stateBeforeConfirmation := encoded(adjudicationRead(t, f, id))
+	detailBeforeConfirmation := encoded(cliPublicationDetail(t, f, evidence.Anchor.PullNumber, id))
+	changesBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id)
+	publicationsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id)
+	receiptsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	eventsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
 	adjudicationReceipt(t, body, err, id, "finalized", 3)
+	if encoded(adjudicationRead(t, f, id)) != stateBeforeConfirmation ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != changesBeforeConfirmation ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != publicationsBeforeConfirmation ||
+		attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receiptsBeforeConfirmation+1 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM events`) != eventsBeforeConfirmation ||
+		encoded(cliPublicationDetail(t, f, evidence.Anchor.PullNumber, id)) != detailBeforeConfirmation {
+		t.Fatal("current-revision confirmation changed the finalized source or worker projection")
+	}
 	detail := cliPublicationDetail(t, f, evidence.Anchor.PullNumber, id)
 	if detail.Run.Fixed != 1 || detail.Run.Accepted != 1 || detail.Findings[0].FixSHA != "" || detail.Findings[0].OperationalProof == nil {
 		t.Fatalf("incorrect projection %+v", detail)
@@ -145,19 +160,20 @@ func TestOperationalFixAttentionExcludesFinalizedReceipt(t *testing.T) {
 	id := evidence.ID
 	adjudicationDecide(t, f, id, "accept-no-proof", 0, 0, "accepted")
 	adjudicationComplete(t, f, a)
+	assertAutoFinalizedAndPublished(t, f, id, 2, FindingCounts{Found: 1, Accepted: 1})
 	pending := listOperationPage(t, f, "?status=attention&channel=cli")
 	if len(pending.Items) != 1 || pending.Items[0].ID != a.OperationID {
 		t.Fatalf("missing real pending operation: %+v", pending)
 	}
 	writer := f.scope(t, attemptProject, f.writer, false)
-	r := OperationalFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedDigest: adjudicationSHA(""), ProofNote: "Verified operational remediation"}
+	r := OperationalFixRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, ExpectedDigest: adjudicationSHA(""), ProofNote: "Verified operational remediation"}
 	body, err := f.e.RecordOperationalFix(t.Context(), writer, "attention-operational", id, r)
-	adjudicationReceipt(t, body, err, id, "operational_fix_recorded", 2)
+	adjudicationReceipt(t, body, err, id, "operational_fix_recorded", 3)
 	stillPending := listOperationPage(t, f, "?status=attention&channel=cli")
-	if len(stillPending.Items) != 1 || stillPending.Items[0].ID != a.OperationID {
-		t.Fatalf("unfinalized operation must stay in attention: %+v", stillPending)
+	if len(stillPending.Items) != 0 || stillPending.HasMore {
+		t.Fatalf("settled proof did not clear operation attention: %+v", stillPending)
 	}
-	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "attention-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "attention-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
 	adjudicationReceipt(t, body, err, id, "finalized", 3)
 	if page := listOperationPage(t, f, "?status=attention&channel=cli"); len(page.Items) != 0 || page.HasMore {
 		t.Fatalf("settled receipt was not excluded: %+v", page)

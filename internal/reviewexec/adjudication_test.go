@@ -159,19 +159,33 @@ func TestCLIAdjudicationFinalizeFreezesSourceCounts(t *testing.T) {
 	adjudicationDecide(t, f, id, "rejected", 1, 1, "rejected")
 	adjudicationComplete(t, f, a)
 	journal := attemptState(t, f, a)
+	got := adjudicationRead(t, f, id)
+	if got.Revision != 3 || !got.Finalized || got.FrozenCounts == nil || *got.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
+		t.Fatal("settling a fully decided source did not finalize it", got)
+	}
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != 1 {
+		t.Fatal("automatic finalization did not queue exactly one checkpoint")
+	}
 	var source string
 	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE id=?`, id).Scan(&source); err != nil {
 		t.Fatal(err)
 	}
 	scope := f.scope(t, attemptProject, f.writer, false)
-	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)}
+	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(got.Revision)}
+	publicationsBeforeNoop := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id)
+	receiptsBeforeNoop := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	changesBeforeNoop := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id)
+	eventsBeforeNoop := attemptCount(t, f.store, `SELECT count(*) FROM events`)
 	body, err := f.e.FinalizeReviewEvidence(context.Background(), scope, "finalize", id, request)
-	first := adjudicationReceipt(t, body, err, id, "finalized", 3)
-	got := adjudicationRead(t, f, id)
-	if !got.Finalized || got.FrozenCounts == nil || *got.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1, Routed: 0}) {
-		t.Fatal("finalization lost immutable counts", got)
+	first := adjudicationReceipt(t, body, err, id, "finalized", got.Revision)
+	if !reflect.DeepEqual(adjudicationRead(t, f, id), got) ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != publicationsBeforeNoop ||
+		attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receiptsBeforeNoop+1 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != changesBeforeNoop ||
+		attemptCount(t, f.store, `SELECT count(*) FROM events`) != eventsBeforeNoop {
+		t.Fatal("explicit finalization changed an automatically finalized source")
 	}
-	adjudicationDecide(t, f, id, "post-finalize-correction", 3, 0, "rejected")
+	adjudicationDecide(t, f, id, "post-finalize-correction", got.Revision, 0, "rejected")
 	got = adjudicationRead(t, f, id)
 	if got.Findings[0].Disposition != "rejected" || *got.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
 		t.Fatal("later correction rewrote frozen source counts", got)
@@ -181,10 +195,24 @@ func TestCLIAdjudicationFinalizeFreezesSourceCounts(t *testing.T) {
 	if err != nil || !bytes.Equal(first, replay) || adjudicationState(t, f, a) != before {
 		t.Fatal("finalization retry did not retain original receipt", err)
 	}
-	_, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "second-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(4)})
+	beforePublications := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id)
+	beforeReceipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	beforeChanges := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id)
+	beforeEvents := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	body, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "second-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(got.Revision)})
+	adjudicationReceipt(t, body, err, id, "finalized", got.Revision)
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != beforePublications ||
+		attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != beforeReceipts+1 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != beforeChanges ||
+		attemptCount(t, f.store, `SELECT count(*) FROM events`) != beforeEvents ||
+		!reflect.DeepEqual(adjudicationRead(t, f, id), got) {
+		t.Fatal("finalize at the current revision changed domain state")
+	}
+	beforeStale := adjudicationState(t, f, a)
+	_, err = f.e.FinalizeReviewEvidence(context.Background(), scope, "stale-second-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
 	attemptCode(t, err, "review_conflict")
 	var retained string
-	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE id=?`, id).Scan(&retained); err != nil || retained != source || attemptState(t, f, a) != journal || adjudicationState(t, f, a) != before {
+	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_execution_evidence WHERE id=?`, id).Scan(&retained); err != nil || retained != source || attemptState(t, f, a) != journal || adjudicationState(t, f, a) != beforeStale {
 		t.Fatal("finalization/correction changed source or journal", err)
 	}
 }
@@ -214,13 +242,21 @@ func TestCLIAdjudicationFinalizationRequiresCompleteSettledDecisions(t *testing.
 			case "partial", "unadjudicated", "zero":
 				adjudicationComplete(t, f, a)
 			}
+			var zeroState ReviewAdjudication
+			if name == "zero" {
+				zeroState = adjudicationRead(t, f, id)
+				if zeroState.Revision != 1 || !zeroState.Finalized || zeroState.FrozenCounts == nil || *zeroState.FrozenCounts != (FindingCounts{}) || len(zeroState.Findings) != 0 {
+					t.Fatal("settling a zero-finding source did not finalize it", zeroState)
+				}
+				revision = zeroState.Revision
+			}
 			before := adjudicationState(t, f, a)
 			body, err := f.e.FinalizeReviewEvidence(context.Background(), f.scope(t, attemptProject, f.writer, false), "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
 			if name == "zero" {
-				adjudicationReceipt(t, body, err, id, "finalized", 1)
+				adjudicationReceipt(t, body, err, id, "finalized", revision)
 				got := adjudicationRead(t, f, id)
-				if !got.Finalized || *got.FrozenCounts != (FindingCounts{}) || len(got.Findings) != 0 {
-					t.Fatal("empty completed capture did not finalize", got)
+				if !reflect.DeepEqual(got, zeroState) {
+					t.Fatal("explicit finalization changed the automatically finalized empty capture", got)
 				}
 			} else {
 				code := "review_conflict"
@@ -403,9 +439,15 @@ func TestCLIAdjudicationAuthorizationAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, a)
-	body, err = f.e.FinalizeReviewEvidence(context.Background(), writer, "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	state := adjudicationRead(t, f, id)
+	if state.Revision != 2 || !state.Finalized || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
+		t.Fatal("settling a fully decided source did not finalize it", state)
+	}
+	body, err = f.e.FinalizeReviewEvidence(context.Background(), writer, "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(state.Revision)})
+	adjudicationReceipt(t, body, err, id, "finalized", state.Revision)
+	if !reflect.DeepEqual(state, adjudicationRead(t, f, id)) {
+		t.Fatal("explicit finalization changed an automatically finalized source")
+	}
 	before = adjudicationState(t, f, a)
 	var sequence int
 	var name, path string
@@ -606,11 +648,11 @@ func TestCLIAdjudicationRealProducerMetadataEnvelope(t *testing.T) {
 	before := producerProjectCursor(t, f, reader)
 	adjudicationDecide(t, f, id, "producer-decision", 0, 0, "rejected")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "producer-finalization", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	adjudicationReceipt(t, body, err, id, "finalized", 1)
 	// The original decision replay must not add a second envelope after finalize.
 	adjudicationDecide(t, f, id, "producer-decision", 0, 0, "rejected")
 	assertProducerProjectPage(t, f, reader, before, []core.ProjectEventItem{
 		{EventType: "review.evidence.adjudicated", ResourceID: id, Revision: 1},
-		{EventType: "review.evidence.finalized", ResourceID: id, Revision: 2},
+		{EventType: "review.evidence.finalized", ResourceID: id, Revision: 1},
 	})
 }

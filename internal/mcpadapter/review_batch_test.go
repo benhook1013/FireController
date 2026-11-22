@@ -57,7 +57,7 @@ func TestReviewBatchMCPDiscoveryAndPreConnectionValidation(t *testing.T) {
 	}
 }
 
-func TestReviewBatchMCPActualAtomicReceiptReplayAndExplicitFinalization(t *testing.T) {
+func TestReviewBatchMCPActualAtomicReceiptReplayAndAutomaticFinalization(t *testing.T) {
 	f, handler, id := reviewControlsFixture(t)
 	var posts atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,8 +83,8 @@ func TestReviewBatchMCPActualAtomicReceiptReplayAndExplicitFinalization(t *testi
 	}
 	var state client.ReviewAdjudication
 	decodeResult(t, call(t, session, "review_adjudication_read", map[string]any{"evidence_id": id}), &state)
-	if state.Finalized || state.FrozenCounts != nil || state.Findings[0].FixSHA != strings.Repeat("a", 40) {
-		t.Fatal("batch fabricated finalization or lost proof", state)
+	if !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Accepted != 1 || state.Findings[0].FixSHA != strings.Repeat("a", 40) {
+		t.Fatal("last decision did not finalize or subsequent batch lost proof", state)
 	}
 	encoded, _ := json.Marshal(receipt)
 	var fields map[string]any

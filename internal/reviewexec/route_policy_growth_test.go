@@ -20,7 +20,7 @@ func TestRoutePolicyGrowthExactPendingResolvedAndReceiverCorrections(t *testing.
 		routes = append(routes, routeCreate(t, f, firstID, fmt.Sprintf("growth-first-%d", i), routeRequest(int64(i), int64(i), 4)))
 	}
 	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "growth-finalize-first", firstID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(52)})
-	adjudicationReceipt(t, raw, err, firstID, "finalized", 53)
+	adjudicationReceipt(t, raw, err, firstID, "finalized", 52)
 
 	secondAttempt := f.start(t, attemptProject, f.enqueue(t, attemptProject, "growth-second-source", "cli", 6, 2))
 	anchor := attemptAnchor(attemptProject, 6)
@@ -104,7 +104,7 @@ func TestRoutePolicyGrowthExactPendingResolvedAndReceiverCorrections(t *testing.
 	}
 
 	adjudicationComplete(t, f, secondAttempt)
-	raw, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "growth-finalize-second", second.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(51)})
+	raw, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "growth-finalize-second", second.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(52)})
 	adjudicationReceipt(t, raw, err, second.ID, "finalized", 52)
 	secondSource = adjudicationRead(t, f, second.ID)
 	if secondSource.FrozenCounts == nil || *secondSource.FrozenCounts != (FindingCounts{Found: 51, Routed: 51}) {

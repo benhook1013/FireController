@@ -360,12 +360,12 @@ func TestReviewControlsStdioReadsDecisionsFixFinalizationAndExactRetry(t *testin
 	finalize := map[string]any{"evidence_id": evidenceID, "idempotency_key": "finalize-once", "expected_revision": 2}
 	decodeResult(t, call(t, session, "review_source_finalize", finalize), &receipt)
 	decodeResult(t, call(t, session, "review_source_finalize", finalize), &replay)
-	if receipt != replay || receipt.Revision != 3 || receipt.State != "finalized" {
+	if receipt != replay || receipt.Revision != 2 || receipt.State != "finalized" {
 		t.Fatal("finalization receipt or exact retry changed")
 	}
 	var queued int
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=? AND state='queued'`, evidenceID).Scan(&queued); err != nil || queued != 1 {
-		t.Fatal("MCP finalization did not queue exactly one summary without a publish call", queued, err)
+		t.Fatal("MCP last decision did not queue exactly one summary", queued, err)
 	}
 	compact, _ := json.Marshal(receipt)
 	var fields map[string]any
@@ -375,11 +375,11 @@ func TestReviewControlsStdioReadsDecisionsFixFinalizationAndExactRetry(t *testin
 	}
 	var final client.ReviewAdjudication
 	decodeResult(t, call(t, session, "review_adjudication_read", map[string]any{"evidence_id": evidenceID}), &final)
-	if final.Revision != 3 || !final.Finalized || final.FrozenCounts == nil || final.FrozenCounts.Found != 1 || final.FrozenCounts.Accepted != 1 || final.Findings[0].FixSHA != strings.Repeat("f", 40) || final.Findings[0].ProofNote != "Focused local proof" {
+	if final.Revision != 2 || !final.Finalized || final.FrozenCounts == nil || final.FrozenCounts.Found != 1 || final.FrozenCounts.Accepted != 1 || final.Findings[0].FixSHA != strings.Repeat("f", 40) || final.Findings[0].ProofNote != "Focused local proof" {
 		t.Fatal("final source counts or effective proof changed")
 	}
 	var changes int
-	if err := f.store.DB().QueryRow("SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?", evidenceID).Scan(&changes); err != nil || changes != 3 || writes.Load() != 7 || reads.Load() != 3 || f.providers.Load() != 1 {
+	if err := f.store.DB().QueryRow("SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?", evidenceID).Scan(&changes); err != nil || changes != 2 || writes.Load() != 7 || reads.Load() != 3 || f.providers.Load() != 1 {
 		t.Fatal("retry duplicated durable changes or tools performed extra provider work")
 	}
 }

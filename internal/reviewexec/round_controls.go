@@ -344,6 +344,18 @@ func roundUnboundOccupied(ctx context.Context, tx *sql.Tx, c roundRecord) (bool,
 	if err := tx.QueryRowContext(ctx, roundUnboundExecutionSQL, c.ProjectID, c.PullNumber, c.Channel).Scan(&pending); err != nil || pending {
 		return pending, err
 	}
+	if c.Channel == "cli" {
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations o
+JOIN review_execution_evidence e ON e.attempt_id=o.attempt_id AND e.operation_id=o.id AND e.project_id=o.project_id
+LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
+WHERE o.project_id=? AND o.pull_number=? AND o.channel='cli' AND o.state='failed' AND o.reason=?
+AND COALESCE(json_extract(s.body_json,'$.finalized'),0)=0
+AND NOT EXISTS(SELECT 1 FROM review_round_operation_bindings b WHERE b.operation_id=o.id))`,
+			c.ProjectID, c.PullNumber, CLIUsablePartialReason).Scan(&pending)
+		if err != nil || pending {
+			return pending, err
+		}
+	}
 	var operation, state string
 	err := tx.QueryRowContext(ctx, roundUnboundCaptureSQL, c.ProjectID, c.PullNumber, c.Channel).Scan(&operation, &state)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -521,40 +533,20 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 	if operation.PullNumber != pull || operation.Channel != channel {
 		return roundUnavailable()
 	}
-	if operation.State != "completed" {
-		return nil
-	}
-	proof, err := deriveComparisonProof(ctx, tx, project, operationID)
-	if err != nil {
+	evidenceID, accepted, err := roundCompletionAuthority(ctx, tx, project, operationID, true)
+	if err != nil || evidenceID == "" {
 		return err
-	}
-	if proof.evidence == "" {
-		return nil
-	}
-	evidence, state, err := loadReviewAdjudication(ctx, tx, project, proof.evidence)
-	if err != nil {
-		return err
-	}
-	if !state.Finalized || state.FrozenCounts == nil {
-		return nil
-	}
-	if evidence.OperationID != operationID || evidence.AttemptID != operation.AttemptID || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
-		return nil
 	}
 	var oldEvidence string
 	var oldEpoch, oldAccepted int64
 	err = tx.QueryRowContext(ctx, `SELECT evidence_id,epoch,accepted FROM review_round_completions WHERE operation_id=?`, operationID).Scan(&oldEvidence, &oldEpoch, &oldAccepted)
 	if err == nil {
-		if oldEvidence != proof.evidence || oldEpoch != epoch || oldAccepted != state.FrozenCounts.Accepted {
+		if oldEvidence != evidenceID || oldEpoch != epoch || oldAccepted != accepted {
 			return roundUnavailable()
 		}
 		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	credited, err := hasCreditedNativeHostedAlias(ctx, tx, project, pull, evidence.Capture.Hosted)
-	if err != nil || credited {
 		return err
 	}
 	original, err := readRoundGrant(ctx, tx, project, pull, channel, grant, epoch)
@@ -579,7 +571,7 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 		return roundUnavailable()
 	}
 	at := stamp()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_completions(operation_id,evidence_id,project_id,pull_number,channel,epoch,ordinal,accepted,completed_at) VALUES(?,?,?,?,?,?,?,?,?)`, operationID, proof.evidence, project, pull, channel, epoch, used+1, state.FrozenCounts.Accepted, at); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_completions(operation_id,evidence_id,project_id,pull_number,channel,epoch,ordinal,accepted,completed_at) VALUES(?,?,?,?,?,?,?,?,?)`, operationID, evidenceID, project, pull, channel, epoch, used+1, accepted, at); err != nil {
 		return err
 	}
 
@@ -589,7 +581,7 @@ func completeRoundControl(ctx context.Context, tx *sql.Tx, project, operationID 
 	if !c.cumulative && c.grantRevision != grant || c.Used != used || (!c.MaximumUnbounded && c.Used >= c.Maximum) || c.Used >= roundSafeInteger {
 		return roundUnavailable()
 	}
-	return writeRoundCompletionProgress(ctx, tx, &c, state.FrozenCounts.Accepted, at)
+	return writeRoundCompletionProgress(ctx, tx, &c, accepted, at)
 }
 
 func advanceRoundCounters(c *roundRecord, accepted int64) error {

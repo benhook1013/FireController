@@ -56,10 +56,11 @@ func TestRetainHostedPlainStandingSummarySameAttemptAndFinalization(t *testing.T
 		t.Fatal(err)
 	}
 	adjudication, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
-	if err != nil || adjudication.Finalized || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
-		t.Fatal("completion silently finalized or credited source", err)
+	if err != nil || !adjudication.Finalized || adjudication.Revision != 1 || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
+		t.Fatal("completed zero result must finalize without unbound round credit", adjudication, err)
 	}
-	finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "plain-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	revision := adjudication.Revision
+	finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "plain-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,14 +69,14 @@ func TestRetainHostedPlainStandingSummarySameAttemptAndFinalization(t *testing.T
 		if err != nil || again != result {
 			t.Fatal("exact original recovery replay changed result", err)
 		}
-		replay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "plain-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+		replay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "plain-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision})
 		if err != nil || !bytes.Equal(replay, finalized) {
 			t.Fatal("finalization replay changed receipt", err)
 		}
 	}
 	adjudication, err = f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
 	if err != nil || !adjudication.Finalized || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) {
-		t.Fatal("explicit zero finalization missing", err)
+		t.Fatal("automatic zero finalization missing", err)
 	}
 	journal, err = f.f.engine.ReadHostedObservations(t.Context(), f.f.project, original.ID)
 	if err != nil || len(journal) != 2 || journal[0].Input != baseline || recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "review_execution_attempts") != 1 || recoveryRuntimeCount(t, f.f, "review_operations") != 1 {

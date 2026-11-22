@@ -75,7 +75,7 @@ func TestRoundInitialGrantWaitsForUnboundFinalization(t *testing.T) {
 		for _, accepted := range []bool{false, true} {
 			t.Run(fmt.Sprintf("closed=%t/accepted=%t", closed, accepted), func(t *testing.T) {
 				f := roundFixture(t)
-				a, evidence := roundCapture(t, f, 0, accepted)
+				a, evidence := roundCapture(t, f, 0, true)
 				revision := int64(0)
 				if closed {
 					if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "close", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
@@ -92,7 +92,11 @@ func TestRoundInitialGrantWaitsForUnboundFinalization(t *testing.T) {
 				if roundTables(t, f) != before {
 					t.Fatal("unfinalized refusal changed round state or retained a receipt")
 				}
-				roundFinalize(t, f, a, evidence, 0, accepted)
+				if accepted {
+					roundFinalize(t, f, a, evidence, 0, true)
+				} else {
+					roundRejectAndFinalize(t, f, a, evidence, 0)
+				}
 				receipt, err := f.e.ConfigureRoundControl(t.Context(), scope, "first-grant", 2, "cli", request)
 				if err != nil {
 					t.Fatal("settled unbound work still prevented initial grant", err)
@@ -167,7 +171,7 @@ func TestRoundInitialGrantIgnoresOtherUnboundScopes(t *testing.T) {
 
 func TestRoundInitialGrantIgnoresOtherUnfinalizedScopes(t *testing.T) {
 	f := roundFixture(t)
-	roundCapture(t, f, 0, false)
+	roundCapture(t, f, 0, true)
 	roundGrant(t, f, 4, "cli", 0, 0, 1, "other-pull")
 	roundGrant(t, f, 2, "hosted", 0, 0, 1, "other-channel")
 	revision, minimum, maximum := int64(0), int64(0), int64(1)
@@ -180,7 +184,7 @@ func TestRoundInitialGrantIgnoresOtherUnfinalizedScopes(t *testing.T) {
 func TestRoundInitialGrantPreservesLegacyBoundWorkOnReopening(t *testing.T) {
 	f := roundFixture(t)
 	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 2, "legacy")
-	a, evidence := roundCapture(t, f, 0, false)
+	a, evidence := roundCapture(t, f, 0, true)
 	revision := int64(1)
 	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "close", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
 		t.Fatal(err)
@@ -190,7 +194,7 @@ func TestRoundInitialGrantPreservesLegacyBoundWorkOnReopening(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT grant_revision,epoch FROM review_round_operation_bindings WHERE operation_id=?`, a.OperationID).Scan(&grant, &epoch); err != nil || grant != 1 || epoch != 1 || roundPendingCount(t, f, 2, "cli") != 1 {
 		t.Fatal("reopening changed the original legacy binding or occupancy", grant, epoch, err)
 	}
-	roundFinalize(t, f, a, evidence, 0, false)
+	roundRejectAndFinalize(t, f, a, evidence, 0)
 	if c := roundRead(t, f, 2, "cli"); c.Used != 1 || c.Dry != 1 || !roundDone(c) {
 		t.Fatal("original legacy completion failed to consume reopened allowance", c)
 	}

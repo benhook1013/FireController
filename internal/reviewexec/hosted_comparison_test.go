@@ -2,6 +2,7 @@ package reviewexec
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -40,9 +41,7 @@ func TestHostedComparisonZeroRequiresCompletedAttemptAndFinalization(t *testing.
 	f, a, id, current := hostedComparisonFixture(t, true)
 	hostedComparisonRead(t, f, a, current, ComparisonState{}) // active is not completed evidence
 	adjudicationComplete(t, f, a)
-	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-zero-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-	adjudicationReceipt(t, body, err, id, "finalized", 1)
+	assertAutoFinalizedAndPublished(t, f, id, 1, FindingCounts{})
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
 	// Native hosted credit and pending obligations must never become CLI credit.
 	coverageComparison(t, f, a, current, ComparisonState{})
@@ -55,19 +54,18 @@ func TestHostedComparisonFrozenCountsCorrectionsAndMovedHead(t *testing.T) {
 	adjudicationDecide(t, f, id, "hosted-accept", 0, 0, "accepted")
 	adjudicationDecide(t, f, id, "hosted-reject-one", 1, 1, "rejected")
 	adjudicationDecide(t, f, id, "hosted-reject-two", 2, 2, "rejected")
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
-	adjudicationReceipt(t, body, err, id, "finalized", 4)
+	assertAutoFinalizedAndPublished(t, f, id, 3, FindingCounts{Found: 3, Accepted: 1})
 	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
 	moved := current
 	moved.Pull.HeadSHA = strings.Repeat("9", 40)
 	hostedComparisonRead(t, f, a, moved, ComparisonState{Pending: true})
-	coverageFix(t, f, id, "hosted-fix-one", 4, 0, "")
+	coverageFix(t, f, id, "hosted-fix-one", 3, 0, "")
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
 	hostedComparisonRead(t, f, a, moved, ComparisonState{Covered: true})
-	adjudicationDecide(t, f, id, "hosted-correct", 5, 1, "accepted")
+	adjudicationDecide(t, f, id, "hosted-correct", 4, 1, "accepted")
 	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
 	hostedComparisonRead(t, f, a, moved, ComparisonState{Pending: true})
-	coverageFix(t, f, id, "hosted-fix-two", 6, 1, "")
+	coverageFix(t, f, id, "hosted-fix-two", 5, 1, "")
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
 	state := adjudicationRead(t, f, id)
 	if state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 3, Accepted: 1}) {
@@ -194,22 +192,43 @@ func TestHostedComparisonClosedRunCannotMaskUnfinalizedRun(t *testing.T) {
 	}
 	capture := source.Capture
 	capture.ExpectedAnchor = anchor
+	metadata, _, parsed := hostedEvidenceMetadataFixture()
+	metadata.ObservedBaseSHA = anchor.ParentSHA
+	for i := range parsed.Findings {
+		parsed.Findings[i].Title = fmt.Sprintf("Second Hosted review finding %d", i+1)
+		parsed.Findings[i].Detail = "Retained source for the second attempt"
+		parsed.Findings[i].Severity = "medium"
+	}
+	capture.Hosted = metadata
+	capture.Review = parsed
+	capture.CaptureID = "review_capture_" + strings.Repeat("2", 32)
+	capture.CaptureSHA256 = strings.Repeat("2", 64)
 	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, next.ID, capture)
 	if err != nil {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, next)
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true, Pending: true})
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "second-hosted-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
+	second := adjudicationRead(t, f, receipt.ID)
+	if second.Revision != 0 || second.Finalized || len(second.Findings) != 3 {
+		t.Fatal("positive second capture did not remain undecided after settlement", second)
+	}
+	for finding := int64(0); finding < 3; finding++ {
+		adjudicationDecide(t, f, receipt.ID, fmt.Sprintf("second-hosted-reject-%d", finding), finding, finding, "rejected")
+		if finding < 2 {
+			hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true, Pending: true})
+		}
+	}
+	assertAutoFinalizedAndPublished(t, f, receipt.ID, 3, FindingCounts{Found: 3})
 	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
 }
 
 func TestHostedComparisonCompletedMissingCaptureGrowth(t *testing.T) {
 	f, a, _, current := hostedComparisonFixture(t, true)
 	adjudicationComplete(t, f, a)
+	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true})
 	comparisonMissingHistory(t, f, 102, "hosted", strings.Repeat("9", 40))
-	hostedComparisonRead(t, f, a, current, ComparisonState{Pending: true})
+	hostedComparisonRead(t, f, a, current, ComparisonState{Covered: true, Pending: true})
 	coverageComparison(t, f, a, current, ComparisonState{})
 }
 

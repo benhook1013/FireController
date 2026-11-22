@@ -21,7 +21,7 @@ func uncertainCapturedCLI(t *testing.T, count int, outcome string) (*attemptFixt
 	return f, a, evidence
 }
 
-func TestRecoverRetainedCLICompletesOriginalWithoutProviderOrFinalization(t *testing.T) {
+func TestRecoverRetainedCLICompletesOriginalWithoutProvider(t *testing.T) {
 	for _, count := range []int{0, 3} {
 		t.Run(string(rune('0'+count)), func(t *testing.T) {
 			f, a, evidence := uncertainCapturedCLI(t, count, "completed")
@@ -54,7 +54,12 @@ func TestRecoverRetainedCLICompletesOriginalWithoutProviderOrFinalization(t *tes
 				t.Fatal("recovery changed original immutable evidence", err)
 			}
 			detail := cliPublicationDetail(t, f, 2, evidence.ID)
-			if detail.Run.Found != int64(count) || detail.Run.HeadSHA != a.Anchor.CandidateSHA || detail.Run.Finalized || len(detail.Findings) != count || detail.Run.Accepted != 0 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
+			adjudication := adjudicationRead(t, f, evidence.ID)
+			wantFinalized, wantRevision := count == 0, int64(0)
+			if wantFinalized {
+				wantRevision = 1
+			}
+			if detail.Run.Found != int64(count) || detail.Run.HeadSHA != a.Anchor.CandidateSHA || detail.Run.Finalized != wantFinalized || len(detail.Findings) != count || detail.Run.Accepted != 0 || adjudication.Finalized != wantFinalized || adjudication.Revision != wantRevision || wantFinalized && (adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (FindingCounts{})) || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=?`, a.ID) != 0 {
 				t.Fatal("recovery invented adjudication or lost original result", detail)
 			}
 			var current reviews.PullResponse

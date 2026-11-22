@@ -436,13 +436,14 @@ func (e *Engine) advanceWithSourceRefusal(ctx context.Context, project, id strin
 type attemptAdvanceGuard func(context.Context, *sql.Tx, Attempt, Operation) error
 
 func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expectedRevision int64, state, reason, externalID string, refusal *SourceRefusal, guard attemptAdvanceGuard) (Attempt, error) {
-	if reason == HostedFinishedIncompleteReason && (state != "failed" || guard == nil) {
+	if reason == HostedFinishedIncompleteReason && (state != "failed" || guard == nil) || reason == CLIUsablePartialReason && state != "failed" {
 		return Attempt{}, invalid()
 	}
 	if !identifier.MatchString(reason) || externalID != "" && !identifier.MatchString(externalID) {
 		return Attempt{}, invalid()
 	}
 	var result Attempt
+	checkpointQueued := false
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		a, err := readAttempt(ctx, tx, project, id)
 		if err != nil {
@@ -458,7 +459,7 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 		if err != nil {
 			return err
 		}
-		if !validSourceRefusal(refusal, state, reason, o.PullNumber) {
+		if !validSourceRefusal(refusal, state, reason, o.PullNumber) || reason == CLIUsablePartialReason && o.Channel != "cli" {
 			return invalid()
 		}
 		if guard != nil {
@@ -497,7 +498,9 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 		if err = e.transitionRow(ctx, tx, a, reason, at, refusal); err != nil {
 			return err
 		}
-		partialNotice, err := e.publishPartialFindingsNotice(ctx, tx, o, a.Provider, state)
+		settled := o
+		settled.State, settled.Reason = operationState, reason
+		partialNotice, err := e.publishPartialFindingsNotice(ctx, tx, settled, a.Provider, state)
 		if err != nil {
 			return err
 		}
@@ -508,6 +511,12 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 		}
 		if o.Channel == "hosted" && state == "uncertain" && reason == "hosted_finished_inventory_unproven" {
 			if err = e.publishCaptureAttentionNotice(ctx, tx, o, a); err != nil {
+				return err
+			}
+		}
+		if state == "completed" || state == "failed" && reason == CLIUsablePartialReason {
+			checkpointQueued, err = e.finalizeSettledAdjudication(ctx, tx, settled, a, at)
+			if err != nil {
 				return err
 			}
 		}
@@ -530,6 +539,9 @@ func (e *Engine) advanceGuarded(ctx context.Context, project, id string, expecte
 	})
 	if err == nil {
 		e.notifyOperation(result.OperationID)
+		if checkpointQueued {
+			e.wakeCheckpoints()
+		}
 	}
 	return result, err
 }

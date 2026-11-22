@@ -22,26 +22,37 @@ func automaticCheckpoint(t *testing.T, f *attemptFixture, evidence string) Check
 func TestCheckpointAutomaticFinalizationBeforeFixAndOneDelivery(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 1, false)
 	adjudicationComplete(t, f, a)
-	adjudicationDecide(t, f, id, "automatic-accept", 0, 0, "accepted")
 	scope := f.scope(t, attemptProject, f.writer, false)
-	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)}
 	if n := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`); n != 0 {
 		t.Fatal("posted before adjudication", n)
 	}
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "automatic-finalize", id, request)
+	decision := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Accepted before fix proof"}
+	decisionRaw, err := f.e.DecideReviewFinding(t.Context(), scope, "automatic-accept", id, decision)
+	decisionRaw = adjudicationReceipt(t, decisionRaw, err, id, "adjudicated", 1)
+	state := adjudicationRead(t, f, id)
+	if !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
+		t.Fatal("last decision did not finalize the complete source in its revision", state)
+	}
+	v := automaticCheckpoint(t, f, id)
+	if v.State != "queued" || v.Counts != (FindingCounts{Found: 1, Accepted: 1}) || v.SourceRevision != 1 || state.Findings[0].FixSHA != "" {
+		t.Fatal("delivery requires fixes", v)
+	}
+	changesBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id)
+	eventsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	confirmation := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(state.Revision)}
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "automatic-finalize", id, confirmation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := automaticCheckpoint(t, f, id)
-	if v.State != "queued" || v.Counts != (FindingCounts{Found: 1, Accepted: 1}) || v.SourceRevision != 2 || adjudicationRead(t, f, id).Findings[0].FixSHA != "" {
-		t.Fatal("delivery requires fixes", v)
-	}
 	var receipt Receipt
-	if json.Unmarshal(raw, &receipt) != nil || receipt.ID != id || receipt.State != "finalized" || receipt.Revision != 2 {
-		t.Fatal("changed compact finalization receipt", string(raw))
+	if json.Unmarshal(raw, &receipt) != nil || receipt.ID != id || receipt.State != "finalized" || receipt.Revision != state.Revision {
+		t.Fatal("changed current-revision finalization confirmation", string(raw))
+	}
+	if after := adjudicationRead(t, f, id); encoded(after) != encoded(state) || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != changesBeforeConfirmation || attemptCount(t, f.store, `SELECT count(*) FROM events`) != eventsBeforeConfirmation || encoded(automaticCheckpoint(t, f, id)) != encoded(v) {
+		t.Fatal("explicit current-revision confirmation advanced finalized source", after)
 	}
 	before := checkpointSQLState(t, f)
-	replay, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "automatic-finalize", id, request)
+	replay, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "automatic-finalize", id, confirmation)
 	if err != nil || !bytes.Equal(raw, replay) || checkpointSQLState(t, f) != before {
 		t.Fatal("replay changed queued delivery", err)
 	}
@@ -61,7 +72,7 @@ func TestCheckpointAutomaticFinalizationBeforeFixAndOneDelivery(t *testing.T) {
 	if posts != 1 {
 		t.Fatal("automatic delivery duplicated", posts)
 	}
-	coverageFix(t, f, id, "automatic-later-fix", 2, 0, "")
+	coverageFix(t, f, id, "automatic-later-fix", 1, 0, "")
 	later, _ := checkpointRequest(t, f, id, "old-agent-extra-publish")
 	if later.ID != v.ID || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
 		t.Fatal("old agent created another comment")
@@ -71,9 +82,8 @@ func TestCheckpointAutomaticFinalizationBeforeFixAndOneDelivery(t *testing.T) {
 func TestCheckpointAutomaticBlockedPostDoesNotHoldFinalizationReceipt(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 1, false)
 	adjudicationComplete(t, f, a)
-	adjudicationDecide(t, f, id, "blocked-post-accept", 0, 0, "accepted")
 	scope := f.scope(t, attemptProject, f.writer, false)
-	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)}
+	request := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Accepted before blocked delivery"}
 	p := &checkpointFake{entered: make(chan struct{}), release: make(chan struct{})}
 	cancel, workerDone := checkpointStart(t, f.e, p)
 	defer func() {
@@ -90,7 +100,7 @@ func TestCheckpointAutomaticBlockedPostDoesNotHoldFinalizationReceipt(t *testing
 	}
 	returned := make(chan finalized, 1)
 	go func() {
-		raw, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "blocked-post-finalize", id, request)
+		raw, err := f.e.DecideReviewFinding(t.Context(), scope, "blocked-post-finalize", id, request)
 		returned <- finalized{raw, err}
 	}()
 	select {
@@ -102,19 +112,20 @@ func TestCheckpointAutomaticBlockedPostDoesNotHoldFinalizationReceipt(t *testing
 	select {
 	case original = <-returned:
 	case <-time.After(time.Second):
-		t.Fatal("background provider post held the finalization response")
+		t.Fatal("background provider post held the last-decision response")
 	}
-	var receipt Receipt
-	if original.err != nil || json.Unmarshal(original.raw, &receipt) != nil || receipt.ID != id || receipt.State != "finalized" || receipt.Revision != 2 {
-		t.Fatal("finalization did not return its original compact receipt", string(original.raw), original.err)
+	original.raw = adjudicationReceipt(t, original.raw, original.err, id, "adjudicated", 1)
+	state := adjudicationRead(t, f, id)
+	if !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
+		t.Fatal("last-decision response preceded atomic finalization", state)
 	}
 	// The provider is still blocked. A fresh read and exact-key replay must
 	// remain local and independent of that background request's eventual result.
 	ctx, stop := context.WithTimeout(t.Context(), 2*time.Second)
 	defer stop()
-	replay, err := f.e.FinalizeReviewEvidence(ctx, scope, "blocked-post-finalize", id, request)
+	replay, err := f.e.DecideReviewFinding(ctx, scope, "blocked-post-finalize", id, request)
 	publication := automaticCheckpoint(t, f, id)
-	if err != nil || !bytes.Equal(original.raw, replay) || !adjudicationRead(t, f, id).Finalized || publication.State != "posting" || publication.Counts != (FindingCounts{Found: 1, Accepted: 1}) || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
+	if err != nil || !bytes.Equal(original.raw, replay) || !adjudicationRead(t, f, id).Finalized || publication.State != "posting" || publication.Counts != (FindingCounts{Found: 1, Accepted: 1}) || publication.SourceRevision != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications`) != 1 {
 		t.Fatal("blocked post changed counts, receipt or local mutation independence", publication, err)
 	}
 	close(p.release)
@@ -132,26 +143,26 @@ func TestCheckpointAutomaticHostedZeroAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adjudicationComplete(t, f, a)
-	scope := f.scope(t, attemptProject, f.writer, false)
-	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)}
 	admissionSQL(t, f, `CREATE TRIGGER automatic_queue_failure BEFORE INSERT ON review_checkpoint_publications BEGIN SELECT RAISE(ABORT,'refuse delivery'); END`)
+	journalBeforeSettlement := attemptState(t, f, a)
+	adjudicationBeforeSettlement := adjudicationState(t, f, a)
 	before := checkpointSQLState(t, f)
-	_, err = f.e.FinalizeReviewEvidence(t.Context(), scope, "automatic-hosted-finalize", captured.ID, request)
-	if err == nil || adjudicationRead(t, f, captured.ID).Finalized || checkpointSQLState(t, f) != before {
-		t.Fatal("delivery failure left finalized work without outbox", err)
+	_, err = f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "completed", "test_capture_completed", "")
+	if err == nil || adjudicationRead(t, f, captured.ID).Finalized || attemptState(t, f, a) != journalBeforeSettlement || adjudicationState(t, f, a) != adjudicationBeforeSettlement || checkpointSQLState(t, f) != before {
+		t.Fatal("failed zero-finding settlement left finalized work or partial outbox state", err)
 	}
 	admissionSQL(t, f, `DROP TRIGGER automatic_queue_failure`)
-	_, err = f.e.FinalizeReviewEvidence(t.Context(), scope, "automatic-hosted-finalize", captured.ID, request)
-	if err != nil {
-		t.Fatal(err)
-	}
+	adjudicationComplete(t, f, a)
+	state := adjudicationRead(t, f, captured.ID)
 	v := automaticCheckpoint(t, f, captured.ID)
+	if !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{}) || v.State != "queued" || v.SourceRevision != state.Revision || v.Counts != (FindingCounts{}) {
+		t.Fatal("zero-finding settlement did not atomically finalize and queue", state, v)
+	}
 	p := &checkpointFake{}
 	cancel, done := checkpointStart(t, f.e, p)
 	got := checkpointTerminal(t, f, v.ID)
 	checkpointStop(t, cancel, done)
-	if got.State != "published" || got.Counts != (FindingCounts{}) {
+	if got.State != "published" || got.Counts != (FindingCounts{}) || got.SourceRevision != state.Revision {
 		t.Fatal(got)
 	}
 }
@@ -173,18 +184,14 @@ func TestCheckpointAutomaticBacklogCannotBlockFinalization(t *testing.T) {
 
 func TestCheckpointAutomaticMissingBindingRetainsFinalizationAndRecovery(t *testing.T) {
 	f, a, id, _ := coverageFixture(t, 0, false)
-	adjudicationComplete(t, f, a)
 	f.e.capabilities = map[string]Capability{}
-	_, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "automatic-missing-binding", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-	if err != nil {
-		t.Fatal("provider configuration blocked adjudication", err)
-	}
+	adjudicationComplete(t, f, a)
 	v := automaticCheckpoint(t, f, id)
 	if !adjudicationRead(t, f, id).Finalized || v.State != "held" || v.Reason != "capability_unavailable" {
 		t.Fatal(v)
 	}
 	var record checkpointRecord
-	err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+	err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		record, err = readCheckpoint(ctx, tx, attemptProject, v.ID)
 		return err

@@ -47,8 +47,10 @@ func coverageFixture(t *testing.T, count int, partial bool) (*attemptFixture, At
 func coverageFinalize(t *testing.T, f *attemptFixture, a Attempt, id string, revision int64) {
 	t.Helper()
 	adjudicationComplete(t, f, a)
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "coverage-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
-	adjudicationReceipt(t, body, err, id, "finalized", revision+1)
+	state := adjudicationRead(t, f, id)
+	if state.Revision != revision+1 || !state.Finalized || state.FrozenCounts == nil {
+		t.Fatal("settling fully decided source did not finalize it", state)
+	}
 }
 
 func coverageFix(t *testing.T, f *attemptFixture, id, key string, revision, finding int64, previous string) {
@@ -115,8 +117,8 @@ func TestCLICoverageZeroAndIncompleteEvidence(t *testing.T) {
 		f, a, id, current := coverageFixture(t, 1, false)
 		adjudicationComplete(t, f, a)
 		coverageRead(t, f, a, current, false)
-		adjudicationDecide(t, f, id, "still-unfinalized", 0, 0, "rejected")
-		coverageRead(t, f, a, current, false)
+		adjudicationDecide(t, f, id, "last-decision", 0, 0, "rejected")
+		coverageRead(t, f, a, current, true)
 	})
 }
 
@@ -335,11 +337,11 @@ func TestCLICoverageCompletedMissingCaptureGrowth(t *testing.T) {
 	for _, count := range []int{100, 102} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			f, a, _, current := coverageFixture(t, 0, false)
-			// Settle the original attempt to release its real reservation; its
-			// unfinalized capture and older missing captures remain obligations.
+			// The original clean capture earns coverage at settlement. Older
+			// completed attempts without captures still remain obligations.
 			adjudicationComplete(t, f, a)
 			comparisonMissingHistory(t, f, count, "cli", strings.Repeat("9", 40))
-			coverageComparison(t, f, a, current, ComparisonState{Pending: true})
+			coverageComparison(t, f, a, current, ComparisonState{Covered: true, Pending: true})
 		})
 	}
 }
@@ -403,9 +405,9 @@ func TestCLIComparisonOlderHeadPendingUntilClosed(t *testing.T) {
 	adjudicationDecide(t, f, id, "accept-old", 0, 0, "accepted")
 	coverageComparison(t, f, a, current, ComparisonState{Pending: true})
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	adjudicationReceipt(t, body, err, id, "finalized", 1)
 	coverageComparison(t, f, a, current, ComparisonState{Pending: true})
-	coverageFix(t, f, id, "fix-old", 2, 0, "")
+	coverageFix(t, f, id, "fix-old", 1, 0, "")
 	// Closing old obligations preserves earned PR/channel completion after movement.
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 }
@@ -420,14 +422,17 @@ func TestCLIComparisonReadyRunCannotMaskPendingRun(t *testing.T) {
 	next := coverageNextAttempt(t, f, "another-explicit-intent", "cli", current.Pull.HeadSHA)
 	capture := source.Capture
 	capture.ExpectedAnchor = *next.Anchor
+	capture.Review.Findings = []reviewprovider.ParsedFinding{{
+		Title: "A distinct finding", Detail: "Another attempt still needs a decision", Severity: "medium", Path: "changed.go",
+	}}
+	capture.Review.ReportedFindings = 1
 	receipt, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, next.ID, capture)
 	if err != nil {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, next)
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true, Pending: true})
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "close-second", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
+	adjudicationDecide(t, f, receipt.ID, "close-second", 0, 0, "rejected")
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true})
 	// A completed intent with no retained capture also dominates ready credit.
 	comparisonCompleteMissingCapture(t, f, "missing-after-ready", "cli", current.Pull.HeadSHA)

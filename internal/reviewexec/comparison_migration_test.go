@@ -61,7 +61,7 @@ func comparisonSourceRows(t *testing.T, f *attemptFixture) map[string][]string {
 		"source-schema": `SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'review_comparison_%' AND tbl_name NOT LIKE 'review_comparison_%' ORDER BY type,name`,
 		"metadata":      `SELECT * FROM metadata WHERE key!='schema:review_comparison'`,
 	}
-	for _, table := range []string{"projects", "credentials", "grants", "review_execution_config", "review_operations", "review_execution_attempts", "review_execution_reservations", "review_execution_transitions", "review_execution_evidence", "review_hosted_observations", "review_adjudication_state", "review_adjudication_changes", "review_finding_routes", "review_finding_route_revisions", "review_policy_config", "events", "receipts"} {
+	for _, table := range []string{"projects", "credentials", "grants", "review_execution_config", "review_operations", "review_execution_attempts", "review_execution_reservations", "review_execution_transitions", "review_execution_evidence", "review_hosted_observations", "review_adjudication_state", "review_adjudication_changes", "review_finding_routes", "review_finding_route_revisions", "review_policy_config", "review_checkpoint_publications", "review_checkpoint_revisions", "review_checkpoint_intents", "events", "receipts"} {
 		queries[table] = "SELECT * FROM " + table
 	}
 	out := map[string][]string{}
@@ -124,13 +124,52 @@ func comparisonMigrationProofs(t *testing.T, f *attemptFixture) []comparisonProo
 	return result
 }
 
+func assertCurrentFinalizationIsNoop(t *testing.T, f *attemptFixture, a Attempt, evidenceID, key string, revision int64) {
+	t.Helper()
+	state := adjudicationRead(t, f, evidenceID)
+	if state.Revision != revision || !state.Finalized || state.FrozenCounts == nil {
+		t.Fatalf("no-op confirmation requires the current finalized source: %+v", state)
+	}
+	before := attemptState(t, f, a)
+	changes := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidenceID)
+	events := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	publications := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidenceID)
+	receipts := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	var publication string
+	if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(id||state||revision||created_at||body_json,''),'') FROM review_checkpoint_publications WHERE evidence_id=?`, evidenceID).Scan(&publication); err != nil {
+		t.Fatal(err)
+	}
+	checkUnchanged := func(wantReceipts int) {
+		t.Helper()
+		var currentPublication string
+		if err := f.store.DB().QueryRow(`SELECT coalesce(group_concat(id||state||revision||created_at||body_json,''),'') FROM review_checkpoint_publications WHERE evidence_id=?`, evidenceID).Scan(&currentPublication); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(adjudicationRead(t, f, evidenceID), state) || attemptState(t, f, a) != before || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidenceID) != changes || attemptCount(t, f.store, `SELECT count(*) FROM events`) != events || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidenceID) != publications || currentPublication != publication || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != wantReceipts {
+			t.Fatal("finalization confirmation changed domain state, events, or checkpoint delivery")
+		}
+	}
+	scope := f.scope(t, attemptProject, f.writer, false)
+	request := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)}
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), scope, key, evidenceID, request)
+	first := adjudicationReceipt(t, body, err, evidenceID, "finalized", revision)
+	checkUnchanged(receipts + 1)
+	replay, err := f.e.FinalizeReviewEvidence(t.Context(), scope, key, evidenceID, request)
+	if err != nil || string(replay) != string(first) {
+		t.Fatal("finalization confirmation did not retain its keyed receipt", err)
+	}
+	checkUnchanged(receipts + 1)
+	_, err = f.e.FinalizeReviewEvidence(t.Context(), scope, key+"-stale", evidenceID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision - 1)})
+	attemptCode(t, err, "review_conflict")
+	checkUnchanged(receipts + 1)
+}
+
 func comparisonMigrationFixture(t *testing.T) (*attemptFixture, Attempt, SourcePlan) {
 	t.Helper()
 	f, a, id, current := coverageFixture(t, 1, false)
 	routed := routeCreate(t, f, id, "migration-route", routeRequest(0, 0, 4))
 	adjudicationComplete(t, f, a)
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "migration-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	assertAutoFinalizedAndPublished(t, f, id, 2, FindingCounts{Found: 1, Routed: 1})
 	routeDecision(t, f, routed.ID, "migration-receiver-reject", 1, "rejected")
 	routeDecision(t, f, routed.ID, "migration-receiver-reverse", 2, "accepted")
 	routeFix(t, f, routed.ID, "migration-receiver-fix", 3, "", strings.Repeat("f", 40))
@@ -338,8 +377,8 @@ func TestComparisonUpgradeReleasesSourceWhileKeepingOpenReceiver(t *testing.T) {
 	f, a, evidence, plan := routeProjectionFixture(t, false)
 	route := createProjectionRoute(t, f, evidence.ID, "migrate-outgoing-route", 0, 0)
 	adjudicationDecide(t, f, evidence.ID, "migrate-outgoing-source-decision", 1, 1, "rejected")
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "migrate-outgoing-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	assertAutoFinalizedAndPublished(t, f, evidence.ID, 2, FindingCounts{Found: 2, Routed: 1})
+	assertCurrentFinalizationIsNoop(t, f, a, evidence.ID, "migrate-outgoing-finalize", 2)
 	routeDecision(t, f, route.ID, "migrate-outgoing-receiver-accept", 1, "accepted")
 
 	// Recreate the earlier derived proof from the same canonical records.
@@ -387,8 +426,7 @@ func comparisonMigrationRetainedHistory(t *testing.T) (*attemptFixture, Attempt,
 			t.Fatal(err)
 		}
 		adjudicationComplete(t, f, next)
-		body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("migration-finalized-%d", i), recorded.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-		adjudicationReceipt(t, body, err, recorded.ID, "finalized", 1)
+		assertAutoFinalizedAndPublished(t, f, recorded.ID, 1, FindingCounts{})
 	}
 	return f, a, current
 }

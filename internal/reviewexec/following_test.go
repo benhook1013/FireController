@@ -201,17 +201,24 @@ func TestPRFollowingAutomaticAuthorizerExcludedAndManualSeedRunsOnce(t *testing.
 
 func TestPRFollowingAdjudicationFinalizationAndFixUseTheirActingWorkers(t *testing.T) {
 	f, a, evidence := projectionFixture(t)
-	for _, worker := range []string{"decider", "finalizer", "fixer"} {
+	for _, worker := range []string{"decider", "finalizer", "fixer", "confirmer"} {
 		admissionSQL(t, f, `INSERT INTO workers VALUES(?,?,?)`, attemptProject, worker, worker)
 	}
-	adjudicationComplete(t, f, a)
 	run := projectionRun(evidence)
 	projectionPublish(t, f, reviews.NativePublication{Pull: projectionPull(2), Run: &run})
 	_, err := f.e.DecideReviewFindings(t.Context(), followingScope(t, f, "decider"), "decisions", evidence.ID, FindingDecisionBatchRequest{ExpectedRevision: adjudicationRevision(0), Items: []FindingDecisionBatchItem{{Finding: adjudicationRevision(0), Disposition: "accepted", Reason: "fix"}, {Finding: adjudicationRevision(1), Disposition: "rejected", Reason: "not applicable"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Preserve the pre-upgrade completed-but-unfinalized state so the finalizer
+	// performs a real action rather than an idempotent current-revision confirm.
+	admissionSQL(t, f, `UPDATE review_execution_attempts SET state='completed',revision=revision+1 WHERE id=?`, a.ID)
+	admissionSQL(t, f, `UPDATE review_operations SET state='completed',revision=revision+1 WHERE id=?`, a.OperationID)
 	_, err = f.e.FinalizeReviewEvidence(t.Context(), followingScope(t, f, "finalizer"), "finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.e.FinalizeReviewEvidence(t.Context(), followingScope(t, f, "confirmer"), "confirm-finalized", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +230,9 @@ func TestPRFollowingAdjudicationFinalizationAndFixUseTheirActingWorkers(t *testi
 		if followingPreference(t, f, worker, 2).Mode != "auto" {
 			t.Fatal("missing acting participant", worker)
 		}
+	}
+	if followingPreference(t, f, "confirmer", 2).Mode != "none" {
+		t.Fatal("no-op current-revision finalization counted as acting participation")
 	}
 }
 

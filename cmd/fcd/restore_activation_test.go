@@ -171,8 +171,9 @@ func newActivationCommandFixture(t *testing.T) activationCommandFixture {
 	if _, err = e.Advance(t.Context(), project, a.ID, a.Revision, "completed", "capture_completed", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.FinalizeReviewEvidence(t.Context(), scope, "activation-finalize", evidence.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
-		t.Fatal(err)
+	settled, err := e.ReadReviewAdjudication(t.Context(), scope, evidence.ID)
+	if err != nil || !settled.Finalized || settled.Revision != 1 {
+		t.Fatal("fixture did not finalize its completed empty review", settled, err)
 	}
 	one := int64(1)
 	if _, err = e.RequestCheckpointPublication(t.Context(), scope, "activation-publication", reviewexec.CheckpointPublicationRequest{EvidenceID: evidence.ID, ExpectedRevision: &one}); err != nil {

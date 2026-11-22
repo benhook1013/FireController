@@ -122,6 +122,20 @@ func roundUnfinalizedOccupancy(ctx context.Context, tx *sql.Tx, c roundRecord, e
 	q := newOccupancyQueries(tx)
 	defer q.close()
 	var count int64
+	if c.Channel == "cli" {
+		// The terminal transition validates the original positive subset before
+		// this reason is committed. Keep its bound slot until adjudication.
+		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_operation_bindings b
+JOIN review_operations o ON o.id=b.operation_id AND o.project_id=b.project_id
+JOIN review_execution_evidence e ON e.attempt_id=o.attempt_id AND e.operation_id=o.id AND e.project_id=o.project_id
+LEFT JOIN review_adjudication_state s ON s.evidence_id=e.id AND s.project_id=e.project_id
+WHERE b.project_id=? AND b.pull_number=? AND b.channel=? AND b.epoch=? AND b.operation_id<>?
+AND o.state='failed' AND o.reason=? AND COALESCE(json_extract(s.body_json,'$.finalized'),0)=0`,
+			c.ProjectID, c.PullNumber, c.Channel, c.Epoch, excluding, CLIUsablePartialReason).Scan(&count)
+		if err != nil {
+			return 0, err
+		}
+	}
 	// Separate state ranges retain index ordering without sorting retained history.
 	for _, state := range []string{"dirty", "pending"} {
 		after := ""

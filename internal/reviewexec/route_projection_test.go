@@ -103,24 +103,38 @@ func TestRouteProjectionReceiverStatePreservesSourceAndCoverage(t *testing.T) {
 	var mergedBefore reviews.PullResponse
 	projectionRead(t, f, "/pulls/1", &mergedBefore)
 	route := createProjectionRoute(t, f, evidence.ID, "route-source-finding", 0, 0)
-	adjudicationDecide(t, f, evidence.ID, "reject-local-finding", 1, 1, "rejected")
-	sourceBefore := adjudicationRead(t, f, evidence.ID)
-	// Receiving rejection before source finalization must not alter source state.
+	assertAutoFinalizationAbsent(t, f, evidence.ID, 1)
+	pendingSource := adjudicationRead(t, f, evidence.ID)
+	if pendingSource.Finalized || pendingSource.Findings[1].Disposition != "unadjudicated" {
+		t.Fatal("source with an undecided finding finalized", pendingSource)
+	}
+	// Receiving rejection while a source finding remains undecided cannot settle the source.
 	body, err := f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "receiver-reject", route.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "rejected", Reason: "Receiving issue does not apply"})
 	adjudicationReceipt(t, body, err, route.ID, "adjudicated", 2)
-	if !reflect.DeepEqual(sourceBefore, adjudicationRead(t, f, evidence.ID)) {
+	if !reflect.DeepEqual(pendingSource, adjudicationRead(t, f, evidence.ID)) {
 		t.Fatal("receiver rewrote source attribution/revision")
 	}
 	coverageRead(t, f, a, plan, false)
-	body, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	adjudicationDecide(t, f, evidence.ID, "reject-local-finding", 1, 1, "rejected")
+	assertAutoFinalizedAndPublished(t, f, evidence.ID, 2, FindingCounts{Found: 2, Routed: 1})
 	frozenSource := adjudicationRead(t, f, evidence.ID)
 	if frozenSource.FrozenCounts == nil || *frozenSource.FrozenCounts != (FindingCounts{Found: 2, Routed: 1}) {
 		t.Fatal("routed source count not frozen", frozenSource)
 	}
+	receiptsBeforeFinalize := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	body, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	finalizeReceipt := adjudicationReceipt(t, body, err, evidence.ID, "finalized", 2)
+	if !reflect.DeepEqual(frozenSource, adjudicationRead(t, f, evidence.ID)) || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidence.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receiptsBeforeFinalize+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, evidence.ID, "route-finalize") != 1 {
+		t.Fatal("explicit confirmation added a source revision or changed projection/publication")
+	}
+	beforeFinalize := routeProjectionDurableState(t, f, a)
+	replay, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	if err != nil || !reflect.DeepEqual(finalizeReceipt, json.RawMessage(replay)) || routeProjectionDurableState(t, f, a) != beforeFinalize || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, evidence.ID, "route-finalize") != 1 {
+		t.Fatal("explicit finalization replay changed source projection or receipt", err)
+	}
 	coverageRead(t, f, a, plan, true)
 	rejected := routeProjectionRead(t, f, evidence.ID)
-	if rejected.Findings[0].Route == nil || rejected.Findings[0].Route.Disposition != "rejected" || rejected.Run.Fixed != 0 || rejected.Run.Routed != 1 {
+	if rejected.Findings[0].Route == nil || rejected.Findings[0].Route.Disposition != "rejected" || rejected.Run.Fixed != 0 || rejected.Run.Routed != 1 || !rejected.Run.Finalized {
 		t.Fatal("receiver rejection confused with fixed source", rejected)
 	}
 	rejectedDigest := projectionDigest(t, f, rejected.SnapshotID)
@@ -145,7 +159,7 @@ func TestRouteProjectionReceiverStatePreservesSourceAndCoverage(t *testing.T) {
 		t.Fatal("receiver proof correction rewrote frozen counts/source actor")
 	}
 	beforeReplay := routeProjectionDurableState(t, f, a)
-	replay, err := f.e.CreateFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-source-finding", evidence.ID, FindingRouteRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, TargetPullNumber: 4, Reason: "Original routing reason <literal>"})
+	replay, err = f.e.CreateFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-source-finding", evidence.ID, FindingRouteRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, TargetPullNumber: 4, Reason: "Original routing reason <literal>"})
 	var originalReceipt findingRouteReceipt
 	if err != nil || json.Unmarshal(replay, &originalReceipt) != nil || originalReceipt != route || beforeReplay != routeProjectionDurableState(t, f, a) {
 		t.Fatal("original route replay changed after receiver advancement", string(replay), err)
@@ -194,9 +208,21 @@ func TestRouteProjectionReceiverFailureRollsBackWholeMutation(t *testing.T) {
 func TestRouteProjectionLedgerOnlyInitialPublicationUsesLatestReceiverProof(t *testing.T) {
 	f, a, evidence, plan := routeProjectionFixture(t, false)
 	route := createProjectionRoute(t, f, evidence.ID, "ledger-only-route", 0, 0)
+	assertAutoFinalizationAbsent(t, f, evidence.ID, 1)
+	coverageRead(t, f, a, plan, false)
 	adjudicationDecide(t, f, evidence.ID, "ledger-only-local", 1, 1, "rejected")
+	assertAutoFinalizedAndPublished(t, f, evidence.ID, 2, FindingCounts{Found: 2, Routed: 1})
+	receiptsBeforeFinalize := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "ledger-only-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	finalizeReceipt := adjudicationReceipt(t, body, err, evidence.ID, "finalized", 2)
+	if adjudicationRead(t, f, evidence.ID).Revision != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidence.ID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receiptsBeforeFinalize+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, evidence.ID, "ledger-only-finalize") != 1 {
+		t.Fatal("explicit confirmation added a source revision or duplicate publication/receipt")
+	}
+	beforeFinalize := routeProjectionDurableState(t, f, a)
+	replay, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "ledger-only-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	if err != nil || !reflect.DeepEqual(finalizeReceipt, json.RawMessage(replay)) || routeProjectionDurableState(t, f, a) != beforeFinalize || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, evidence.ID, "ledger-only-finalize") != 1 {
+		t.Fatal("ledger-only explicit finalization replay changed source state or receipt", err)
+	}
 	coverageRead(t, f, a, plan, true)
 	body, err = f.e.DecideFindingRoute(t.Context(), f.scope(t, attemptProject, f.writer, false), "ledger-only-reject", route.ID, FindingRouteDecisionRequest{ExpectedRevision: adjudicationRevision(1), Disposition: "rejected", Reason: "Resolved at receiving PR"})
 	adjudicationReceipt(t, body, err, route.ID, "adjudicated", 2)

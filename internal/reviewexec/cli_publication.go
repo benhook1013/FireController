@@ -85,6 +85,9 @@ func publishEvidenceTx(ctx context.Context, tx *sql.Tx, project, evidenceID stri
 	if pull.Number != operation.PullNumber {
 		return reviews.Receipt{}, publicationConflict()
 	}
+	if state.Finalized && !evidence.Capture.Review.Complete && !usablePartialOperation(operation) {
+		return reviews.Receipt{}, publicationConflict()
+	}
 	run, err := publicationRun(evidence, state, attempt)
 	if err != nil {
 		return reviews.Receipt{}, err
@@ -175,7 +178,8 @@ func publicationRun(evidence ReviewEvidence, state ReviewAdjudication, attempt A
 	}
 	if state.Finalized {
 		counts := state.FrozenCounts
-		if !run.Complete || run.Outcome != "completed" || attempt.State != "completed" || counts == nil || counts.Found != int64(len(run.Findings)) || counts.Accepted < 0 || counts.Routed < 0 || counts.Accepted > counts.Found-counts.Routed {
+		partial := attempt.State == "failed" && usablePartialCapture(capture)
+		if (!run.Complete || run.Outcome != "completed" || attempt.State != "completed") && !partial || counts == nil || counts.Found != int64(len(run.Findings)) || counts.Accepted < 0 || counts.Routed < 0 || counts.Accepted > counts.Found-counts.Routed {
 			return run, publicationConflict()
 		}
 		run.Found, run.Accepted, run.Routed = counts.Found, counts.Accepted, counts.Routed

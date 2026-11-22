@@ -123,9 +123,9 @@ func TestRoundTaperDoesNotSwallowReopenedOrPendingRound(t *testing.T) {
 	if c.Tapered || c.Used != 2 || c.Dry != 2 || c.Minimum != 2 || c.Maximum != 5 {
 		t.Fatal("retune swallowed reopened round", c)
 	}
-	a, id := roundCapture(t, f, 2, false)
+	a, id := roundCapture(t, f, 2, true)
 	setRoundTaper(t, f, 2, "cli", 3, 3, "pending-threshold")
-	roundFinalize(t, f, a, id, 2, false)
+	roundRejectAndFinalize(t, f, a, id, 2)
 	c = roundRead(t, f, 2, "cli")
 	if !c.Tapered || c.Used != 3 || c.Dry != 3 || c.Epoch != 1 {
 		t.Fatal("pending result lost original binding", c)
@@ -294,13 +294,17 @@ func TestRoundTaperConvertsLegacyFrozenStreakFromCreditedCompletions(t *testing.
 			seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 8, "legacy")
 			// Capture late work before taper, then finalize it after the legacy streak
 			// freezes. Every completion remains backed by its original native evidence.
-			late, lateEvidence := roundCapture(t, f, 3, tc.accepted)
-			pending, pendingEvidence := roundCapture(t, f, 4, false)
+			late, lateEvidence := roundCapture(t, f, 3, true)
+			pending, pendingEvidence := roundCapture(t, f, 4, true)
 			for i := 0; i < 3; i++ {
 				a, evidence := roundCapture(t, f, i, false)
 				roundFinalize(t, f, a, evidence, i, false)
 			}
-			roundFinalize(t, f, late, lateEvidence, 3, tc.accepted)
+			if tc.accepted {
+				roundFinalize(t, f, late, lateEvidence, 3, true)
+			} else {
+				roundRejectAndFinalize(t, f, late, lateEvidence, 3)
+			}
 			before := roundRead(t, f, 2, "cli")
 			if before.Used != 4 || before.Dry != 3 || !before.Tapered {
 				t.Fatal("legacy fixture did not retain frozen streak", before)
@@ -325,7 +329,7 @@ func TestRoundTaperConvertsLegacyFrozenStreakFromCreditedCompletions(t *testing.
 				t.Fatal("conversion rewrote history or manufactured credit", err)
 			}
 			checkSnapshot()
-			roundFinalize(t, f, pending, pendingEvidence, 4, false)
+			roundRejectAndFinalize(t, f, pending, pendingEvidence, 4)
 			after := roundRead(t, f, 2, "cli")
 			if after.Used != 5 || after.Dry != tc.dry+1 || after.Tapered != tc.tapered {
 				t.Fatal("later cumulative completion built on stale legacy streak", after)

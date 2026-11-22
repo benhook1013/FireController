@@ -40,9 +40,9 @@ func TestLaneDiagnosticIndependentAndStackedReviewProgress(t *testing.T) {
 	for _, dependent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "independent", true: "dependent"}[dependent], func(t *testing.T) {
 			f := schedulingFixture(t)
-			// A genuine completed native CLI capture still awaiting adjudication holds
+			// A genuine completed native CLI capture with an undecided finding holds
 			// its own PR, even after a later head or a closed allowance.
-			roundCapture(t, f, 1, false)
+			roundCapture(t, f, 1, true)
 			one := int64(1)
 			if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "diagnostic-stack", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "stacked", Queue: []int64{2, 4}, Channels: []string{"cli", "hosted"}}); err != nil {
 				t.Fatal(err)

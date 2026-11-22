@@ -220,7 +220,7 @@ func TestCheckpointPublicationRoutedReceiverProofCannotRewritePayload(t *testing
 	f, a, id := routeFixture(t, 1)
 	route := routeCreate(t, f, id, "route-source", routeRequest(0, 0, 4))
 	adjudicationComplete(t, f, a)
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	if err != nil {
 		t.Fatal(string(raw), err)
 	}
@@ -248,7 +248,7 @@ func TestCheckpointPublicationHostedUnknownFilesAndFinalizedZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, a)
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-checkpoint-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-checkpoint-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	if err != nil {
 		t.Fatal(string(raw), err)
 	}
@@ -282,9 +282,8 @@ func TestCheckpointPublicationCapacityAndWaitSubscriptionBounds(t *testing.T) {
 			t.Fatal(err)
 		}
 		adjudicationComplete(t, f, a2)
-		_, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("capacity-finalize-%d", i), capture.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-		if err != nil {
-			t.Fatal(err)
+		if state := adjudicationRead(t, f, capture.ID); state.Revision != 1 || !state.Finalized {
+			t.Fatal("settled empty review did not queue its checkpoint", state)
 		}
 		checkpointRequest(t, f, capture.ID, fmt.Sprintf("capacity-pub-%d", i))
 	}

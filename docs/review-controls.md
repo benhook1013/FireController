@@ -39,7 +39,11 @@ Clients that strictly decode finding responses must be upgraded before recording
 
 Known adjudication guard refusals retain HTTP 409 / `review_conflict` and identify `reason`, `field` and `current_revision`. A `fix_sha_conflict` or `finding_not_accepted` additionally identifies the zero-based `finding`, its `current_fix_sha` and `current_disposition`; `adjudication_revision_conflict` identifies the revision guard. These facts are selected from the authorized current record and exclude proof text and finding narratives. Clients explain the matching guard without suggesting credential changes. A failed atomic batch changes no item; read current state and use a new key for a corrected request. Unknown mutation outcomes still require their exact original key/body.
 
-Finalization requires a completed attempt, complete retained capture and a decision for every finding. It freezes the original source counts, including a valid zero-finding run. Later decision/fix corrections append audit records and retain the original capture and frozen counts. An accepted finding with a fix reference cannot be rejected silently. Finalization establishes source counts; policy sufficiency, fixed findings and merge readiness remain separate facts. Humans perform merges.
+Finalization requires a settled attempt with eligible retained evidence and a decision for every finding. Eligible evidence is either a complete capture or a [verified partial CLI result](review-execution.md#admission-and-provider-boundaries). It freezes the original source counts, including a valid zero-finding run. Later decision/fix corrections append audit records and retain the original capture and frozen counts. An accepted finding with a fix reference cannot be rejected silently. Finalization establishes source counts; policy sufficiency, fixed findings and merge readiness remain separate facts. Humans perform merges.
+
+An eligible native capture finalizes automatically when its attempt has settled and every retained finding has a decision. The last single decision, batch or route can perform both changes in one revision. An eligible zero-finding capture or a capture already fully decided finalizes when the attempt settles. The transaction freezes the source counts and queues the checkpoint once, including when accepted findings still await fixes.
+
+Use explicit finalization for an older completed result whose decisions were recorded before automatic finalization. For an already-finalized result it returns a `finalized` receipt at the guarded current revision and retains the original counts and publication. Requests with a stale revision still conflict.
 
 A completed capture can retain provider-reported file coverage limitations. Read those limitations in the run summary or expanded history; they do not alter adjudicated findings, earned rounds or taper. The [provider observation boundary](provider-observations.md) owns source recognition.
 
@@ -61,7 +65,7 @@ Fix commits require the full 40-character lowercase hexadecimal SHA. The CLI and
 
 All items share one transaction, one adjudication revision, one audit history record and one compact receipt. Browser projection, route supersession, source policy facts, events and the receipt commit together. A bad later entry, stale adjudication/route/SHA guard, changed authorization or projection/event failure leaves no partial batch. Successful decision receipts are `{id,state:"adjudicated_batch",revision}`; fix receipts use `state:"fixes_recorded_batch"`. Audit history records the complete explicit selected input with finding index `-1`, rather than producing a separate adjudication revision for each item. Route supersession retains its own existing route history within the same transaction.
 
-Batching never changes immutable captures, original finalized counts, earned rounds or taper accounting, and it never finalizes source implicitly. Later corrections preserve frozen source counts as single actions do. Use the existing explicit finalization endpoint when every source finding has a decision. Exact-key replay returns the original compact receipt under current authorization, including after later revisions; changed input under that key conflicts. A lost mutation response requires recovery with that same batch and key. Neither the service nor clients automatically split, retry, infer decisions, supply a shared default reason or accept all findings.
+Batch actions preserve immutable captures and previously frozen counts. A decision batch can finalize a newly completed source when it settles the last undecided finding. Later corrections preserve frozen source counts as single actions do. Exact-key replay returns the original compact receipt under current authorization, including after later revisions; changed input under that key conflicts. A lost mutation response requires recovery with that same batch and key. Neither the service nor clients automatically split, retry, infer decisions, supply a shared default reason or accept all findings.
 
 The bound CLI reads a private regular UTF-8 file and validates the complete request before loading its connection or contacting the service:
 
@@ -99,11 +103,10 @@ fc reviews evidence EVIDENCE_ID
 fc reviews adjudication EVIDENCE_ID
 fc reviews assess EVIDENCE_ID
 fc reviews decide EVIDENCE_ID --key DECISION_KEY --expect-revision 0 --finding 0 --disposition accepted --reason 'Verified against the current source.'
-fc reviews finalize EVIDENCE_ID --key FINALIZATION_KEY --expect-revision 1
-fc reviews fix EVIDENCE_ID --key FIX_KEY --expect-revision 2 --finding 0 --expect-sha= --fix-sha COMMIT_SHA --proof 'Focused runtime proof and source reference.'
+fc reviews fix EVIDENCE_ID --key FIX_KEY --expect-revision REVISION --finding 0 --expect-sha= --fix-sha COMMIT_SHA --proof 'Focused runtime proof and source reference.'
 ```
 
-Replace the uppercase placeholders with returned identities and the verified commit. Finalize source decisions when adjudication is complete, including accepted findings awaiting fixes: this freezes the original counts and automatically queues the review summary. Recording fixes later never changes that summary or creates another one. The example therefore finalizes before recording fix proof. Read the current revision instead of inferring it from this example.
+Replace the uppercase placeholders with returned identities and the verified commit. The service finalizes source decisions when the completed review has no undecided findings. Recording fixes later preserves the original summary. Read the current revision before recording fix proof.
 
 `reviews evidence --help` and `reviews adjudication --help` explain these reads locally without loading profiles or contacting the service. Native evidence IDs are `review_evidence_` followed by exactly 32 lowercase hexadecimal characters; use the complete ID returned by the original operation. Invalid evidence IDs receive format-specific guidance, without echoing the submitted value.
 

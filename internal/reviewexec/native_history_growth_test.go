@@ -208,22 +208,32 @@ func TestNativeExecutionAfterTransferredHistoryGrowth(t *testing.T) {
 		t.Fatal("native attempt/capture link not retained")
 	}
 	adjudicationDecide(t, f, captured.ID, "growth-source-reject", 0, 0, "rejected")
-	if _, body := publicRead("/api/v1/public/projects/native-growth"); !bytes.Equal(body, limitedBytes) {
-		t.Fatal("unfinalized source decision changed public freshness")
+	assertAutoFinalizedAndPublished(t, f, captured.ID, 1, FindingCounts{Found: 1})
+	autoPublished, _ := publicRead("/api/v1/public/projects/native-growth")
+	if autoPublished.Revision != limited.Revision+1 || len(autoPublished.Content.Reviews[0].CLI) != 100 || len(autoPublished.Content.Reviews[0].Hosted) != 100 || !autoPublished.Content.Reviews[0].CLIHasMore || !autoPublished.Content.Reviews[0].HostedHasMore {
+		t.Fatal("last decision did not publish the automatically finalized native source")
 	}
+	autoDetail := cliPublicationDetail(t, f, 2, captured.ID)
+	if !autoDetail.Run.Finalized {
+		t.Fatal("last decision did not update the native workspace projection")
+	}
+	changesBeforeConfirm := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, captured.ID)
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "growth-source-finalize", captured.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, captured.ID, "finalized", 2)
+	adjudicationReceipt(t, body, err, captured.ID, "finalized", 1)
+	if changesAfterConfirm := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, captured.ID); changesAfterConfirm != changesBeforeConfirm {
+		t.Fatal("current-revision finalization appended an audit change", changesAfterConfirm, changesBeforeConfirm)
+	}
 	covered, err = f.e.Coverage(t.Context(), attemptProject, current, "cli")
 	if err != nil || !covered {
 		t.Fatal("genuine completed/finalized native comparison absent after growth", covered, err)
 	}
 	detail := cliPublicationDetail(t, f, 2, captured.ID)
-	if detail.Run.Found != 1 || detail.Run.Accepted != 0 || detail.Run.Routed != 0 || !detail.Run.Finalized || len(detail.Findings) != 1 || detail.Findings[0].Disposition != "rejected" {
+	if !reflect.DeepEqual(detail, autoDetail) || detail.Run.Found != 1 || detail.Run.Accepted != 0 || detail.Run.Routed != 0 || !detail.Run.Finalized || len(detail.Findings) != 1 || detail.Findings[0].Disposition != "rejected" {
 		t.Fatal("source adjudication/native counts corrupted after growth")
 	}
 	afterPublic, _ := publicRead("/api/v1/public/projects/native-growth")
-	if afterPublic.Revision != limited.Revision+1 || len(afterPublic.Content.Reviews[0].CLI) != 100 || len(afterPublic.Content.Reviews[0].Hosted) != 100 || !afterPublic.Content.Reviews[0].CLIHasMore || !afterPublic.Content.Reviews[0].HostedHasMore {
-		t.Fatal("eligible native finalization lost bounded public history")
+	if afterPublic.Revision != autoPublished.Revision || !reflect.DeepEqual(afterPublic.Content, autoPublished.Content) || len(afterPublic.Content.Reviews[0].CLI) != 100 || len(afterPublic.Content.Reviews[0].Hosted) != 100 || !afterPublic.Content.Reviews[0].CLIHasMore || !afterPublic.Content.Reviews[0].HostedHasMore {
+		t.Fatal("current-revision finalization changed bounded public history")
 	}
 	_, historicalBytes := publicRead(fmt.Sprintf("/api/v1/public/projects/native-growth/history/1?generation=%s", firstPublic.Generation))
 	if !bytes.Equal(firstPublicBytes, historicalBytes) {

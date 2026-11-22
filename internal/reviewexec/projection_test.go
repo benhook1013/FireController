@@ -195,32 +195,33 @@ func TestCLIProjectionAdjudicationPreservesFrozenSourceAndHistory(t *testing.T) 
 	adjudicationDecide(t, f, evidence.ID, "projection-reject", 1, 1, "rejected")
 	var decided reviews.RunDetailResponse
 	projectionRead(t, f, "/runs/"+runID, &decided)
-	if decided.Run.Accepted != 1 || decided.Run.Finalized || decided.Findings[1].Disposition != "rejected" {
-		t.Fatal("authoritative decisions not projected", decided)
+	ledger := adjudicationRead(t, f, evidence.ID)
+	if decided.Run.Found != 2 || decided.Run.Accepted != 1 || !decided.Run.Finalized || decided.Run.Fixed != 0 || decided.Findings[1].Disposition != "rejected" || ledger.FrozenCounts == nil || *ledger.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
+		t.Fatal("last decision and frozen source counts were not projected together", ledger, decided)
 	}
 	journal := attemptState(t, f, a)
 	scope := f.scope(t, attemptProject, f.writer, false)
 	body, err := f.e.FinalizeReviewEvidence(ctx, scope, "projection-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 2)
 	var finalized reviews.RunDetailResponse
 	projectionRead(t, f, "/runs/"+runID, &finalized)
 	if !finalized.Run.Finalized || finalized.Run.Found != 2 || finalized.Run.Accepted != 1 || finalized.Run.Fixed != 0 {
 		t.Fatal("finalization did not project original counts before subsequent proof", finalized)
 	}
 	finalDigest := projectionDigest(t, f, finalized.SnapshotID)
-	fix := FindingFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Focused synthetic proof <b>literal</b>"}
+	fix := FindingFixRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Focused synthetic proof <b>literal</b>"}
 	body, err = f.e.RecordFindingFix(ctx, scope, "projection-fix", evidence.ID, fix)
-	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 4)
-	correction := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(4), Finding: 1, Disposition: "accepted", Reason: "Correct only the still-unfixed finding"}
+	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 3)
+	correction := FindingDecisionRequest{ExpectedRevision: adjudicationRevision(3), Finding: 1, Disposition: "accepted", Reason: "Correct only the still-unfixed finding"}
 	body, err = f.e.DecideReviewFinding(ctx, scope, "projection-correct", evidence.ID, correction)
-	first := adjudicationReceipt(t, body, err, evidence.ID, "adjudicated", 5)
-	ledger := adjudicationRead(t, f, evidence.ID)
+	first := adjudicationReceipt(t, body, err, evidence.ID, "adjudicated", 4)
+	ledger = adjudicationRead(t, f, evidence.ID)
 	var detail reviews.RunDetailResponse
 	projectionRead(t, f, "/runs/"+runID, &detail)
 	if !detail.Run.Finalized || detail.Run.Found != 2 || detail.Run.Accepted != 1 || detail.Run.Routed != 0 || detail.Run.Fixed != 1 || ledger.FrozenCounts == nil || *ledger.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
 		t.Fatal("correction rewrote frozen counts or lost proof", ledger, detail)
 	}
-	if detail.Revision != initial.Revision+5 || ledger.Revision != 5 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID) != 5 {
+	if detail.Revision != initial.Revision+4 || ledger.Revision != 4 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID) != 4 {
 		t.Fatal("successful mutations did not each advance ledger and projection once")
 	}
 	for i, finding := range detail.Findings {

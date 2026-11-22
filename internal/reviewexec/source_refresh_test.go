@@ -673,7 +673,7 @@ func TestSourceRefreshMovedHeadStillReportsOlderPendingNativeEvidence(t *testing
 	}
 	adjudicationDecide(t, f, id, "older-rejected", 0, 0, "rejected")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "older-finalized", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	adjudicationReceipt(t, body, err, id, "finalized", 1)
 	value, err = f.e.ReadSourcePolicyAssessment(t.Context(), scope, 2)
 	if err != nil || value.State != "sufficient" || value.Target.HeadSHA != request.HeadSHA || value.Channels[0].Pending || !value.Channels[0].Covered {
 		t.Fatal("new observation lost earned completion after old obligations closed", value, err)

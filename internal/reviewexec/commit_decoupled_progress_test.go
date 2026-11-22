@@ -141,9 +141,13 @@ func TestCommitDecoupledProgressPendingDominatesReadyAcrossMovement(t *testing.T
 			if mode == "missing_same_head_result" {
 				unfinished = comparisonCompleteMissingCapture(t, f, "old-same-head-missing-result", "cli", current.Pull.HeadSHA)
 			} else {
-				// This original-head result is retained before the source moves,
-				// but deliberately remains unfinalized until after that movement.
+				// Retain a genuine undecided finding at the original head so the
+				// completed attempt remains pending until the late decision.
 				unfinished, unfinishedID = roundCapture(t, f, 901, true)
+				pending := adjudicationRead(t, f, unfinishedID)
+				if pending.Finalized || pending.Revision != 0 || len(pending.Findings) != 1 || pending.Findings[0].Disposition != "unadjudicated" {
+					t.Fatal("original result did not retain its undecided finding", pending)
+				}
 			}
 			moved := current
 			moved.Pull.HeadSHA = strings.Repeat("9", 40)
@@ -159,9 +163,13 @@ func TestCommitDecoupledProgressPendingDominatesReadyAcrossMovement(t *testing.T
 				return
 			}
 			roundFinalize(t, f, unfinished, unfinishedID, 901, true)
+			finalized := adjudicationRead(t, f, unfinishedID)
+			if !finalized.Finalized || finalized.Revision != 1 || finalized.FrozenCounts == nil || *finalized.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
+				t.Fatal("last decision did not freeze the completed original result in one revision", finalized)
+			}
 			// Frozen accepted counts alone never clear the unfixed finding.
 			coverageComparison(t, f, ready, moved, ComparisonState{Covered: true, Pending: true})
-			coverageFix(t, f, unfinishedID, "fix-original-after-move", 2, 0, "")
+			coverageFix(t, f, unfinishedID, "fix-original-after-move", 1, 0, "")
 			coverageComparison(t, f, ready, moved, ComparisonState{Covered: true})
 			retained, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), unfinishedID)
 			counts := adjudicationRead(t, f, unfinishedID)

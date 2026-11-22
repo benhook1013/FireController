@@ -70,8 +70,9 @@ func roundAdoptionInventoryFixture(t *testing.T, replace bool) *restoreFixture {
 	if _, err = e.Advance(t.Context(), f.project, a.ID, a.Revision, "completed", "captured_native_result", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.FinalizeReviewEvidence(t.Context(), scope, "finalize-native", evidence.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
-		t.Fatal(err)
+	state, err := e.ReadReviewAdjudication(t.Context(), scope, evidence.ID)
+	if err != nil || !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{}) {
+		t.Fatal("complete zero-finding capture did not finalize on settlement", state, err)
 	}
 	c, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")
 	if err != nil || c.Used != 1 || c.InitialDry != 2 || c.Dry != 3 || !c.Tapered {

@@ -45,7 +45,7 @@ func TestReviewCheckpointMCPActualPublicReplayRecoveryAndRead(t *testing.T) {
 	var receipt client.ReviewControlReceipt
 	decodeResult(t, call(t, session, "review_finding_decide", map[string]any{"evidence_id": evidence, "idempotency_key": "reject-native", "expected_revision": 0, "finding": 0, "disposition": "rejected", "reason": "Original native source rejected"}), &receipt)
 	decodeResult(t, call(t, session, "review_source_finalize", map[string]any{"evidence_id": evidence, "idempotency_key": "freeze-native", "expected_revision": 1}), &receipt)
-	args := map[string]any{"evidence_id": evidence, "idempotency_key": "checkpoint-once", "expected_revision": 2, "wait_seconds": 0}
+	args := map[string]any{"evidence_id": evidence, "idempotency_key": "checkpoint-once", "expected_revision": 1, "wait_seconds": 0}
 	provider := f.providers.Load()
 	drop.Store(true)
 	diagnosticResult(t, call(t, session, "review_checkpoint_publish", args), "connection_failed", true)
@@ -60,7 +60,7 @@ func TestReviewCheckpointMCPActualPublicReplayRecoveryAndRead(t *testing.T) {
 	}
 	var operation client.ReviewCheckpointPublication
 	decodeResult(t, call(t, session, "review_checkpoint_read", map[string]any{"publication_id": queued.ID}), &operation)
-	if operation.ProjectID != f.project || operation.EvidenceID != evidence || operation.SourceRevision != 2 || operation.Counts != (client.ReviewCounts{Found: 1}) || operation.CommentID != 0 {
+	if operation.ProjectID != f.project || operation.EvidenceID != evidence || operation.SourceRevision != 1 || operation.Counts != (client.ReviewCounts{Found: 1}) || operation.CommentID != 0 {
 		t.Fatal("stored publication source/confirmation invalid", operation)
 	}
 	decodeResult(t, call(t, session, "review_checkpoint_recover", map[string]any{"publication_id": queued.ID, "idempotency_key": "observe-only", "expected_revision": 1, "retry_unposted": false, "wait_seconds": 0}), &replay)

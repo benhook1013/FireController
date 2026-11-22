@@ -162,7 +162,11 @@ func TestComparisonGrowthClosedOlderCapturesDoNotHoldCurrentReady(t *testing.T) 
 			t.Fatal(err)
 		}
 		adjudicationComplete(t, f, next)
-		body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("closed-finalize-%d", i), recorded.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+		settled := adjudicationRead(t, f, recorded.ID)
+		if !settled.Finalized || settled.Revision != 1 || settled.FrozenCounts == nil || *settled.FrozenCounts != (FindingCounts{}) {
+			t.Fatal("settling a complete zero-result capture did not freeze its counts", settled)
+		}
+		body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("closed-finalize-%d", i), recorded.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 		adjudicationReceipt(t, body, err, recorded.ID, "finalized", 1)
 	}
 	coverageComparison(t, f, a, current, ComparisonState{Covered: true})

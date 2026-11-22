@@ -68,7 +68,8 @@ func (e *Engine) DecideReviewFindings(ctx context.Context, scope core.Scope, key
 		seen[finding] = true
 		request.Items[i].Finding = &finding
 	}
-	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.decide_batch", Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+	queued := false
+	raw, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.decide_batch", Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		evidence, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, id)
 		if err != nil {
 			return nil, err
@@ -76,6 +77,7 @@ func (e *Engine) DecideReviewFindings(ctx context.Context, scope core.Scope, key
 		if !adjudicationMatches(state, expected) {
 			return nil, adjudicationRevisionConflict(state.Revision)
 		}
+		wasAwaitingDecision := hasUndecidedFindings(state)
 		var at string
 		for _, item := range request.Items {
 			var itemAt string
@@ -85,8 +87,12 @@ func (e *Engine) DecideReviewFindings(ctx context.Context, scope core.Scope, key
 			}
 			at = routeStampAtLeast(itemAt, at)
 		}
-		return e.persistReviewAdjudication(ctx, tx, scope, state, "adjudicated_batch", -1, request, at)
+		return e.persistFindingDecision(ctx, tx, scope, evidence, state, wasAwaitingDecision, "adjudicated_batch", -1, request, at, &queued)
 	})
+	if err == nil && queued {
+		e.wakeCheckpoints()
+	}
+	return raw, err
 }
 
 func (e *Engine) RecordFindingFixes(ctx context.Context, scope core.Scope, key, id string, request FindingFixBatchRequest) (json.RawMessage, error) {

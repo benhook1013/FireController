@@ -150,7 +150,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatalf("lost outcome not safe/single-shot: %v", err)
 	}
 	state, err = c.ReviewAdjudication(ctx, capture.ID)
-	if err != nil || state.Revision != 1 {
+	if err != nil || state.Revision != 1 || !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Accepted != 1 {
 		t.Fatal("committed lost-response decision unavailable")
 	}
 	one := counts()
@@ -167,7 +167,7 @@ func TestReviewControlsNativeHTTPReceiptsReplayAndReadIsolation(t *testing.T) {
 		t.Fatalf("fix: %+v %v", fix, err)
 	}
 	final, err := c.FinalizeReviewSource(ctx, "finalize-once", capture.ID, client.ReviewFinalizeRequest{ExpectedRevision: 2})
-	if err != nil || final.State != "finalized" || final.Revision != 3 {
+	if err != nil || final.State != "finalized" || final.Revision != 2 {
 		t.Fatalf("finalize: %+v %v", final, err)
 	}
 	state, err = c.ReviewAdjudication(ctx, capture.ID)

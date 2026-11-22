@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -272,11 +273,29 @@ func TestTerminalHostedRecoveryFinalizesOriginalRoundOnce(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
+	settled, err := f.f.f.engine.ReadReviewAdjudication(t.Context(), f.f.f.scope(t, f.f.f.writer, false), receipt.EvidenceID)
+	if err != nil || !settled.Finalized || settled.Revision != 1 || settled.FrozenCounts == nil || *settled.FrozenCounts != (reviewexec.FindingCounts{}) {
+		t.Fatal("terminal recovery did not automatically finalize zero findings", settled, err)
+	}
 	zero := int64(0)
+	if _, err = f.f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.f.scope(t, f.f.f.writer, false), "stale-original-finalize", receipt.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+		t.Fatal("stale pre-settlement revision accepted")
+	}
+	one := int64(1)
+	var confirmation []byte
 	for range 2 {
-		if _, err := f.f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.f.scope(t, f.f.f.writer, false), "original-finalize", receipt.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
-			t.Fatal(err)
+		replayed, finalizeErr := f.f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.f.scope(t, f.f.f.writer, false), "original-finalize", receipt.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+		if finalizeErr != nil {
+			t.Fatal(finalizeErr)
 		}
+		if confirmation != nil && !bytes.Equal(confirmation, replayed) {
+			t.Fatal("current-revision confirmation replay changed receipt")
+		}
+		confirmation = replayed
+	}
+	confirmed, err := f.f.f.engine.ReadReviewAdjudication(t.Context(), f.f.f.scope(t, f.f.f.writer, false), receipt.EvidenceID)
+	if err != nil || !reflect.DeepEqual(confirmed, settled) {
+		t.Fatal("confirmation changed automatic settlement", confirmed, err)
 	}
 	control, err := f.f.f.engine.ReadRoundControl(t.Context(), f.f.f.scopeWithAccess(t, f.f.f.reader, false, "read"), 2, "hosted")
 	if err != nil || control.Used != 1 || control.Maximum != 1 || recoveryRuntimeCount(t, f.f.f, "review_round_completions") != 1 {
@@ -292,6 +311,7 @@ func TestTerminalHostedRecoveryFinalizesOriginalRoundOnce(t *testing.T) {
 		t.Fatal("duplicate credit")
 	}
 }
+
 func TestTerminalHostedRecoveryCurrentRoundFence(t *testing.T) {
 	for _, kind := range []string{"exhausted", "missing binding"} {
 		t.Run(kind, func(t *testing.T) {
@@ -347,24 +367,37 @@ func TestTerminalHostedRecoveryPendingFinalizationOccupiesRemainingSlot(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := HostedRetainedDecoder(f.f.captures)(t.Context(), e, f.f.f.project, f.f.a.ID, "runtime-capability", f.ref.SHA256)
+	triggerAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	intent := reviewprovider.HostedTriggerIntent{OperationID: a.OperationID, AttemptID: a.ID, HeadSHA: f.f.f.headSHA}
+	triggerBody, err := reviewprovider.HostedTriggerBody(intent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input.ExpectedAnchor = *a.Anchor
-	input.CaptureSHA256 = strings.Repeat("e", 64)
-	input.CaptureID = "review_capture_" + strings.Repeat("e", 32)
-	input.Hosted.TriggerCommentID = 200
-	input.Hosted.StandingSummary.ProviderRunID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
-	captured, err := e.RecordReviewEvidence(t.Context(), f.f.f.project, a.ID, input)
-	if err != nil {
-		t.Fatal("capture", err)
+	record := hostedRetainClone(t, f.record)
+	record.RepositoryID, record.Repository, record.PullNumber = a.Anchor.RepositoryID, a.Anchor.Repository, a.Anchor.PullNumber
+	record.Intent, record.EarliestPosting = intent, triggerAt
+	record.StartedAt, record.FinishedAt = triggerAt.Add(4*time.Second), triggerAt.Add(6*time.Second)
+	reviewAt := triggerAt.Add(2 * time.Second)
+	start, end := int64(6), int64(7)
+	record.Snapshot = reviewprovider.HostedPublicationSnapshot{
+		Complete: true, ObservedAt: triggerAt.Add(5 * time.Second),
+		IssueComments:  []reviewprovider.IssueComment{{ID: 200, Body: triggerBody, Author: record.PostingActor, CreatedAt: triggerAt, UpdatedAt: triggerAt}},
+		Reviews:        []reviewprovider.HostedReview{{ID: 201, Body: "**Actionable comments posted: 1**\n\n" + hostedRetainScope(a.Anchor.ParentSHA, a.Anchor.CandidateSHA) + "\n\n" + hostedRetainPublicationMarker(), State: "commented", HeadSHA: a.Anchor.CandidateSHA, Author: record.ProviderActor, SubmittedAt: reviewAt}},
+		ReviewComments: []reviewprovider.ReviewComment{{ID: 301, ReviewID: 201, Body: hostedRetainInline(1, "Keep the pending source intact."), Author: record.ProviderActor, Path: "pkg/source.go", HeadSHA: a.Anchor.CandidateSHA, OriginalHeadSHA: a.Anchor.CandidateSHA, CreatedAt: triggerAt.Add(time.Second), UpdatedAt: triggerAt.Add(time.Second), OriginalStartLine: &start, OriginalLine: &end, Side: "RIGHT", StartSide: "RIGHT"}},
 	}
-	if _, err = e.PublishEvidence(t.Context(), f.f.f.project, captured.ID, nil); err != nil {
+	retained, err := RetainHosted(t.Context(), f.f.captures, e, a, record)
+	if err != nil || !retained.Complete || retained.Receipt.ID == "" {
+		t.Fatal("supported nonempty Hosted capture not retained", retained, err)
+	}
+	if _, err = e.PublishEvidence(t.Context(), f.f.f.project, retained.Receipt.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = e.Advance(t.Context(), f.f.f.project, a.ID, a.Revision, "completed", "hosted_evidence_observed", a.ExternalID); err != nil {
 		t.Fatal(err)
+	}
+	state, err := e.ReadReviewAdjudication(t.Context(), f.f.f.scope(t, f.f.f.writer, false), retained.Receipt.ID)
+	if err != nil || state.Finalized || state.Revision != 0 || len(state.Findings) != 1 {
+		t.Fatal("nonempty completed capture did not remain pending", state, err)
 	}
 	control, err := e.ReadRoundControl(t.Context(), f.f.f.scopeWithAccess(t, f.f.f.reader, false, "read"), 2, "hosted")
 	if err != nil || control.Used != 0 {

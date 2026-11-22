@@ -254,9 +254,9 @@ func packagedCompletionEvidence(t *testing.T, f *restoreFixture, original review
 	if _, err := e.DecideReviewFinding(t.Context(), scope, "packaged-original-reject", original.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &revision, Finding: 0, Disposition: "rejected", Reason: "Explicit synthetic false-positive decision"}); err != nil {
 		t.Fatal(err)
 	}
-	revision = 1
-	if _, err := e.FinalizeReviewEvidence(t.Context(), scope, "packaged-original-finalize", original.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
-		t.Fatal(err)
+	state, err := e.ReadReviewAdjudication(t.Context(), scope, original.ID)
+	if err != nil || !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{Found: 1}) {
+		t.Fatal("last decision did not finalize the settled hosted source", state, err)
 	}
 	head := strings.Repeat("9", 40)
 	body, err := e.Enqueue(t.Context(), scope, "packaged-later-head", reviewexec.Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: head})

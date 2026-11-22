@@ -95,7 +95,15 @@ func (e *Engine) readPendingEvidence(ctx context.Context, scope core.Scope, id s
 				if evidence.OperationID != x.operation || evidence.Anchor.PullNumber != op.PullNumber {
 					return adjudicationStorageError()
 				}
-				ready, err := coverageProof(ctx, tx, evidence, state, op.Channel, false)
+				partialSettled := false
+				if state.Finalized && !evidence.Capture.Review.Complete {
+					original, err := readOperationBase(ctx, tx, op.ProjectID, x.operation)
+					if err != nil {
+						return err
+					}
+					partialSettled = usablePartialOperation(original)
+				}
+				ready, err := coverageProof(ctx, tx, evidence, state, op.Channel, false, partialSettled)
 				if err != nil {
 					return err
 				}

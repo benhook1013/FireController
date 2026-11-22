@@ -131,8 +131,11 @@ func (s *CaptureStore) Save(ctx context.Context, attemptID string, record Captur
 	if !validIdentifier(attemptID) || !validCapture(record.Capture) || !validCaptureTiming(record.StartedAt, record.FinishedAt) {
 		return empty, captureError("validation_failed")
 	}
-	if s == nil || captureDirectories(s.root, false) != nil {
+	if s == nil {
 		return empty, captureError("capture_unavailable")
+	}
+	if err := captureDirectories(s.root, false); err != nil {
+		return empty, captureStorageFailure(err)
 	}
 	capture := record.Capture
 	wire := captureWire{base64.StdEncoding.EncodeToString(capture.Stdout), base64.StdEncoding.EncodeToString(capture.Stderr), capture.ExitCode, capture.Started, capture.Exited}
@@ -152,14 +155,14 @@ func (s *CaptureStore) Save(ctx context.Context, attemptID string, record Captur
 	if _, err := os.Lstat(final); err == nil {
 		return s.existingCapture(ctx, attemptID, data)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return empty, captureError("capture_unavailable")
+		return empty, captureStorageFailure(err)
 	}
 	if ctx.Err() != nil {
 		return empty, captureError("capture_unavailable")
 	}
 	temp, err := os.CreateTemp(s.root, ".capture-*")
 	if err != nil {
-		return empty, captureError("capture_unavailable")
+		return empty, captureStorageFailure(err)
 	}
 	// Only this call's randomly created disposable name is ever removed.
 	defer os.Remove(temp.Name())
@@ -171,16 +174,30 @@ func (s *CaptureStore) Save(ctx context.Context, attemptID string, record Captur
 		writeErr = temp.Sync()
 	}
 	closeErr := temp.Close()
-	if writeErr != nil || closeErr != nil || captureDirectories(s.root, false) != nil || ctx.Err() != nil {
+	if code := captureDiskFailureCode(writeErr); code != "" {
+		return empty, captureError(code)
+	}
+	if code := captureDiskFailureCode(closeErr); code != "" {
+		return empty, captureError(code)
+	}
+	if writeErr != nil || closeErr != nil || ctx.Err() != nil {
 		return empty, captureError("capture_unavailable")
+	}
+	if err := captureDirectories(s.root, false); err != nil {
+		return empty, captureStorageFailure(err)
 	}
 	if err := os.Link(temp.Name(), final); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return s.existingCapture(ctx, attemptID, data)
 		}
-		return empty, captureError("capture_unavailable")
+		return empty, captureStorageFailure(err)
 	}
-	if syncCaptureDirectory(s.root) != nil || ctx.Err() != nil {
+	if err := syncCaptureDirectory(s.root); err != nil {
+		// The final link may already be visible. Exact retries reconcile it in
+		// existingCapture; never replace it or report a speculative reference.
+		return empty, captureStorageFailure(err)
+	}
+	if ctx.Err() != nil {
 		return empty, captureError("capture_unavailable")
 	}
 	return ref, nil
@@ -199,7 +216,10 @@ func (s *CaptureStore) existingCapture(ctx context.Context, attemptID string, ex
 		return CaptureReference{}, captureError("capture_unavailable")
 	}
 	// Reconcile a previous successful link whose directory sync was uncertain.
-	if syncCaptureDirectory(s.root) != nil || ctx.Err() != nil {
+	if err := syncCaptureDirectory(s.root); err != nil {
+		return CaptureReference{}, captureStorageFailure(err)
+	}
+	if ctx.Err() != nil {
 		return CaptureReference{}, captureError("capture_unavailable")
 	}
 	return ref, nil
@@ -342,10 +362,20 @@ func syncCaptureDirectory(root string) error {
 	}
 	syncErr := dir.Sync()
 	closeErr := dir.Close()
+	if syncErr != nil && closeErr != nil {
+		return errors.Join(syncErr, closeErr)
+	}
 	if syncErr != nil {
 		return syncErr
 	}
 	return closeErr
+}
+
+func captureStorageFailure(err error) error {
+	if code := captureDiskFailureCode(err); code != "" {
+		return captureError(code)
+	}
+	return captureError("capture_unavailable")
 }
 
 func captureError(code string) error {
@@ -356,6 +386,10 @@ func captureError(code string) error {
 		return core.Fail(code, "Use a valid attempt identifier and bounded capture values.", 400)
 	case "capture_conflict":
 		return core.Fail(code, "A different capture is already retained for this attempt.", 409)
+	case "capture_disk_full":
+		return core.Fail(code, "The private CLI capture could not be durably retained because its storage is full; retry the same attempt and capture after space is available.", 503)
+	case "capture_disk_quota":
+		return core.Fail(code, "The private CLI capture could not be durably retained because its storage quota is exhausted; retry the same attempt and capture after quota is available.", 503)
 	default:
 		return core.Fail("capture_unavailable", "The capture is unavailable or its durable retention is uncertain; retry with the same attempt and capture.", 503)
 	}

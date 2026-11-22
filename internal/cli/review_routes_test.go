@@ -108,11 +108,28 @@ func TestReviewRoutesCLIActualPublicWorkflowAndReceiverGuard(t *testing.T) {
 	}
 	first := create("0", "0", "first-route")
 	second := create("1", "1", "second-route")
+	if first.SourceRevision != 1 || second.SourceRevision != 2 {
+		t.Fatal("route receipts changed source revisions", first, second)
+	}
 	if replay := create("0", "0", "first-route"); replay != first {
 		t.Fatal("route replay changed source revision")
 	}
+	code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "adjudication", evidence)
+	var state client.ReviewAdjudication
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &state) != nil || state.Revision != 2 || !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Routed != 2 {
+		t.Fatal("last route did not finalize the completed source", code, out, stderr)
+	}
+	var publicationID string
+	if err := f.store.DB().QueryRow(`SELECT id FROM review_checkpoint_publications WHERE evidence_id=?`, evidence).Scan(&publicationID); err != nil {
+		t.Fatal("last route did not queue a checkpoint", err)
+	}
+	code, out, stderr = mutationInvoke(t, path, "builder", "reviews", "publication", publicationID)
+	var publication client.ReviewCheckpointPublication
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &publication) != nil || publication.EvidenceID != evidence || publication.State != "queued" || publication.SourceRevision != 2 {
+		t.Fatal("route checkpoint did not retain its source revision", code, out, stderr)
+	}
 	var page client.ReviewRoutePage
-	code, out, stderr := mutationInvoke(t, path, "builder", "reviews", "routes", "--pr", "4", "--limit", "1")
+	code, out, stderr = mutationInvoke(t, path, "builder", "reviews", "routes", "--pr", "4", "--limit", "1")
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &page) != nil || len(page.Items) != 1 || !page.HasMore || strings.Contains(out, "Immutable") {
 		t.Fatal("route page", code, out, stderr)
 	}
@@ -121,7 +138,10 @@ func TestReviewRoutesCLIActualPublicWorkflowAndReceiverGuard(t *testing.T) {
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &page) != nil || len(page.Items) != 1 || page.HasMore || requests.Load() != before+2 {
 		t.Fatal("explicit route pagination", code, out, stderr)
 	}
-	mutationSuccess(t, path, "builder", "reviews", "finalize", evidence, "--key", "freeze-source", "--expect-revision", "2")
+	finalized := mutationSuccess(t, path, "builder", "reviews", "finalize", evidence, "--key", "freeze-source", "--expect-revision", "2")
+	if finalized["state"] != "finalized" || finalized["revision"] != float64(2) {
+		t.Fatal("present-current-revision finalization changed source revision", finalized)
+	}
 	mutationSuccess(t, path, "builder", "reviews", "route-decide", first.ID, "--key", "receiver-decision", "--expect-revision", "1", "--disposition", "accepted", "--reason", "Receiver confirms")
 	mutationSuccess(t, path, "builder", "reviews", "route-fix", first.ID, "--key", "receiver-proof", "--expect-revision", "2", "--expect-sha=", "--fix-sha", strings.Repeat("f", 40), "--proof", "Independent receiver proof")
 	code, out, stderr = mutationInvoke(t, path, "builder", "reviews", "route", first.ID)
@@ -129,7 +149,7 @@ func TestReviewRoutesCLIActualPublicWorkflowAndReceiverGuard(t *testing.T) {
 	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &detail) != nil || detail.Route.FixSHA != strings.Repeat("f", 40) || detail.SourceFinding.Detail != "Immutable first source" || detail.SourceFinding.Finding != 0 {
 		t.Fatal("receiver proof/source read", code, out, stderr)
 	}
-	leave := []string{"reviews", "decide", evidence, "--key", "leave-second", "--expect-revision", "3", "--finding", "1", "--disposition", "accepted", "--reason", "Explicit source correction"}
+	leave := []string{"reviews", "decide", evidence, "--key", "leave-second", "--expect-revision", "2", "--finding", "1", "--disposition", "accepted", "--reason", "Explicit source correction"}
 	code, out, stderr = mutationInvoke(t, path, "builder", leave...)
 	if code != cli.ExitConflict || out != "" {
 		t.Fatal("source replaced route without receiving guard", code, stderr)
@@ -140,8 +160,8 @@ func TestReviewRoutesCLIActualPublicWorkflowAndReceiverGuard(t *testing.T) {
 		t.Fatal("superseded route not readable", code, out, stderr)
 	}
 	code, out, stderr = mutationInvoke(t, path, "builder", "reviews", "adjudication", evidence)
-	var state client.ReviewAdjudication
-	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &state) != nil || !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Routed != 2 || state.FrozenCounts.Accepted != 0 || state.Findings[0].RouteID != first.ID || state.Findings[0].FixSHA != "" || state.Findings[1].RouteID != "" || state.Findings[1].Disposition != "accepted" {
+	var corrected client.ReviewAdjudication
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &corrected) != nil || corrected.Revision != 3 || !corrected.Finalized || corrected.FrozenCounts == nil || corrected.FrozenCounts.Routed != 2 || corrected.FrozenCounts.Accepted != 0 || corrected.Findings[0].RouteID != first.ID || corrected.Findings[0].FixSHA != "" || corrected.Findings[1].RouteID != "" || corrected.Findings[1].Disposition != "accepted" {
 		t.Fatal("routing changed frozen counts or conflated receiver proof", code, out, stderr)
 	}
 	if f.resolverHit.Load() != providers {

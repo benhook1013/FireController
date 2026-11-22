@@ -20,7 +20,7 @@ func TestHostedLookaheadKeepsAncestorFindingsAndOwnGuard(t *testing.T) {
 				adjudicationDecide(t, f, id, "lookahead-reject-one", 1, 1, "rejected")
 				adjudicationDecide(t, f, id, "lookahead-reject-two", 2, 2, "rejected")
 				body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "lookahead-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
-				adjudicationReceipt(t, body, err, id, "finalized", 4)
+				adjudicationReceipt(t, body, err, id, "finalized", 3)
 			}
 			child, parents := hostedAdmissionStack(t, f, parent)
 			parent = parents[0]

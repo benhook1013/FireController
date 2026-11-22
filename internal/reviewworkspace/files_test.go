@@ -63,6 +63,14 @@ func TestReviewFileCountRenameThresholdAtOneHundredAndCanonicalPatchUnchanged(t 
 			if err != nil || covered != (tc.want == 100) {
 				t.Fatal("rename-aware coverage disagrees with materialized threshold", covered, err)
 			}
+			qualified, err := f.manager.QualifyChangedFileCoverage(t.Context(), w, claims)
+			wantCoverage := reviewworkspace.ChangedFileCoveragePartial
+			if tc.want == 100 {
+				wantCoverage = reviewworkspace.ChangedFileCoverageComplete
+			}
+			if err != nil || qualified != wantCoverage {
+				t.Fatal("rename-aware coverage qualification disagrees with materialized threshold", qualified, err)
+			}
 			if covered, err := f.manager.CoversChangedFiles(t.Context(), w, raw); err != nil || !covered {
 				t.Fatal("complete raw coverage was lost", covered, err)
 			}
@@ -376,6 +384,20 @@ func TestCoversChangedFilesStrictClaimsAndCompleteRawFastPath(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("full raw set invoked rename detection")
 	}
+	for _, tc := range []struct {
+		claims []string
+		want   reviewworkspace.ChangedFileCoverage
+	}{
+		{claims: raw, want: reviewworkspace.ChangedFileCoverageComplete},
+		{claims: []string{raw[1]}, want: reviewworkspace.ChangedFileCoveragePartial},
+		{claims: []string{raw[0], raw[0]}, want: reviewworkspace.ChangedFileCoverageInvalid},
+		{claims: []string{"foreign.txt", raw[1]}, want: reviewworkspace.ChangedFileCoverageInvalid},
+		{claims: []string{}, want: reviewworkspace.ChangedFileCoverageInvalid},
+	} {
+		if got, err := f.manager.QualifyChangedFileCoverage(t.Context(), w, tc.claims); err != nil || got != tc.want {
+			t.Fatalf("unexpected comparison coverage qualification for %q: got=%d want=%d err=%v", tc.claims, got, tc.want, err)
+		}
+	}
 	for _, claims := range [][]string{nil, {}, {raw[0], raw[0]}, {"foreign.txt", raw[1]}, {"../invalid"}, {raw[0]}, {raw[1]}} {
 		if covered, err := f.manager.CoversChangedFiles(t.Context(), w, claims); err != nil || covered {
 			t.Fatal("unproved coverage accepted", claims, covered, err)
@@ -385,6 +407,9 @@ func TestCoversChangedFilesStrictClaimsAndCompleteRawFastPath(t *testing.T) {
 	cancel()
 	if covered, err := m.CoversChangedFiles(ctx, w, raw); err == nil || covered {
 		t.Fatal("cancelled coverage accepted")
+	}
+	if status, err := m.QualifyChangedFileCoverage(ctx, w, raw); err == nil || status != reviewworkspace.ChangedFileCoverageUnavailable {
+		t.Fatal("cancelled comparison did not report unavailable proof", status, err)
 	}
 	if covered, err := m.CoversChangedFiles(nil, w, raw); err == nil || covered {
 		t.Fatal("nil coverage context accepted")

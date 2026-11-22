@@ -110,9 +110,9 @@ func (e *Engine) recoverHostedRetainedHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	e.notifyOperation(recovered.OperationID)
+	e.wakeCheckpoints()
 	// Publication is replayable from the same immutable receipt. A missing current
-	// PR projection does not invalidate historical execution; finalization remains
-	// a separate ordinary action and no review-round grant is changed here.
+	// PR projection does not invalidate historical execution.
 	if _, err = e.PublishEvidence(r.Context(), scope.ProjectID, recovered.EvidenceID, nil); err != nil {
 		var failure *core.Error
 		if !errors.As(err, &failure) || failure.Code != "review_projection_missing" {
@@ -300,6 +300,9 @@ func (e *Engine) recoverHostedRetainedTx(ctx context.Context, tx *sql.Tx, scope 
 		if _, err = publishJournalAttempt(ctx, tx, a, nil, false, true); err != nil {
 			return empty, err
 		}
+	}
+	if _, err = e.finalizeSettledAdjudication(ctx, tx, o, a, at); err != nil {
+		return empty, err
 	}
 	if err = refreshComparisonProof(ctx, tx, scope.ProjectID, o.ID); err != nil {
 		return empty, err

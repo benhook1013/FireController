@@ -78,7 +78,7 @@ func testRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T, la
 		t.Fatal("proven annotation prevented final evidence", result, err)
 	}
 	evidence, err := f.f.engine.ReadReviewEvidence(t.Context(), f.f.scopeWithAccess(t, f.f.reader, false, "read"), result.Receipt.ID)
-	if err != nil || evidence.Capture.Hosted == nil || evidence.Capture.Hosted.StandingSummary == nil || evidence.Capture.Hosted.StandingSummary.ProviderRunID != runtimeStandingRun || evidence.Capture.Review.ReportedFindings != 0 || len(evidence.Capture.Review.Findings) != 0 || len(evidence.Capture.Hosted.ReviewIDs) != 0 || len(evidence.Capture.Hosted.Sources) != 0 {
+	if err != nil || evidence.AttemptID != f.a.ID || evidence.OperationID != f.a.OperationID || evidence.Anchor != *f.a.Anchor || evidence.Capture.Hosted == nil || evidence.Capture.Hosted.StandingSummary == nil || evidence.Capture.Hosted.StandingSummary.CommentID != 501 || evidence.Capture.Hosted.StandingSummary.ProviderRunID != runtimeStandingRun || evidence.Capture.Hosted.TriggerCommentID != 100 || evidence.Capture.Hosted.PublicationID != "" || evidence.Capture.Hosted.ProviderAttemptID != "" || evidence.Capture.Review.ReportedFindings != 0 || len(evidence.Capture.Review.Findings) != 0 || len(evidence.Capture.Hosted.ReviewIDs) != 0 || len(evidence.Capture.Hosted.Sources) != 0 {
 		t.Fatal("not exact standing-zero evidence", evidence, err)
 	}
 	raw, err := f.captures.Read(t.Context(), f.a.ID, result.Capture)
@@ -91,25 +91,40 @@ func testRetainHostedAnnotatedStandingZeroFinalizationAndReplay(t *testing.T, la
 	if err != nil || !bytes.Equal(baselineBytes, baselineBefore) || !bytes.Equal(currentBytes, before) || !bytes.Equal(hostedBridgeBytes(t, f, baselineRef), baselineRawBefore) || !bytes.Equal(hostedBridgeBytes(t, f, currentRef), currentRawBefore) || cliAttemptState(t, f.f.store, f.a.ID) != state {
 		t.Fatal("attribution mutated raw inputs or settled attempt", err)
 	}
+	zero := int64(0)
+	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-premature", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+		t.Fatal("active annotated result finalized")
+	}
+	if cliCount(t, f.f.store, "SELECT count(*) FROM review_round_completions") != 0 {
+		t.Fatal("retention granted round credit")
+	}
 	f.a, err = f.f.engine.Advance(t.Context(), f.f.project, f.a.ID, f.a.Revision, "completed", "synthetic_complete", f.a.ExternalID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	zero := int64(0)
-	finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	automatic, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || !automatic.Finalized || automatic.Revision != 1 || automatic.FrozenCounts == nil || *automatic.FrozenCounts != (reviewexec.FindingCounts{}) || cliCount(t, f.f.store, "SELECT count(*) FROM review_round_completions") != 0 {
+		t.Fatal("completed annotated zero was not automatically finalized without unbound round credit", automatic, err)
+	}
+	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-stale-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+		t.Fatal("stale pre-settlement revision accepted")
+	}
+	one := int64(1)
+	finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
 	if err != nil {
 		t.Fatal(err)
+	}
+	finalizationReplay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+	currentAdjudication, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || readErr != nil || !bytes.Equal(finalized, finalizationReplay) || !reflect.DeepEqual(currentAdjudication, automatic) || cliCount(t, f.f.store, "SELECT count(*) FROM review_round_completions") != 0 {
+		t.Fatal("same-key explicit confirmation changed automatic settlement or granted unbound round credit", err, readErr)
 	}
 	replay, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 	if err != nil || replay != result || cliCount(t, f.f.store, `SELECT count(*) FROM review_execution_evidence WHERE attempt_id=?`, f.a.ID) != 1 {
 		t.Fatal("exact replay duplicated final evidence", replay, err)
 	}
-	finalizationReplay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "annotated-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
-	if err != nil || !bytes.Equal(finalized, finalizationReplay) {
-		t.Fatal("finalization replay changed original receipt", err)
-	}
 	adjudication, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
-	if err != nil || !adjudication.Finalized || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) {
+	if err != nil || !adjudication.Finalized || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) || !reflect.DeepEqual(adjudication, automatic) {
 		t.Fatal("status annotation changed frozen source counts", err)
 	}
 	for table, want := range map[string]int{"review_operations": 1, "review_execution_attempts": 1, "review_execution_evidence": 1, "review_checkpoint_publications": 1, "review_round_completions": 0} {

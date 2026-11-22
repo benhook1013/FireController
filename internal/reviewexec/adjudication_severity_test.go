@@ -54,7 +54,7 @@ func TestCheckpointAcceptedSeverityRemainsOriginalAfterCorrection(t *testing.T) 
 func TestAdjudicationHTTPKeepsPrivateFrozenDisplayMetadataOffWire(t *testing.T) {
 	f, a, _, path := evidenceHTTPFixture(t, 0)
 	adjudicationComplete(t, f, a)
-	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "severity-finalize-empty", `{"expected_revision":0}`), 200, "")
+	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "severity-finalize-empty", `{"expected_revision":1}`), 200, "")
 	value := evidenceHTTPRequire(t, f.request("GET", path+"/adjudication", f.reader, "", ""), 200, "")
 	if len(value) != 5 || value["frozen_accepted_severity"] != nil {
 		t.Fatal("private display metadata leaked to agent contract", value)

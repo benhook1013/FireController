@@ -341,7 +341,7 @@ func TestSourceReadinessIncomingObligationsHoldAlreadyCoveredReceiver(t *testing
 	}
 	route := routeCreate(t, f, sourceID, "incoming-readiness-route", routeRequest(0, 0, 4))
 	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "readiness-route-finalize", sourceID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, raw, err, sourceID, "finalized", 2)
+	adjudicationReceipt(t, raw, err, sourceID, "finalized", 1)
 	original := adjudicationRead(t, f, sourceID)
 	for _, step := range []string{"undecided", "accepted", "fixed"} {
 		if step == "accepted" {
@@ -379,7 +379,7 @@ func TestSourceReadinessPendingNativeCaptureAndRequiredPolicyChange(t *testing.T
 	}
 	adjudicationDecide(t, f, id, "readiness-reject-native", 0, 0, "rejected")
 	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "readiness-finalize-native", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, raw, err, id, "finalized", 2)
+	adjudicationReceipt(t, raw, err, id, "finalized", 1)
 	if got = readReadiness(t, f, r, a, 2); got.State != "ready_as_observed" {
 		t.Fatal(got)
 	}

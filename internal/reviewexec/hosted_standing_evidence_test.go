@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -91,7 +92,7 @@ func TestHostedStandingEvidenceRetainsExactVariantAndPublicIdentity(t *testing.T
 	}
 }
 
-func TestHostedStandingEvidenceZeroFinalizationIsExplicitAndCaptureImmutable(t *testing.T) {
+func TestHostedStandingEvidenceZeroFinalizesOnSettlementAndCaptureStaysImmutable(t *testing.T) {
 	f, a, in := standingEvidenceFixture(t)
 	in.Hosted.StandingSummary.UpdatedAt = in.FinishedAt // inclusive finish boundary
 	in.Hosted.ObservedBaseSHA = in.ExpectedAnchor.MergeBaseSHA
@@ -107,9 +108,21 @@ func TestHostedStandingEvidenceZeroFinalizationIsExplicitAndCaptureImmutable(t *
 		t.Fatal("standing publication failed", err)
 	}
 	adjudicationComplete(t, f, a)
-	first := evidenceHTTPReceipt(t, f.request("POST", path+"/finalization", f.writer, "standing-finalize", `{"expected_revision":0}`), retained.ID, "finalized", 1)
+	settled := adjudicationRead(t, f, retained.ID)
+	queued := automaticCheckpoint(t, f, retained.ID)
+	if !settled.Finalized || settled.Revision != 1 || settled.FrozenCounts == nil || *settled.FrozenCounts != (FindingCounts{}) || len(settled.Findings) != 0 || queued.State != "queued" || queued.SourceRevision != settled.Revision || queued.Counts != (FindingCounts{}) {
+		t.Fatal("standing zero inventory was not frozen and queued on settlement", settled, queued)
+	}
+	changesBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, retained.ID)
+	eventsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	confirmBody := fmt.Sprintf(`{"expected_revision":%d}`, settled.Revision)
+	first := evidenceHTTPReceipt(t, f.request("POST", path+"/finalization", f.writer, "standing-finalize", confirmBody), retained.ID, "finalized", settled.Revision)
+	if !reflect.DeepEqual(adjudicationRead(t, f, retained.ID), settled) || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, retained.ID) != changesBeforeConfirmation || attemptCount(t, f.store, `SELECT count(*) FROM events`) != eventsBeforeConfirmation || !reflect.DeepEqual(automaticCheckpoint(t, f, retained.ID), queued) {
+		t.Fatal("current-revision confirmation advanced standing source")
+	}
 	before := adjudicationState(t, f, a)
-	if w := f.request("POST", path+"/finalization", f.writer, "standing-finalize", `{"expected_revision":0}`); w.Code != 200 || !bytes.Equal(w.Body.Bytes(), first) || adjudicationState(t, f, a) != before {
+	confirmationState := checkpointSQLState(t, f)
+	if w := f.request("POST", path+"/finalization", f.writer, "standing-finalize", confirmBody); w.Code != 200 || !bytes.Equal(w.Body.Bytes(), first) || adjudicationState(t, f, a) != before || checkpointSQLState(t, f) != confirmationState {
 		t.Fatal("standing finalization replay changed effects")
 	}
 	state := adjudicationRead(t, f, retained.ID)

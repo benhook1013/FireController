@@ -111,8 +111,8 @@ func TestReviewHelpDiscoveryIsLocalAndKeepsOperationSemantics(t *testing.T) {
 		}
 	}
 	for operation, expected := range map[string][]string{
-		"reviews decide":       {"accepted|rejected", "zero-based", "--expect-route-revision", "route-create", "no provider"},
-		"reviews finalize":     {"zero-finding", "Freezes original", "awaiting fixes", "reviews publish"},
+		"reviews decide":       {"accepted|rejected", "zero-based", "--expect-route-revision", "route-create", "queues a GitHub summary", "does not wait for GitHub"},
+		"reviews finalize":     {"finalize automatically", "current already-finalized revision", "freezes the original counts", "await fixes"},
 		"reviews route-create": {"enrolled PR", "never a worker or job", "source adjudication revision", "--expect-route-revision", "source_revision", "No provider"},
 		"reviews route":        {"superseded history", "route revision", "source adjudication revision", "Provider-free"},
 		"reviews routes":       {"incoming routes", "default 5", "has_more", "without automatic pagination"},

@@ -108,10 +108,24 @@ func TestFindingRouteCreationReplayReceiverProofAndFrozenCounts(t *testing.T) {
 	if count, err := routePending(t, f, 4); err != nil || count != 1 {
 		t.Fatal(count, err)
 	}
+	assertAutoFinalizationAbsent(t, f, id, 1)
 	adjudicationDecide(t, f, id, "reject-other", 1, 1, "rejected")
+	assertAutoFinalizationAbsent(t, f, id, 2)
 	adjudicationComplete(t, f, a)
-	raw, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "source-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, raw, err, id, "finalized", 3)
+	assertAutoFinalizedAndPublished(t, f, id, 3, FindingCounts{Found: 2, Routed: 1})
+	finalizeRequest := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)}
+	changesBeforeFinalize := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id)
+	receiptsBeforeFinalize := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	raw, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "source-finalize", id, finalizeRequest)
+	finalizeReceipt := adjudicationReceipt(t, raw, err, id, "finalized", 3)
+	if adjudicationRead(t, f, id).Revision != 3 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != changesBeforeFinalize || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receiptsBeforeFinalize+1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, id, "source-finalize") != 1 {
+		t.Fatal("explicit confirmation added a source revision or duplicate publication/receipt")
+	}
+	beforeFinalize := routeState(t, f, a)
+	replay, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "source-finalize", id, finalizeRequest)
+	if err != nil || !bytes.Equal(finalizeReceipt, replay) || routeState(t, f, a) != beforeFinalize || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, id, "source-finalize") != 1 {
+		t.Fatal("exact explicit finalization replay changed source state or receipt", err)
+	}
 	sourceBefore := adjudicationRead(t, f, id)
 	if sourceBefore.FrozenCounts == nil || *sourceBefore.FrozenCounts != (FindingCounts{Found: 2, Routed: 1}) {
 		t.Fatal(sourceBefore)
@@ -226,11 +240,15 @@ func TestFindingRouteCreationAfterSourceFinalizationRetainsOriginalCounts(t *tes
 	f, a, id := routeFixture(t, 1)
 	adjudicationDecide(t, f, id, "source-accept", 0, 0, "accepted")
 	adjudicationComplete(t, f, a)
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	assertAutoFinalizedAndPublished(t, f, id, 2, FindingCounts{Found: 1, Accepted: 1})
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, raw, err, id, "finalized", 2)
+	if adjudicationRead(t, f, id).Revision != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM receipts WHERE operation='reviews.evidence.finalize' AND target=? AND key=?`, id, "finalize") != 1 {
+		t.Fatal("explicit finalization changed automatically frozen source history")
+	}
 	r := routeCreate(t, f, id, "route-after-final", routeRequest(2, 0, 4))
 	state := adjudicationRead(t, f, id)
-	if !state.Finalized || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) || state.Findings[0].RouteID != r.ID {
+	if state.Revision != 3 || !state.Finalized || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) || state.Findings[0].RouteID != r.ID {
 		t.Fatal("route rewrote immutable counts", state)
 	}
 	routeDecision(t, f, r.ID, "reject-route", 1, "rejected")

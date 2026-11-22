@@ -12,6 +12,19 @@ import (
 const changedFilesOutputLimit = 8 << 20
 const changedFilesCountLimit = 10000
 
+// ChangedFileCoverage records how provider path claims relate to the owned
+// comparison. Unavailable means Git/workspace proof could not be completed;
+// invalid means the source was verified but the claims were empty, duplicated
+// or outside the comparison.
+type ChangedFileCoverage uint8
+
+const (
+	ChangedFileCoverageUnavailable ChangedFileCoverage = iota
+	ChangedFileCoverageInvalid
+	ChangedFileCoveragePartial
+	ChangedFileCoverageComplete
+)
+
 // ChangedFiles returns the complete portable source paths in the admitted
 // merge-base-to-candidate comparison. It does not establish review coverage.
 func (m *Manager) ChangedFiles(ctx context.Context, w Workspace) ([]string, error) {
@@ -59,47 +72,60 @@ func (m *Manager) ReviewFileCount(ctx context.Context, w Workspace) (int64, erro
 // of a materialized Git-detected rename to be omitted. Claims cannot introduce
 // paths, repeat paths or omit any remaining new, modified or deleted path.
 func (m *Manager) CoversChangedFiles(ctx context.Context, w Workspace, claims []string) (bool, error) {
+	coverage, err := m.QualifyChangedFileCoverage(ctx, w, claims)
+	return coverage == ChangedFileCoverageComplete, err
+}
+
+// QualifyChangedFileCoverage distinguishes complete raw/logical comparison
+// coverage from a positive proper subset of the verified raw path set. It
+// never accepts duplicate or foreign claims. Source/workspace failures are
+// returned as unavailable with an error; invalid claims return invalid without
+// an error so callers can retain them as an ordinary failed capture.
+func (m *Manager) QualifyChangedFileCoverage(ctx context.Context, w Workspace, claims []string) (ChangedFileCoverage, error) {
 	if m == nil || ctx == nil {
-		return false, errInput
+		return ChangedFileCoverageUnavailable, errInput
 	}
 	ctx, cancel := context.WithTimeout(ctx, materializationBudget)
 	defer cancel()
 	raw, err := m.ChangedFiles(ctx, w)
 	if err != nil {
-		return false, errVerification
+		return ChangedFileCoverageUnavailable, errVerification
 	}
 	if len(raw) == 0 || len(claims) == 0 || len(claims) > len(raw) {
-		return false, nil
+		return ChangedFileCoverageInvalid, nil
 	}
-	allowed := make(map[string]bool, len(raw))
+	allowed := make(map[string]struct{}, len(raw))
 	for _, path := range raw {
-		allowed[path] = true
+		allowed[path] = struct{}{}
 	}
-	seen := make(map[string]bool, len(claims))
+	seen := make(map[string]struct{}, len(claims))
 	for _, path := range claims {
-		if !allowed[path] || seen[path] {
-			return false, nil
+		if _, ok := allowed[path]; !ok {
+			return ChangedFileCoverageInvalid, nil
 		}
-		seen[path] = true
+		if _, ok := seen[path]; ok {
+			return ChangedFileCoverageInvalid, nil
+		}
+		seen[path] = struct{}{}
 	}
 	// ChangedFiles has already verified the complete original path set and final
 	// workspace. An exact set needs no additional Git collection.
 	if len(seen) == len(raw) {
 		if ctx.Err() != nil {
-			return false, errVerification
+			return ChangedFileCoverageUnavailable, errVerification
 		}
-		return true, nil
+		return ChangedFileCoverageComplete, nil
 	}
 	logical, err := m.reviewPaths(ctx, w, raw)
 	if err != nil {
-		return false, err
+		return ChangedFileCoverageUnavailable, err
 	}
 	for _, path := range logical {
-		if !seen[path] {
-			return false, nil
+		if _, ok := seen[path]; !ok {
+			return ChangedFileCoveragePartial, nil
 		}
 	}
-	return true, nil
+	return ChangedFileCoverageComplete, nil
 }
 
 // The caller first validates every raw path under this same total deadline.
@@ -139,7 +165,7 @@ func parseChangedPaths(data []byte) ([]string, error) {
 			if !portableChangedPath(path) {
 				return nil, errVerification
 			}
-			if !seen[path] {
+			if _, ok := seen[path]; !ok {
 				seen[path] = true
 				paths = append(paths, path)
 			}

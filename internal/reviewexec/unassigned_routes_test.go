@@ -15,14 +15,14 @@ func TestUnassignedNativeRoutePreservesOpenWorkButAllowsSourceProgress(t *testin
 		t.Fatal(d)
 	}
 	adjudicationComplete(t, f, a)
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "final", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "final", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, raw, err, id, "finalized", 2)
 	err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		evidence, state, err := loadReviewAdjudication(ctx, tx, attemptProject, id)
 		if err != nil {
 			return err
 		}
-		ready, err := coverageProof(ctx, tx, evidence, state, "cli", false)
+		ready, err := coverageProof(ctx, tx, evidence, state, "cli", false, false)
 		if err != nil {
 			return err
 		}

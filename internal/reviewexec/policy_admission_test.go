@@ -387,18 +387,18 @@ func TestVerifyActionRejectsAllHeadPendingAndLateCorrection(t *testing.T) {
 	}
 	adjudicationDecide(t, f, id, "reject-old", 0, 0, "rejected")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	adjudicationReceipt(t, body, err, id, "finalized", 1)
 	// A new head alone cannot reopen completed PR/channel review work.
 	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision), "review_held")
 	// A decision correction can land after preparation's source/coverage read.
 	// The final guard must re-read that obligation in its own current snapshot.
-	adjudicationDecide(t, f, id, "late-acceptance", 2, 0, "accepted")
+	adjudicationDecide(t, f, id, "late-acceptance", 1, 0, "accepted")
 	before = adjudicationState(t, f, next)
 	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision), "review_evidence_pending")
 	if adjudicationState(t, f, next) != before {
 		t.Fatal("late refusal mutated state")
 	}
-	coverageFix(t, f, id, "late-fix", 3, 0, "")
+	coverageFix(t, f, id, "late-fix", 2, 0, "")
 	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, next.ID, next.Revision), "review_held")
 	coverageComparison(t, f, prior, current, ComparisonState{Covered: true})
 }
@@ -565,10 +565,8 @@ func TestVerifyActionStackedBindsPublishedBranchAtEveryHop(t *testing.T) {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, grandparent)
-	_, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "two-hop-finalize-grandparent", grandparentReceipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	body, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "two-hop-finalize-grandparent", grandparentReceipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	adjudicationReceipt(t, body, err, grandparentReceipt.ID, "finalized", 1)
 	// New queue members receive finite round defaults in this later slice. Close
 	// only this fixture's already-finalized ancestor so discovery is complete.
 	_, err = f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "two-hop-close-grandparent", 3, "cli", RoundControlRequest{ExpectedRevision: adjudicationRevision(1), Action: "close"})

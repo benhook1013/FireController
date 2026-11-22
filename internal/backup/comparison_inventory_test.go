@@ -2,21 +2,26 @@ package backup
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
-	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/reviewexec"
+	"github.com/benhook1013/FireController/internal/reviewprocess"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviewruntime"
 )
 
 // Complete actual locally captured native work; imported dashboard records in
 // the existing fixture cannot create an operation proof or supply its credit.
-func comparisonInventoryFixture(t *testing.T, finalized bool) *restoreFixture {
+// The pending branch retains a genuine undecided finding because a complete
+// zero-finding capture finalizes when its attempt settles.
+func comparisonInventoryFixture(t *testing.T, ready bool) *restoreFixture {
 	t.Helper()
 	f := newRestoreFixture(t)
 	bundleNativeReferences(t, f)
@@ -24,34 +29,66 @@ func comparisonInventoryFixture(t *testing.T, finalized bool) *restoreFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var id, evidence string
+	scope := routePolicyInventoryScope(t, f)
+	var id, evidenceID string
 	var revision int64
-	if err := f.store.DB().QueryRow(`SELECT a.id,a.revision,e.id FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE o.channel='cli'`).Scan(&id, &revision, &evidence); err != nil {
+	if err := f.store.DB().QueryRow(`SELECT a.id,a.revision,e.id FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE o.channel='cli'`).Scan(&id, &revision, &evidenceID); err != nil {
 		t.Fatal(err)
 	}
 	a, err := e.Advance(t.Context(), f.project, id, revision, "completed", "fixture-captured", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finalized {
-		r := httptest.NewRequest("POST", "/", nil)
-		r.SetPathValue("project_id", f.project)
-		r.Header.Set("Authorization", "Bearer "+f.token)
-		r.Header.Set("X-FC-Instance", f.store.InstanceID())
-		r.Header.Set("X-FC-Worker", f.worker)
-		scope, err := f.store.AdminScope(r)
+	state, err := e.ReadReviewAdjudication(t.Context(), scope, evidenceID)
+	if err != nil || !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{}) {
+		t.Fatal("complete zero-finding capture did not finalize on settlement", state, err)
+	}
+	if !ready {
+		raw, err := e.Enqueue(t.Context(), scope, "comparison-inventory-pending-review", reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("d", 40)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		zero := int64(0)
-		if _, err := e.FinalizeReviewEvidence(t.Context(), scope, "inventory-finalize", evidence, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+		var receipt reviewexec.Receipt
+		if err := json.Unmarshal(raw, &receipt); err != nil {
+			t.Fatal("invalid pending native operation receipt", err)
+		}
+		pendingAttempt, err := e.StartAttempt(t.Context(), f.project, receipt.ID)
+		if err != nil {
 			t.Fatal(err)
+		}
+		at := time.Now().UTC()
+		pendingAnchor := *a.Anchor
+		pendingAnchor.CandidateSHA = strings.Repeat("d", 40)
+		pendingAnchor.PatchSHA256 = strings.Repeat("e", 64)
+		pendingAnchor.ObservedAt = at.Format(time.RFC3339Nano)
+		pendingAttempt, err = e.Admit(t.Context(), f.project, pendingAttempt.ID, pendingAttempt.Revision, pendingAnchor, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		captures, err := reviewruntime.NewCaptureStore(filepath.Join(f.dir, "review-captures"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := captures.Save(t.Context(), pendingAttempt.ID, reviewruntime.CaptureRecord{Capture: reviewprocess.Capture{Stdout: []byte("synthetic unresolved comparison finding"), Started: true}, StartedAt: at, FinishedAt: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pendingEvidence, err := e.RecordReviewEvidence(t.Context(), f.project, pendingAttempt.ID, reviewexec.ReviewEvidenceInput{CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes, StartedAt: at.Format(time.RFC3339Nano), FinishedAt: at.Format(time.RFC3339Nano), ExpectedAnchor: pendingAnchor, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: 1, Findings: []reviewprovider.ParsedFinding{{Title: "Synthetic unresolved comparison finding", Detail: "Retained undecided source evidence", Severity: "low"}}, ReviewedFiles: []string{"example.go"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = e.Advance(t.Context(), f.project, pendingAttempt.ID, pendingAttempt.Revision, "completed", "fixture-pending-capture", ""); err != nil {
+			t.Fatal(err)
+		}
+		pendingState, err := e.ReadReviewAdjudication(t.Context(), scope, pendingEvidence.ID)
+		if err != nil || pendingState.Finalized || pendingState.Revision != 0 || pendingState.FrozenCounts != nil || len(pendingState.Findings) != 1 || pendingState.Findings[0].Disposition != "unadjudicated" {
+			t.Fatal("genuine undecided finding did not remain pending after settlement", pendingState, err)
 		}
 	}
 	anchor := a.Anchor
 	plan := reviewexec.SourcePlan{Repository: reviewprovider.Repository{ID: anchor.RepositoryID, FullName: anchor.Repository, DefaultBranch: "main"}, Pull: reviewprovider.Pull{Number: anchor.PullNumber, RepositoryID: anchor.RepositoryID, State: "open", HeadSHA: anchor.CandidateSHA, BaseSHA: anchor.BaseSHA, BaseRef: anchor.BaseRef, ChangedFiles: 1}, ParentSHA: anchor.ParentSHA, ObservedAt: anchor.ObservedAt}
 	got, err := e.Comparison(t.Context(), f.project, plan, "cli")
-	if err != nil || got != (reviewexec.ComparisonState{Covered: finalized, Pending: !finalized}) {
+	if err != nil || got != (reviewexec.ComparisonState{Covered: true, Pending: !ready}) {
 		t.Fatal("genuine native comparison fixture", got, err)
 	}
 	if err := reviewexec.ValidateComparisonProofs(t.Context(), f.store.DB()); err != nil {

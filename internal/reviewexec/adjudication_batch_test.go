@@ -55,7 +55,7 @@ func TestAdjudicationBatchAtomicRevisionReplayAndFrozenCounts(t *testing.T) {
 		t.Fatal("batch browser projection was not coherent", detail)
 	}
 	adjudicationComplete(t, f, a)
-	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "batch-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	body, err = f.e.FinalizeReviewEvidence(t.Context(), writer, "batch-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 2)
 	body, err = f.e.RecordFindingFixes(t.Context(), writer, "batch-fixes", evidence.ID, fixBatch(2, 0))
 	adjudicationReceipt(t, body, err, evidence.ID, "fixes_recorded_batch", 3)

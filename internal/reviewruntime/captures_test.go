@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -44,6 +45,44 @@ func requireCaptureError(t *testing.T, err error, code string) {
 	for _, secret := range []string{"synthetic-private-token", "private-capture-path"} {
 		if strings.Contains(fmt.Sprintf("%+v %#v", err, err), secret) {
 			t.Fatal("error exposed private material")
+		}
+	}
+}
+
+func TestCaptureDiskAttributionRequiresWrappedFilesystemErrno(t *testing.T) {
+	type errnoCase struct {
+		err  error
+		code string
+	}
+	var cases []errnoCase
+	switch runtime.GOOS {
+	case "linux":
+		cases = []errnoCase{{syscall.Errno(28), "capture_disk_full"}, {syscall.Errno(122), "capture_disk_quota"}}
+	case "windows":
+		cases = []errnoCase{{syscall.Errno(112), "capture_disk_full"}, {syscall.Errno(39), "capture_disk_full"}, {syscall.Errno(1816), "capture_disk_quota"}}
+	default:
+		t.Skip("fixture errno values cover Linux and Windows")
+	}
+	for _, test := range cases {
+		err := fmt.Errorf("write private-capture-path: %w", test.err)
+		failure := captureStorageFailure(err)
+		requireCaptureError(t, failure, test.code)
+		if got := cliCaptureRetentionFailureReason(failure); got != test.code {
+			t.Fatalf("safe disk reason did not reach CLI retention status: got %q want %q", got, test.code)
+		}
+	}
+
+	for _, err := range []error{
+		errors.New("child process reported ENOSPC at /private-capture-path"),
+		errors.New("child process reported out of memory"),
+		&reviewprocess.Error{FailureStage: reviewprocess.FailureStageCommandNotStarted, Code: "process_failed"},
+	} {
+		if got := captureDiskFailureCode(err); got != "" {
+			t.Fatalf("non-filesystem evidence inferred a disk fault: %q", got)
+		}
+		requireCaptureError(t, captureStorageFailure(err), "capture_unavailable")
+		if got := cliCaptureRetentionFailureReason(err); got != "capture_retention_failed" {
+			t.Fatalf("unknown retention failure changed reason: %q", got)
 		}
 	}
 }

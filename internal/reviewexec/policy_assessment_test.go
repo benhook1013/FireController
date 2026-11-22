@@ -79,7 +79,7 @@ func assessmentHosted(t *testing.T, f *attemptFixture, anchor Anchor) (Attempt, 
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, a)
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "assessment-hosted-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "assessment-hosted-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 1)
 	return a, receipt.ID
 }
@@ -119,13 +119,13 @@ func TestPolicyAssessmentUsesEffectiveCorrectionsAndFrozenSourceCounts(t *testin
 	adjudicationDecide(t, f, id, "assessment-accept", 0, 0, "accepted")
 	adjudicationDecide(t, f, id, "assessment-reject", 1, 1, "rejected")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "assessment-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, id, "finalized", 3)
+	adjudicationReceipt(t, body, err, id, "finalized", 2)
 	assessmentRead(t, f, a, id, "held", 2, PolicyAssessmentChannel{Channel: "cli", Pending: true})
-	coverageFix(t, f, id, "assessment-fix-first", 3, 0, "")
+	coverageFix(t, f, id, "assessment-fix-first", 2, 0, "")
 	assessmentRead(t, f, a, id, "sufficient", 2, PolicyAssessmentChannel{Channel: "cli", Covered: true})
-	adjudicationDecide(t, f, id, "assessment-late-accept", 4, 1, "accepted")
+	adjudicationDecide(t, f, id, "assessment-late-accept", 3, 1, "accepted")
 	assessmentRead(t, f, a, id, "held", 2, PolicyAssessmentChannel{Channel: "cli", Pending: true})
-	coverageFix(t, f, id, "assessment-fix-second", 5, 1, "")
+	coverageFix(t, f, id, "assessment-fix-second", 4, 1, "")
 	assessmentRead(t, f, a, id, "sufficient", 2, PolicyAssessmentChannel{Channel: "cli", Covered: true})
 	if got := adjudicationRead(t, f, id); got.FrozenCounts == nil || *got.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
 		t.Fatal("effective correction rewrote frozen source counts", got)

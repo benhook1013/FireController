@@ -38,6 +38,18 @@ func seedLegacyRoundGrant(t *testing.T, f *attemptFixture, pull int64, channel s
 	})
 }
 
+func roundRejectAndFinalize(t *testing.T, f *attemptFixture, a Attempt, evidence string, n int) {
+	t.Helper()
+	_, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("round-rejection-%d", n), evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "rejected", Reason: "Verified finding is not actionable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := adjudicationRead(t, f, evidence); !state.Finalized || state.Revision != 1 {
+		t.Fatal("last decision did not freeze source counts in one adjudication revision", state)
+	}
+	roundCompleteHook(t, f, a.OperationID)
+}
+
 func TestRoundCumulativePreservesStreakMinimumAndMaxOnlyReopening(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "first")
@@ -113,7 +125,7 @@ func TestRoundCumulativeUnderwayAndUnfinalizedCountOnceAgainstOneMore(t *testing
 func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
 	f := roundFixture(t)
 	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 1, "legacy")
-	a, evidence := roundCapture(t, f, 0, false)
+	a, evidence := roundCapture(t, f, 0, true)
 	before := roundTables(t, f)
 	_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "legacy-extra", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, Channel: "cli", HeadSHA: strings.Repeat("a", 40)})
 	attemptCode(t, err, "review_round_capacity")
@@ -123,7 +135,7 @@ func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
 	if c := roundRead(t, f, 2, "cli"); c.Used != 0 || readProgress(t, f, 2).Items[0].Channels[1].Pending != 1 {
 		t.Fatal("legacy capture lost its reservation or received early credit", c)
 	}
-	roundFinalize(t, f, a, evidence, 0, false)
+	roundRejectAndFinalize(t, f, a, evidence, 0)
 	if c := roundRead(t, f, 2, "cli"); c.Used != 1 || c.Dry != 1 || !roundDone(c) || readProgress(t, f, 2).Items[0].Channels[1].Pending != 0 {
 		t.Fatal("legacy finalization failed to convert occupancy into completion", c)
 	}
@@ -138,7 +150,7 @@ func TestRoundLegacyUnfinalizedCaptureRetainsLastSlot(t *testing.T) {
 func TestRoundLegacySpareCapacityPreservesPendingEvidenceDispatchGuard(t *testing.T) {
 	f := roundFixture(t)
 	seedLegacyRoundGrant(t, f, 2, "cli", 0, 0, 2, "legacy")
-	first, evidence := roundCapture(t, f, 0, false)
+	first, evidence := roundCapture(t, f, 0, true)
 	next := f.enqueue(t, attemptProject, "legacy-spare", "cli", 2, 1)
 	if configured, err := f.e.RoundAdmission(t.Context(), attemptProject, next.ID); err != nil || !configured {
 		t.Fatal("legacy spare capacity refused admission", configured, err)
@@ -152,7 +164,7 @@ func TestRoundLegacySpareCapacityPreservesPendingEvidenceDispatchGuard(t *testin
 		t.Fatal(err)
 	}
 	attemptCode(t, f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision), "review_evidence_pending")
-	roundFinalize(t, f, first, evidence, 0, false)
+	roundRejectAndFinalize(t, f, first, evidence, 0)
 	if err = f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
 		t.Fatal("finalized evidence held the remaining legacy round", err)
 	}
@@ -209,7 +221,7 @@ func TestRoundCumulativeCapacityRefusalAndOriginalKeyReplay(t *testing.T) {
 	roundGrant(t, f, 2, "cli", 0, 0, 4, "first")
 	// An unfinalized completion and one queued request both occupy the grant.
 	// Duplicate queued CLI requests are rejected at acceptance.
-	roundCapture(t, f, 650, false)
+	roundCapture(t, f, 650, true)
 	f.enqueue(t, attemptProject, "pending-one", "cli", 2, 1)
 	before := roundTables(t, f)
 	revision, min, max := int64(1), int64(0), int64(1)
@@ -398,10 +410,14 @@ func TestRoundCumulativeLegacyFrozenCarryConversion(t *testing.T) {
 			p := adoptionPrepared()
 			p.InitialDry, p.Tapered, p.MinimumRemaining = 0, true, 1
 			adoptRound(t, f, p, "legacy-carry")
-			late, evidence := roundCapture(t, f, 0, accepted)
+			late, evidence := roundCapture(t, f, 0, true)
 			first, firstEvidence := roundCapture(t, f, 1, false)
 			roundFinalize(t, f, first, firstEvidence, 1, false)
-			roundFinalize(t, f, late, evidence, 0, accepted)
+			if accepted {
+				roundFinalize(t, f, late, evidence, 0, true)
+			} else {
+				roundRejectAndFinalize(t, f, late, evidence, 0)
+			}
 			before := roundRead(t, f, 2, "cli")
 			if before.Used != 2 || before.Dry != 1 || !before.Tapered {
 				t.Fatal("fixture lacks legacy frozen carried taper", before)

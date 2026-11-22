@@ -25,19 +25,24 @@ func TestTimelineSeverityPreservesFinalizedPartitionAfterRoutingAndCorrection(t 
 	_, initialBytes := read(initial.SnapshotID)
 	adjudicationDecide(t, f, evidence.ID, "timeline-accept-first", 0, 0, "accepted")
 	adjudicationDecide(t, f, evidence.ID, "timeline-accept-second", 1, 1, "accepted")
+	changesBeforeFinalize := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID)
+	projectionBeforeFinalize := projectionDigest(t, f, "")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "timeline-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 2)
+	if state := adjudicationRead(t, f, evidence.ID); state.Revision != 2 || attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID) != changesBeforeFinalize || projectionDigest(t, f, "") != projectionBeforeFinalize {
+		t.Fatal("current-revision confirmation changed adjudication audit or projection", state)
+	}
 	finalized, finalizedBytes := read("")
 	if finalized.AcceptedSeverity == nil || !finalized.AcceptedSeverity.Complete || finalized.Accepted != 2 || finalized.AcceptedSeverity.Major+finalized.AcceptedSeverity.Minor+finalized.AcceptedSeverity.Trivial+finalized.AcceptedSeverity.Unknown+finalized.AcceptedSeverity.Critical != 2 {
 		t.Fatal("original finalized partition missing", finalized)
 	}
 	finalizedSnapshot := routeProjectionRead(t, f, evidence.ID).SnapshotID
-	createProjectionRoute(t, f, evidence.ID, "timeline-route-after-finalization", 3, 0)
+	createProjectionRoute(t, f, evidence.ID, "timeline-route-after-finalization", 2, 0)
 	afterRoute, _ := read("")
 	if afterRoute.AcceptedSeverity == nil || *afterRoute.AcceptedSeverity != *finalized.AcceptedSeverity || afterRoute.Accepted != 2 || afterRoute.Routed != 0 {
 		t.Fatal("routing lost original accepted partition", afterRoute)
 	}
-	adjudicationDecide(t, f, evidence.ID, "timeline-correct-after-finalization", 4, 1, "rejected")
+	adjudicationDecide(t, f, evidence.ID, "timeline-correct-after-finalization", 3, 1, "rejected")
 	current, _ := read("")
 	if current.AcceptedSeverity == nil || *current.AcceptedSeverity != *finalized.AcceptedSeverity || current.Accepted != 2 {
 		t.Fatal("later correction replaced original accepted partition", current)

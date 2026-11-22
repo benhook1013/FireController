@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -69,8 +70,22 @@ func TestRecoverHostedLatestRetainedSourceKeepsOriginalTimeOfflineAndAfterRestar
 				t.Fatal("offline recovery rewrote source, duplicated evidence or kept reservation", err)
 			}
 			zero := int64(0)
-			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "retained-source-finalize", got.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+			automatic, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), got.EvidenceID)
+			if err != nil || !automatic.Finalized || automatic.Revision != 1 || automatic.FrozenCounts == nil || *automatic.FrozenCounts != (reviewexec.FindingCounts{}) || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
+				t.Fatal("recovered zero-finding result was not automatically finalized", automatic, err)
+			}
+			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "retained-source-stale-finalize", got.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+				t.Fatal("stale pre-settlement revision accepted")
+			}
+			one := int64(1)
+			confirmation, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "retained-source-finalize", got.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+			if err != nil {
 				t.Fatal(err)
+			}
+			replayedConfirmation, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "retained-source-finalize", got.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+			confirmed, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), got.EvidenceID)
+			if err != nil || readErr != nil || !bytes.Equal(confirmation, replayedConfirmation) || !reflect.DeepEqual(confirmed, automatic) {
+				t.Fatal("automatic finalization confirmation changed adjudication", err, readErr)
 			}
 			if err = f.f.store.Close(); err != nil {
 				t.Fatal(err)
@@ -87,12 +102,18 @@ func TestRecoverHostedLatestRetainedSourceKeepsOriginalTimeOfflineAndAfterRestar
 			if err = f.f.engine.RecoverInterrupted(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			restored, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), got.EvidenceID)
+			if err != nil || !reflect.DeepEqual(restored, automatic) {
+				t.Fatal("restart changed automatic adjudication", restored, err)
+			}
 			events := recoveryRuntimeCount(t, f.f, "events")
 			again, err := recoverRuntime(t, f.f, f.captures, f.a, reader)
 			if err != nil || again.Reason != "already_completed" || again.EvidenceID != got.EvidenceID || len(reader.calls) != 0 || recoveryRuntimeCount(t, f.f, "review_execution_evidence") != 1 || recoveryRuntimeCount(t, f.f, "events") != events {
 				t.Fatal("restart replay repeated source or completion work", again, err)
 			}
-			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "retained-source-finalize", got.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil || recoveryRuntimeCount(t, f.f, "events") != events {
+			replayAfterRestart, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "retained-source-finalize", got.EvidenceID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+			current, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), got.EvidenceID)
+			if err != nil || readErr != nil || !bytes.Equal(confirmation, replayAfterRestart) || !reflect.DeepEqual(current, automatic) || recoveryRuntimeCount(t, f.f, "events") != events {
 				t.Fatal("finalization replay duplicated credit", err)
 			}
 		})

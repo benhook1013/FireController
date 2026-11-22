@@ -12,6 +12,8 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewworkspace"
 )
 
+const cliPartialCoverageLimit = "The CLI reported only part of the admitted comparison's changed paths; full source coverage is not established."
+
 // CapturedCLI describes retained execution evidence, not adjudication, policy
 // sufficiency or merge readiness. Routine status need not expose finding text.
 type CapturedCLI struct {
@@ -56,11 +58,24 @@ func RetainCLI(ctx context.Context, captures *CaptureStore, engine *reviewexec.E
 		review.Outcome, review.Complete, reason = "uncertain", false, "source_changed"
 	} else {
 		if review.Complete {
-			covered, sourceErr := manager.CoversChangedFiles(ctx, workspace, review.ReviewedFiles)
+			coverage, sourceErr := manager.QualifyChangedFileCoverage(ctx, workspace, review.ReviewedFiles)
 			if sourceErr != nil {
 				review.Outcome, review.Complete, reason = "uncertain", false, "source_unavailable"
-			} else if !covered {
-				review.Outcome, review.Complete, reason = "failed", false, "coverage_incomplete"
+			} else {
+				switch coverage {
+				case reviewworkspace.ChangedFileCoverageComplete:
+				case reviewworkspace.ChangedFileCoveragePartial:
+					if parseErr == nil && review.Outcome == "completed" && capture.ExitCode == 0 && capture.Started && capture.Exited {
+						review.Outcome, review.Complete, reason = "failed", false, reviewexec.CLIUsablePartialReason
+						if len(review.CoverageLimits) < 15 {
+							review.CoverageLimits = append(append([]string(nil), review.CoverageLimits...), cliPartialCoverageLimit)
+						}
+					} else {
+						review.Outcome, review.Complete, reason = "failed", false, "coverage_incomplete"
+					}
+				default:
+					review.Outcome, review.Complete, reason = "failed", false, "coverage_incomplete"
+				}
 			}
 		} else if _, sourceErr := manager.ChangedFiles(ctx, workspace); sourceErr != nil {
 			review.Outcome, review.Complete, reason = "uncertain", false, "source_unavailable"

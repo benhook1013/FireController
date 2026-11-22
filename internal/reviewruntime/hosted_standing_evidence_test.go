@@ -128,8 +128,22 @@ func TestRetainHostedStandingZeroBaselineIdentityAndFinalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+	settled, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || !settled.Finalized || settled.Revision != 1 || settled.FrozenCounts == nil || *settled.FrozenCounts != (reviewexec.FindingCounts{}) {
+		t.Fatal("completed standing zero was not automatically finalized", settled, err)
+	}
+	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "stale-standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+		t.Fatal("stale pre-settlement revision accepted")
+	}
+	one := int64(1)
+	confirmed, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+	if err != nil {
 		t.Fatal(err)
+	}
+	confirmationReplay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "standing-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+	current, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || readErr != nil || !reflect.DeepEqual(confirmed, confirmationReplay) || !reflect.DeepEqual(current, settled) {
+		t.Fatal("finalized confirmation/replay changed automatic settlement", err, readErr)
 	}
 	replay, err := RetainHosted(t.Context(), f.captures, f.f.engine, f.a, record)
 	if err != nil || replay != result {

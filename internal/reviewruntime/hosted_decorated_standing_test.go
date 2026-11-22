@@ -103,15 +103,21 @@ func TestRetainHostedDecoratedStandingOriginalAttemptAndFinalization(t *testing.
 				t.Fatal(err)
 			}
 			adjudication, err = f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), retained.Receipt.ID)
-			if err != nil || adjudication.Finalized || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
-				t.Fatal("settlement alone finalized source or granted round credit", err)
+			if err != nil || !adjudication.Finalized || adjudication.Revision != 1 || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 {
+				t.Fatal("completed decorated zero was not automatically finalized without unbound round credit", adjudication, err)
 			}
-			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "decorated-finalize", retained.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "decorated-stale-finalize", retained.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+				t.Fatal("stale pre-settlement revision accepted")
+			}
+			one := int64(1)
+			finalized, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "decorated-finalize", retained.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+			if err != nil {
 				t.Fatal(err)
 			}
-			adjudication, err = f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), retained.Receipt.ID)
-			if err != nil || !adjudication.Finalized || adjudication.FrozenCounts == nil || *adjudication.FrozenCounts != (reviewexec.FindingCounts{}) || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 {
-				t.Fatal("deliberate zero finalization failed", err)
+			finalizationReplay, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "decorated-finalize", retained.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+			confirmed, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), retained.Receipt.ID)
+			if err != nil || readErr != nil || !bytes.Equal(finalized, finalizationReplay) || !reflect.DeepEqual(confirmed, adjudication) || recoveryRuntimeCount(t, f.f, "review_round_completions") != 0 || recoveryRuntimeCount(t, f.f, "review_execution_reservations") != 0 {
+				t.Fatal("same-key explicit confirmation changed automatic settlement or granted unbound round credit", err, readErr)
 			}
 		})
 	}

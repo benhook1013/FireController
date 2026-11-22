@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
@@ -216,7 +217,8 @@ func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key,
 	// Copy pointer values so the callback and receipt fingerprint use one input.
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
-	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.decide", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+	queued := false
+	raw, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.decide", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		evidence, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
@@ -224,12 +226,118 @@ func (e *Engine) DecideReviewFinding(ctx context.Context, scope core.Scope, key,
 		if !adjudicationMatches(state, expected) {
 			return nil, adjudicationRevisionConflict(state.Revision)
 		}
+		wasAwaitingDecision := hasUndecidedFindings(state)
 		at, err := e.applyFindingDecision(ctx, tx, scope, evidence, &state, request)
 		if err != nil {
 			return nil, err
 		}
-		return e.persistReviewAdjudication(ctx, tx, scope, state, "adjudicated", request.Finding, request, at)
+		return e.persistFindingDecision(ctx, tx, scope, evidence, state, wasAwaitingDecision, "adjudicated", request.Finding, request, at, &queued)
 	})
+	if err == nil && queued {
+		e.wakeCheckpoints()
+	}
+	return raw, err
+}
+
+func hasUndecidedFindings(state ReviewAdjudication) bool {
+	return !state.Finalized && slices.ContainsFunc(state.Findings, func(finding FindingDecision) bool {
+		return finding.Disposition == "unadjudicated"
+	})
+}
+
+// A decision can finish a newly settled source. An ordinary correction on a
+// historical all-decided record leaves its explicit finalization path intact.
+func (e *Engine) persistFindingDecision(ctx context.Context, tx *sql.Tx, scope core.Scope, evidence ReviewEvidence, state ReviewAdjudication, wasAwaitingDecision bool, kind string, finding int64, request any, at string, queued *bool) (any, error) {
+	finalize := false
+	if wasAwaitingDecision && !hasUndecidedFindings(state) && (evidence.Capture.Review.Complete || usablePartialCapture(evidence.Capture)) {
+		attempt, err := readAttempt(ctx, tx, evidence.ProjectID, evidence.AttemptID)
+		if err != nil {
+			return nil, err
+		}
+		finalize, err = finalizableEvidence(ctx, tx, evidence, attempt)
+		if err != nil {
+			return nil, err
+		}
+		if finalize {
+			if err = freezeReviewCounts(ctx, tx, evidence, &state); err != nil {
+				return nil, err
+			}
+		}
+	}
+	receipt, err := e.persistReviewAdjudication(ctx, tx, scope, state, kind, finding, request, at)
+	if err != nil || !finalize {
+		return receipt, err
+	}
+	if err = core.AppendEvent(ctx, tx, scope, "review.evidence.finalized", state.EvidenceID, state.Revision+1, struct {
+		Finding int64 `json:"finding"`
+	}{-1}); err != nil {
+		return nil, err
+	}
+	if _, err = e.enqueueCheckpoint(ctx, tx, scope, evidence.ID, nil); err != nil {
+		return nil, err
+	}
+	*queued = true
+	return receipt, nil
+}
+
+// Capture can precede attempt settlement. This covers empty captures and
+// decisions that arrived before the completed attempt was committed.
+func (e *Engine) finalizeSettledAdjudication(ctx context.Context, tx *sql.Tx, operation Operation, attempt Attempt, at string) (bool, error) {
+	facts, err := operationStatusEvidence(ctx, tx, operation)
+	if err != nil || !facts.Complete && !usablePartialOperation(operation) {
+		return false, err
+	}
+	evidence, state, err := loadReviewAdjudication(ctx, tx, operation.ProjectID, facts.ID)
+	if err != nil {
+		return false, err
+	}
+	if evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID {
+		return false, adjudicationStorageError()
+	}
+	eligible, err := finalizableEvidence(ctx, tx, evidence, attempt)
+	if err != nil {
+		return false, err
+	}
+	if !eligible && usablePartialOperation(operation) {
+		return false, adjudicationStorageError()
+	}
+	if !eligible || state.Finalized || hasUndecidedFindings(state) {
+		return false, nil
+	}
+	if err = freezeReviewCounts(ctx, tx, evidence, &state); err != nil {
+		return false, err
+	}
+	scope := core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
+	if _, err = e.persistReviewAdjudication(ctx, tx, scope, state, "finalized", -1, struct{}{}, at); err != nil {
+		return false, err
+	}
+	_, err = e.enqueueCheckpoint(ctx, tx, scope, evidence.ID, nil)
+	return err == nil, err
+}
+
+func freezeReviewCounts(ctx context.Context, tx *sql.Tx, evidence ReviewEvidence, state *ReviewAdjudication) error {
+	counts := FindingCounts{Found: int64(len(state.Findings))}
+	for _, finding := range state.Findings {
+		switch finding.Disposition {
+		case "accepted":
+			counts.Accepted++
+		case "routed":
+			route, err := readFindingRoute(ctx, tx, evidence.ProjectID, finding.RouteID)
+			if err != nil {
+				return err
+			}
+			if !routeMatchesSource(route, evidence, *state, true) {
+				return routeStorageError()
+			}
+			counts.Routed++
+		case "rejected":
+		default:
+			return conflict()
+		}
+	}
+	state.Finalized, state.FrozenCounts = true, &counts
+	state.FrozenAcceptedSeverity = acceptedSourceSeverity(evidence, *state)
+	return nil
 }
 
 func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, key, evidenceID string, request FinalizeReviewRequest) (json.RawMessage, error) {
@@ -238,6 +346,7 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 	}
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
+	queued := false
 	raw, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.finalize", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		evidence, state, err := loadReviewAdjudication(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
@@ -246,40 +355,29 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 		if !adjudicationMatches(state, expected) {
 			return nil, adjudicationRevisionConflict(state.Revision)
 		}
-		if state.Finalized || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+		if state.Finalized {
+			return Receipt{ID: state.EvidenceID, State: "finalized", Revision: state.Revision}, nil
+		}
+		if !evidence.Capture.Review.Complete && !usablePartialCapture(evidence.Capture) {
 			return nil, conflict()
 		}
 		a, err := readAttempt(ctx, tx, scope.ProjectID, evidence.AttemptID)
 		if err != nil {
 			return nil, err
 		}
-		if a.State != "completed" {
-			if a.State == "uncertain" {
+		eligible, err := finalizableEvidence(ctx, tx, evidence, a)
+		if err != nil {
+			return nil, err
+		}
+		if !eligible {
+			if a.State == "uncertain" && evidence.Capture.Review.Complete {
 				return nil, core.Fail("review_result_unsettled", "The complete captured result awaits settlement of its original review attempt.", 409)
 			}
 			return nil, conflict()
 		}
-		counts := FindingCounts{Found: int64(len(state.Findings))}
-		for _, f := range state.Findings {
-			switch f.Disposition {
-			case "accepted":
-				counts.Accepted++
-			case "routed":
-				route, err := readFindingRoute(ctx, tx, scope.ProjectID, f.RouteID)
-				if err != nil {
-					return nil, err
-				}
-				if !routeMatchesSource(route, evidence, state, true) {
-					return nil, routeStorageError()
-				}
-				counts.Routed++
-			case "rejected":
-			default:
-				return nil, conflict()
-			}
+		if err = freezeReviewCounts(ctx, tx, evidence, &state); err != nil {
+			return nil, err
 		}
-		state.Finalized, state.FrozenCounts = true, &counts
-		state.FrozenAcceptedSeverity = acceptedSourceSeverity(evidence, state)
 		receipt, err := e.persistReviewAdjudication(ctx, tx, scope, state, "finalized", -1, request, stamp())
 		if err != nil {
 			return nil, err
@@ -289,9 +387,10 @@ func (e *Engine) FinalizeReviewEvidence(ctx context.Context, scope core.Scope, k
 		if _, err = e.enqueueCheckpoint(ctx, tx, scope, evidenceID, nil); err != nil {
 			return nil, err
 		}
+		queued = true
 		return receipt, nil
 	})
-	if err == nil {
+	if err == nil && queued {
 		e.wakeCheckpoints()
 	}
 	return raw, err

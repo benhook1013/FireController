@@ -499,20 +499,19 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 func seedCLIDriverNativeCoverage(t *testing.T, f *cliDriverFixture, number int64) {
 	t.Helper()
 	a, w := f.startAdmitted(t, number)
-	contextOnly := makeIncompleteCLICapture(t, w)
-	terminal, err := json.Marshal(map[string]any{"type": "complete", "status": "review_completed", "outcome": "completed", "findings": 0, "reviewedFiles": mustChangedFiles(t, f.manager, w)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	contextOnly.Stdout = append(contextOnly.Stdout, append(terminal, '\n')...)
-	result, err := RetainCLI(context.Background(), f.captures, f.engine, f.manager, a, w, contextOnly, time.Now().Add(-time.Second).UTC(), time.Now().UTC())
+	capture := makeCompleteCLICapture(t, w, mustChangedFiles(t, f.manager, w))
+	result, err := RetainCLI(context.Background(), f.captures, f.engine, f.manager, a, w, capture, time.Now().Add(-time.Second).UTC(), time.Now().UTC())
 	if err != nil || !result.Complete {
 		t.Fatal("synthetic complete source seed failed", err)
 	}
 	if _, err := f.engine.Advance(context.Background(), f.project, a.ID, a.Revision, "completed", "fixture_capture_retained", ""); err != nil {
 		t.Fatal(err)
 	}
-	revision := int64(0)
+	zero := int64(0)
+	if _, err := f.engine.DecideReviewFinding(context.Background(), f.scope(t, f.writer, false), "fixture-source-reject", result.Receipt.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "rejected", Reason: "Synthetic fixture finding is deliberately not accepted"}); err != nil {
+		t.Fatal(err)
+	}
+	revision := int64(1)
 	if _, err := f.engine.FinalizeReviewEvidence(context.Background(), f.scope(t, f.writer, false), "fixture-source-finalized", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +758,7 @@ func TestCLIDriverLatePreparationCorrectionNeverRunsReview(t *testing.T) {
 	f.reader.pulls[2] = p
 	usage := f.driver.usage
 	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
-		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
+		cliDriverDecision(t, f, id, "late-accept", 1, "accepted")
 		return usage(ctx, w, repo, org)
 	}
 	op, a := f.prepareAdmit(t, 2, 1, "changed-comparison")
@@ -794,7 +793,7 @@ func TestCLIDriverLateAncestorCorrectionStillReviewsChild(t *testing.T) {
 	f.configure(t, "stacked", []int64{2, 4})
 	usage := f.driver.usage
 	f.driver.usage = func(ctx context.Context, w reviewworkspace.Workspace, repo, org string) (reviewprocess.Usage, error) {
-		cliDriverDecision(t, f, id, "late-accept", 2, "accepted")
+		cliDriverDecision(t, f, id, "late-accept", 1, "accepted")
 		return usage(ctx, w, repo, org)
 	}
 	op, a := f.prepareAdmit(t, 4, 2, "child-after-covered-parent")
@@ -843,7 +842,7 @@ func TestCLIDriverAncestorCorrectionAfterGitVerificationKeepsChildReview(t *test
 				}
 				verifications.Add(1)
 				if correct {
-					cliDriverDecision(t, f, id, "correct-parent-after-git", 2, "accepted")
+					cliDriverDecision(t, f, id, "correct-parent-after-git", 1, "accepted")
 				}
 				return nil
 			}

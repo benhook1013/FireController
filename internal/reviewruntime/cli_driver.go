@@ -297,6 +297,9 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	retained, err := RetainCLI(retentionCtx, d.captures, d.engine, d.manager, attempt, prepared.workspace, capture, started, finished)
 	cancel()
 	failureReason := "capture_retention_failed"
+	if err != nil {
+		failureReason = cliCaptureRetentionFailureReason(err)
+	}
 	if err == nil {
 		// Retention/Git verification must not consume publication's own bounded
 		// local budget. A later observer can finish from this exact final ledger.
@@ -332,10 +335,21 @@ func (d *CLIDriver) Dispatch(ctx context.Context, operation reviewexec.Operation
 	}
 	switch retained.Outcome {
 	case "failed", "cancelled", "rate_limited":
-		if retained.Outcome == "failed" && retained.Reason == "coverage_incomplete" {
+		if retained.Outcome == "failed" && (retained.Reason == "coverage_incomplete" || retained.Reason == reviewexec.CLIUsablePartialReason) {
 			return reviewexec.Result{State: "failed", Reason: retained.Reason}, nil
 		}
 		return reviewexec.Result{State: retained.Outcome, Reason: "capture_retained"}, nil
 	}
 	return reviewexec.Result{State: "uncertain", Reason: retained.Reason}, nil
+}
+
+func cliCaptureRetentionFailureReason(err error) string {
+	var failure *core.Error
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case "capture_disk_full", "capture_disk_quota":
+			return failure.Code
+		}
+	}
+	return "capture_retention_failed"
 }

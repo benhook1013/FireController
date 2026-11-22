@@ -35,7 +35,8 @@ func routePolicyReceiver(t *testing.T, f *attemptFixture, sourceID string) (Atte
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, a)
-	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-policy-finalize-receiver", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+	assertAutoFinalizedAndPublished(t, f, receipt.ID, 1, FindingCounts{})
+	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "route-policy-finalize-receiver", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
 	adjudicationReceipt(t, raw, err, receipt.ID, "finalized", 1)
 	assessmentPolicy(t, f, 1, []string{"cli"})
 	reader := &refreshTestReader{}
@@ -73,7 +74,7 @@ func TestRoutePolicyReceivingCoverageDoesNotClearIncomingObligation(t *testing.T
 	routePolicyBoth(t, f, a, id, reader, "sufficient", "", 0, false)
 	created := routeCreate(t, f, sourceID, "policy-incoming", routeRequest(0, 0, 4))
 	raw, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "policy-source-finalize", sourceID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, raw, err, sourceID, "finalized", 2)
+	adjudicationReceipt(t, raw, err, sourceID, "finalized", 1)
 	original := adjudicationRead(t, f, sourceID)
 	capture, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), sourceID)
 	if err != nil {
@@ -107,6 +108,7 @@ func TestRoutePolicyOver100PendingRemainsExactHold(t *testing.T) {
 	for i := range 100 {
 		routeCreate(t, f, sourceID, fmt.Sprintf("policy-cap-%d", i), routeRequest(int64(i), int64(i), 4))
 	}
+	assertAutoFinalizedAndPublished(t, f, sourceID, 100, FindingCounts{Found: 100, Routed: 100})
 	routePolicyBoth(t, f, a, id, reader, "held", "routed_findings_pending", 100, false)
 	next := f.start(t, attemptProject, f.enqueue(t, attemptProject, "policy-extra-source", "cli", 6, 2))
 	anchor := attemptAnchor(attemptProject, 6)
@@ -138,6 +140,7 @@ func TestRoutePolicyCorruptResolvedIncomingRouteFailsClosed(t *testing.T) {
 	adjudicationComplete(t, f, source)
 	a, id, reader := routePolicyReceiver(t, f, sourceID)
 	created := routeCreate(t, f, sourceID, "policy-corrupt-route", routeRequest(0, 0, 4))
+	assertAutoFinalizedAndPublished(t, f, sourceID, 1, FindingCounts{Found: 1, Routed: 1})
 	routeDecision(t, f, created.ID, "policy-valid-rejection", 1, "rejected")
 	routePolicyBoth(t, f, a, id, reader, "sufficient", "", 0, false)
 	// Keep current history/body equal, but remove mandatory receiving justification.

@@ -114,19 +114,41 @@ func TestRetainHostedBaselineBotRefreshNativeOnceOnly(t *testing.T) {
 				if readErr != nil || evidence.Capture.Review.ReportedFindings != int64(want) || len(evidence.Capture.Review.Findings) != want || len(evidence.Capture.Hosted.Sources) != want {
 					t.Fatal("native positive inventory lost", readErr)
 				}
+				zero := int64(0)
+				if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-refresh-premature", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+					t.Fatal("active finding-bearing capture finalized")
+				}
+				pending, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+				if readErr != nil || pending.Finalized || pending.Revision != 0 || len(pending.Findings) != want {
+					t.Fatal("active finding-bearing capture lost pending adjudication", pending, readErr)
+				}
+				for i, finding := range pending.Findings {
+					if finding.Finding != int64(i) || finding.Disposition != "unadjudicated" {
+						t.Fatal("active finding-bearing capture lost undecided source finding", pending)
+					}
+				}
 				return
 			}
 			f.a, err = f.f.engine.Advance(t.Context(), f.f.project, f.a.ID, f.a.Revision, "completed", "synthetic_complete", f.a.ExternalID)
 			if err != nil {
 				t.Fatal(err)
 			}
+			automatic, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+			if err != nil || !automatic.Finalized || automatic.Revision != 1 || automatic.FrozenCounts == nil || *automatic.FrozenCounts != (reviewexec.FindingCounts{}) || cliCount(t, f.f.store, "SELECT count(*) FROM review_round_completions") != 0 {
+				t.Fatal("settled zero-finding result was not automatically finalized", automatic, err)
+			}
 			zero := int64(0)
-			receipt, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-refresh-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+			if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-refresh-stale-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+				t.Fatal("stale pre-settlement revision accepted")
+			}
+			one := int64(1)
+			receipt, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-refresh-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
 			if err != nil {
 				t.Fatal(err)
 			}
-			again, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-refresh-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
-			if err != nil || !reflect.DeepEqual(receipt, again) {
+			again, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-refresh-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+			confirmed, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+			if err != nil || readErr != nil || !reflect.DeepEqual(receipt, again) || !reflect.DeepEqual(confirmed, automatic) {
 				t.Fatal("finalization replay changed", err)
 			}
 		})
@@ -179,13 +201,22 @@ func TestRetainHostedBotRefreshPendingThenOriginalCompletesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	automatic, err := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || !automatic.Finalized || automatic.Revision != 1 || automatic.FrozenCounts == nil || *automatic.FrozenCounts != (reviewexec.FindingCounts{}) || cliCount(t, f.f.store, "SELECT count(*) FROM review_round_completions") != 0 {
+		t.Fatal("settled original zero-finding result was not automatically finalized", automatic, err)
+	}
 	zero := int64(0)
-	receipt, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
+	if _, err = f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-stale-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+		t.Fatal("stale pre-settlement revision accepted")
+	}
+	one := int64(1)
+	receipt, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
 	if err != nil {
 		t.Fatal(err)
 	}
-	repeated, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero})
-	if err != nil || !reflect.DeepEqual(receipt, repeated) {
+	repeated, err := f.f.engine.FinalizeReviewEvidence(t.Context(), f.f.scope(t, f.f.writer, false), "bot-pending-finalize", result.Receipt.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one})
+	confirmed, readErr := f.f.engine.ReadReviewAdjudication(t.Context(), f.f.scope(t, f.f.writer, false), result.Receipt.ID)
+	if err != nil || readErr != nil || !reflect.DeepEqual(receipt, repeated) || !reflect.DeepEqual(confirmed, automatic) {
 		t.Fatal("finalization counted twice", err)
 	}
 }

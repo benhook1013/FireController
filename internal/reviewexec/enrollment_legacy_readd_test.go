@@ -16,10 +16,19 @@ func TestEnrollmentReaddPreservesRetainedLegacyCoverage(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/finalized=%t", removed, finalized), func(t *testing.T) {
 				// The predecessor fixture has an authentic configuration receipt and
 				// real native capture, but predates automatic round enrollment.
-				f, original, evidence, plan := coverageFixture(t, 0, false)
+				findings := 0
+				if !finalized {
+					findings = 1
+				}
+				f, original, evidence, plan := coverageFixture(t, findings, false)
 				adjudicationComplete(t, f, original)
 				if finalized {
 					roundFinalize(t, f, original, evidence, 0, false)
+				} else {
+					pending := adjudicationRead(t, f, evidence)
+					if pending.Finalized || pending.Revision != 0 || len(pending.Findings) != 1 || pending.Findings[0].Disposition != "unadjudicated" {
+						t.Fatal("legacy pending fixture did not retain a genuine undecided finding", pending)
+					}
 				}
 				assessmentPolicy(t, f, 1, []string{"cli"})
 				reader := newReadinessTestReader()
@@ -89,7 +98,12 @@ func TestEnrollmentReaddPreservesRetainedLegacyCoverage(t *testing.T) {
 					if enrollmentState(t, f) != before {
 						t.Fatal("unbound pending grant refusal changed state")
 					}
-					roundFinalize(t, f, original, evidence, 0, false)
+					adjudicationDecide(t, f, evidence, "resolve-retained-legacy-finding", 0, 0, "rejected")
+					finalizedState := adjudicationRead(t, f, evidence)
+					if !finalizedState.Finalized || finalizedState.Revision != 1 {
+						t.Fatal("last legacy decision did not finalize in the same revision", finalizedState)
+					}
+					roundCompleteHook(t, f, original.OperationID)
 					if got := readReadiness(t, f, reader, original, 2); got.State != "ready_as_observed" {
 						t.Fatal("finalization did not recover retained legacy readiness", got)
 					}

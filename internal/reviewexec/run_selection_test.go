@@ -273,7 +273,9 @@ func TestRunSelectionPendingNativeEvidenceAndLiveActionHold(t *testing.T) {
 			if mode == "queued-native" {
 				f.enqueue(t, attemptProject, "native", "cli", 2, 1)
 			} else {
-				a, _ := roundCapture(t, f, 1, false)
+				// Keep one undecided finding so the settled capture remains pending;
+				// a complete zero-finding capture now finalizes on settlement.
+				a, _ := roundCapture(t, f, 1, true)
 				zero := int64(0)
 				_, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "stop", 2, "cli", RoundControlRequest{ExpectedRevision: &zero, Action: "close"})
 				if err != nil {

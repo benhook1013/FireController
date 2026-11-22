@@ -303,7 +303,8 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 	}
 	expected := *request.ExpectedRevision
 	request.ExpectedRevision = &expected
-	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.route", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+	queued := false
+	raw, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.evidence.route", Target: evidenceID, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		evidence, state, err := sourceRouteState(ctx, tx, scope.ProjectID, evidenceID)
 		if err != nil {
 			return nil, err
@@ -327,6 +328,7 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 		if request.TargetPullNumber == evidence.Anchor.PullNumber || request.TargetPullNumber != 0 && !slices.Contains(c.Queue, request.TargetPullNumber) {
 			return nil, invalid()
 		}
+		wasAwaitingDecision := hasUndecidedFindings(state)
 		f := &state.Findings[request.Finding]
 		if f.FixSHA != "" || f.OperationalProof != nil {
 			return nil, conflict()
@@ -344,11 +346,15 @@ func (e *Engine) CreateFindingRoute(ctx context.Context, scope core.Scope, key, 
 			return nil, err
 		}
 		f.Disposition, f.Reason, f.ActorID, f.DecidedAt, f.RouteID = "routed", request.Reason, scope.PrincipalID, at, route.ID
-		if _, err = e.persistReviewAdjudication(ctx, tx, scope, state, "routed", request.Finding, request, at); err != nil {
+		if _, err = e.persistFindingDecision(ctx, tx, scope, evidence, state, wasAwaitingDecision, "routed", request.Finding, request, at, &queued); err != nil {
 			return nil, err
 		}
 		return findingRouteReceipt{ID: route.ID, State: "routed", Revision: 1, SourceRevision: state.Revision + 1}, nil
 	})
+	if err == nil && queued {
+		e.wakeCheckpoints()
+	}
+	return raw, err
 }
 
 func (e *Engine) mutateFindingRoute(ctx context.Context, scope core.Scope, key, id, kind string, expected int64, request any, change func(*ReviewRoute, string) error) (json.RawMessage, error) {

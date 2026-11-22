@@ -51,7 +51,7 @@ func attachRunDisplay(ctx context.Context, tx *sql.Tx, project, snapshot string,
 			return err
 		}
 		for _, run := range runs[id] {
-			partial := isPartialCLIResult(*run) && total > 0
+			partial := isPartialCLIResult(*run) && (total > 0 || run.Finalized && run.Found == 0)
 			if partial {
 				retainedUndecided := undecided
 				run.RetainedUndecided = &retainedUndecided

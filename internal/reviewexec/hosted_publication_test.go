@@ -156,12 +156,18 @@ func TestHostedPublicationRetainedEvidenceAndSharedControls(t *testing.T) {
 	}
 	adjudicationDecide(t, f, retained.ID, "hosted-reject", 1, 1, "rejected")
 	adjudicationDecide(t, f, retained.ID, "hosted-accept-duplicate", 2, 2, "accepted")
+	assertAutoFinalizationAbsent(t, f, retained.ID, 3)
 	evidenceHTTPRequire(t, f.request(http.MethodPost, path+"/finalization", f.writer, "hosted-too-early", `{"expected_revision":3}`), http.StatusConflict, "review_conflict")
 	if attemptState(t, f, a) != journal {
 		t.Fatal("shared hosted controls settled execution")
 	}
 	adjudicationComplete(t, f, a)
-	evidenceHTTPReceipt(t, f.request(http.MethodPost, path+"/finalization", f.writer, "hosted-finalize", `{"expected_revision":3}`), retained.ID, "finalized", 4)
+	assertAutoFinalizedAndPublished(t, f, retained.ID, 4, FindingCounts{Found: 3, Accepted: 2})
+	projection = projectionDigest(t, f, "")
+	assertCurrentFinalizationIsNoop(t, f, a, retained.ID, "hosted-finalize", 4)
+	if projectionDigest(t, f, "") != projection {
+		t.Fatal("explicit finalization confirmation changed the native hosted projection")
+	}
 	for i, index := range []int{0, 2} {
 		fix := fmt.Sprintf(`{"expected_revision":%d,"finding":%d,"expected_sha":"","fix_sha":%q,"proof_note":"Focused hosted proof"}`, 4+i, index, strings.Repeat("f", 40))
 		evidenceHTTPReceipt(t, f.request(http.MethodPost, path+"/fixes", f.writer, fmt.Sprintf("hosted-fix-%d", index), fix), retained.ID, "fix_recorded", int64(5+i))
@@ -223,8 +229,7 @@ func TestHostedPublicationZeroFindingsDoNotCreditCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	adjudicationComplete(t, f, a)
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-zero-finalize", retained.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
-	adjudicationReceipt(t, body, err, retained.ID, "finalized", 1)
+	assertAutoFinalizedAndPublished(t, f, retained.ID, 1, FindingCounts{})
 	detail := cliPublicationDetail(t, f, 2, retained.ID)
 	if detail.Run.Channel != "hosted" || !detail.Run.Finalized || detail.Run.Found != 0 || detail.Run.Accepted != 0 || len(detail.Findings) != 0 {
 		t.Fatal("zero hosted source was lost or fabricated findings", detail)

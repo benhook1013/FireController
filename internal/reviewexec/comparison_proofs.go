@@ -52,7 +52,8 @@ func deriveComparisonProofFromOperation(ctx context.Context, q EvidenceQuery, pr
 		return comparisonProof{}, evidence, state, adjudicationStorageError()
 	}
 	proof := comparisonProof{operation: id, project: project, number: operation.PullNumber, channel: operation.Channel, state: "pending"}
-	if operation.State != "completed" || operation.Channel != "cli" && operation.Channel != "hosted" {
+	partial := usablePartialOperation(operation)
+	if operation.State != "completed" && !partial || operation.Channel != "cli" && operation.Channel != "hosted" {
 		return proof, evidence, state, adjudicationStorageError()
 	}
 	rows, err := q.QueryContext(ctx, `SELECT id,attempt_id FROM review_execution_evidence WHERE project_id=? AND operation_id=? ORDER BY id LIMIT 2`, project, id)
@@ -92,14 +93,17 @@ func deriveComparisonProofFromOperation(ctx context.Context, q EvidenceQuery, pr
 	if err = q.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 		return proof, evidence, state, err
 	}
-	if validateReviewEvidence(evidence.Capture) != nil || !identifier.MatchString(evidence.ID) || !identifier.MatchString(evidence.AttemptID) || !identifier.MatchString(evidence.OperationID) || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || attempt.State != "completed" || operation.ConfigurationRevision < 1 ||
+	if validateReviewEvidence(evidence.Capture) != nil || !identifier.MatchString(evidence.ID) || !identifier.MatchString(evidence.AttemptID) || !identifier.MatchString(evidence.OperationID) || !identifier.MatchString(operation.ActorID) || operation.WorkerID != "" && !identifier.MatchString(operation.WorkerID) || evidence.AttemptID != attempt.ID || evidence.OperationID != operation.ID || attempt.OperationID != operation.ID || operation.AttemptID != attempt.ID || attempt.State != operation.State || operation.ConfigurationRevision < 1 ||
 		!identifier.MatchString(attempt.Provider) || !identifier.MatchString(attempt.Account) || !hash.MatchString(evidence.CapabilityFingerprint) || evidence.CapabilityFingerprint != operation.CapabilityFingerprint || attempt.Anchor == nil || !validEvidenceAnchor(evidence.Anchor) || *attempt.Anchor != evidence.Anchor || evidence.Capture.ExpectedAnchor != evidence.Anchor || operation.PullNumber != evidence.Anchor.PullNumber || operation.HeadSHA != evidence.Anchor.CandidateSHA || evidence.Anchor.RepositoryID != repositoryID {
 		return proof, evidence, state, adjudicationStorageError()
 	}
 	if operation.Channel == "hosted" && validateHostedEvidenceIdentity(attempt, operation, evidence.Capture) != nil {
 		return proof, evidence, state, adjudicationStorageError()
 	}
-	ready, err := coverageProof(ctx, q, evidence, state, operation.Channel, version == "1")
+	if partial && !usablePartialCapture(evidence.Capture) {
+		return proof, evidence, state, adjudicationStorageError()
+	}
+	ready, err := coverageProof(ctx, q, evidence, state, operation.Channel, version == "1", partial)
 	if err != nil {
 		return proof, evidence, state, err
 	}

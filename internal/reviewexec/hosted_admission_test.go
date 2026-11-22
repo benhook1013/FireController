@@ -88,9 +88,9 @@ func TestHostedAdmissionTargetRequiresFinalizedCurrentFixProof(t *testing.T) {
 	adjudicationDecide(t, f, id, "hosted-admission-reject-two", 2, 2, "rejected")
 	hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-admission-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
-	adjudicationReceipt(t, body, err, id, "finalized", 4)
+	adjudicationReceipt(t, body, err, id, "finalized", 3)
 	hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")
-	coverageFix(t, f, id, "hosted-admission-fix", 4, 0, "")
+	coverageFix(t, f, id, "hosted-admission-fix", 3, 0, "")
 	hostedAdmissionVerify(t, f, next, "review_held", "target_already_covered")
 }
 
@@ -106,11 +106,11 @@ func TestHostedAdmissionOldHeadPendingAndLateCorrection(t *testing.T) {
 		adjudicationDecide(t, f, id, "hosted-close-"+string(rune('a'+i)), i, i, "rejected")
 	}
 	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "hosted-close-old", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
-	adjudicationReceipt(t, body, err, id, "finalized", 4)
+	adjudicationReceipt(t, body, err, id, "finalized", 3)
 	hostedAdmissionVerify(t, f, next, "review_held", "target_already_covered")
-	adjudicationDecide(t, f, id, "hosted-old-correction", 4, 0, "accepted")
+	adjudicationDecide(t, f, id, "hosted-old-correction", 3, 0, "accepted")
 	hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")
-	coverageFix(t, f, id, "hosted-old-fix", 5, 0, "")
+	coverageFix(t, f, id, "hosted-old-fix", 4, 0, "")
 	hostedAdmissionVerify(t, f, next, "review_held", "target_already_covered")
 	// Missing capture on an older completed intent remains a selected-channel hold.
 	coverageSeedOperations(t, f, prior, 1, "completed")
@@ -221,12 +221,12 @@ func TestOutgoingRouteReleasesSourceReviewAndKeepsReceiverHold(t *testing.T) {
 				revision++
 			}
 			body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "outgoing-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
-			adjudicationReceipt(t, body, err, evidence, "finalized", revision+1)
+			adjudicationReceipt(t, body, err, evidence, "finalized", revision)
 			roundGrant(t, f, 2, channel, 0, 1, 4, "outgoing-grant")
 
 			next := hostedAdmissionAttempt(t, f, "outgoing-source-next", channel, 1, *prior.Anchor)
 			hostedAdmissionVerify(t, f, next, "review_evidence_pending", "")
-			coverageFix(t, f, evidence, "outgoing-fix-local", revision+1, 1, "")
+			coverageFix(t, f, evidence, "outgoing-fix-local", revision, 1, "")
 			hostedAdmissionVerify(t, f, next, "", "")
 			for _, receivingChannel := range []string{"cli", "hosted"} {
 				_, err := f.e.Enqueue(t.Context(), f.scope(t, attemptProject, f.writer, false), "outgoing-receiver-"+receivingChannel, Request{

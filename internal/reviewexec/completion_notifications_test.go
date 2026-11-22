@@ -126,6 +126,10 @@ func TestCompletionNoticeCLIAndHostedWaitForUsableCompletion(t *testing.T) {
 			if completionNoticeCount(t, f) != 0 {
 				t.Fatal("publication before settlement claimed completion")
 			}
+			beforeSettlement := adjudicationRead(t, f, evidence.ID)
+			if beforeSettlement.Finalized || beforeSettlement.Revision != 0 {
+				t.Fatal("publication finalized evidence before its attempt settled", beforeSettlement)
+			}
 			completed, err := f.e.Advance(t.Context(), a.ProjectID, a.ID, a.Revision, "completed", "fixture_review_completed", "")
 			if err != nil || completed.State != "completed" || completionNoticeCount(t, f) != 1 {
 				t.Fatal("completed result did not notify exactly once", completed, err)
@@ -147,8 +151,22 @@ func TestCompletionNoticeCLIAndHostedWaitForUsableCompletion(t *testing.T) {
 				t.Fatal("publication replay duplicated notice", err)
 			}
 			state := adjudicationRead(t, f, evidence.ID)
-			if state.Finalized || state.Revision != 0 {
-				t.Fatal("notification adjudicated the review", state)
+			retained, err := f.e.ReadReviewEvidence(t.Context(), evidenceReadScope(t, f, a.ProjectID, f.reader), evidence.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			automaticallyFinalized := len(retained.Capture.Review.Findings) == 0
+			wantRevision := int64(0)
+			if automaticallyFinalized {
+				wantRevision = 1
+			}
+			changes := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence.ID)
+			wantChanges := 0
+			if automaticallyFinalized {
+				wantChanges = 1
+			}
+			if state.Finalized != automaticallyFinalized || state.Revision != wantRevision || changes != wantChanges {
+				t.Fatal("settlement finalization and notification effects were conflated", state, changes)
 			}
 		})
 	}

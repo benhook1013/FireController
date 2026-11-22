@@ -664,10 +664,9 @@ func schedulingCleanHosted(t *testing.T, f *attemptFixture, revision, n int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	zero := int64(0)
-	_, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), core.NewID("finalize"), captured.ID, FinalizeReviewRequest{ExpectedRevision: &zero})
-	if err != nil {
-		t.Fatal(err)
+	state := adjudicationRead(t, f, captured.ID)
+	if state.Revision != 1 || !state.Finalized || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{}) {
+		t.Fatal("settled zero-finding Hosted capture did not auto-finalize", state)
 	}
 	roundCompleteHook(t, f, a.OperationID)
 }

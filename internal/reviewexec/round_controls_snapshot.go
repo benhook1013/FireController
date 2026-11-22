@@ -206,7 +206,8 @@ func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, ope
 	if err != nil {
 		return "", 0, err
 	}
-	if op.State != "completed" {
+	partial := usablePartialOperation(op)
+	if op.State != "completed" && !partial {
 		return "", 0, nil
 	}
 	var proof comparisonProof
@@ -229,7 +230,7 @@ func roundCompletionAuthority(ctx context.Context, q EvidenceQuery, project, ope
 	if !state.Finalized {
 		return "", 0, nil
 	}
-	if state.FrozenCounts == nil || evidence.OperationID != operationID || evidence.AttemptID != op.AttemptID || !evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed" {
+	if state.FrozenCounts == nil || evidence.OperationID != operationID || evidence.AttemptID != op.AttemptID || (!evidence.Capture.Review.Complete || evidence.Capture.Review.Outcome != "completed") && !partial {
 		return "", 0, roundUnavailable()
 	}
 	if external {

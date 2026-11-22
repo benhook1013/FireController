@@ -41,14 +41,25 @@ func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope
 		}
 	}
 	var evidence ReviewEvidence
+	needsEvidence := state.Finalized
 	for _, finding := range state.Findings {
 		if finding.RouteID != "" {
-			var err error
-			evidence, _, err = loadReviewAdjudication(ctx, tx, scope.ProjectID, state.EvidenceID)
+			needsEvidence = true
+			break
+		}
+	}
+	if needsEvidence {
+		var err error
+		evidence, _, err = loadReviewAdjudication(ctx, tx, scope.ProjectID, state.EvidenceID)
+		if err != nil {
+			return err
+		}
+		if state.Finalized && usablePartialCapture(evidence.Capture) {
+			operation, err := readOperation(ctx, tx, scope.ProjectID, evidence.OperationID)
 			if err != nil {
 				return err
 			}
-			break
+			input.UsablePartial = usablePartialOperation(operation)
 		}
 	}
 	for _, finding := range state.Findings {

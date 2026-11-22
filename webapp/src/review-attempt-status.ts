@@ -59,6 +59,8 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
     cli_partial_comparison_already_reviewed: 'Automatic CLI is waiting for the comparison to change',
     capture_retained: 'Review output is available in history',
     capture_retention_failed: 'The review result could not be retained',
+    capture_disk_full: 'The Controller ran out of disk space while saving the review result',
+    capture_disk_quota: 'The Controller reached a disk quota while saving the review result',
     source_obligations_pending: 'Carried review work is still pending',
     routed_findings_pending: 'Incoming findings still need handling',
     review_evidence_pending: 'Earlier review results still need handling',

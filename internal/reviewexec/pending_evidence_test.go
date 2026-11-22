@@ -109,12 +109,53 @@ func TestPendingEvidenceNamesTheRequiredActionAsAdjudicationProgresses(t *testin
 	}
 	check("finding_undecided")
 	adjudicationDecide(t, f, evidence, "accept-progress", 0, 0, "accepted")
-	check("fix_pending", "finalization_pending")
+	assertAutoFinalizedAndPublished(t, f, evidence, 1, FindingCounts{Found: 1, Accepted: 1})
+	check("fix_pending")
 	coverageFix(t, f, evidence, "fix-progress", 1, 0, "")
-	check("finalization_pending")
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "finalize-progress", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
-	adjudicationReceipt(t, body, err, evidence, "finalized", 3)
 	check()
+
+	t.Run("legacy-finalization-pending", func(t *testing.T) {
+		f, prior, evidence, _ := coverageFixture(t, 1, false)
+		adjudicationDecide(t, f, evidence, "legacy-accept-progress", 0, 0, "accepted")
+		// A pre-upgrade source could complete after adjudication without freezing
+		// counts. Retain that state to keep proving the explicit finalization action.
+		admissionSQL(t, f, `UPDATE review_execution_attempts SET state='completed',revision=revision+1 WHERE id=?`, prior.ID)
+		admissionSQL(t, f, `UPDATE review_operations SET state='completed',revision=revision+1 WHERE id=?`, prior.OperationID)
+		admissionSQL(t, f, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, prior.ID)
+		tx, err := f.store.DB().BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = refreshComparisonProof(t.Context(), tx, attemptProject, prior.OperationID); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err = tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		held := f.start(t, attemptProject, f.enqueue(t, attemptProject, "held-legacy-progress", "cli", 2, 1))
+		if _, err := f.e.Advance(t.Context(), attemptProject, held.ID, held.Revision, "held", "review_evidence_pending", ""); err != nil {
+			t.Fatal(err)
+		}
+		checkLegacy := func(reasons ...string) {
+			t.Helper()
+			v, err := f.e.readPendingEvidence(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), held.OperationID)
+			if err != nil || v == nil || len(v.Items) != len(reasons) {
+				t.Fatal(v, err)
+			}
+			for i, reason := range reasons {
+				if v.Items[i].EvidenceID != evidence || v.Items[i].Reason != reason {
+					t.Fatal("incorrect legacy next action", v.Items)
+				}
+			}
+		}
+		checkLegacy("fix_pending", "finalization_pending")
+		coverageFix(t, f, evidence, "legacy-fix-progress", 1, 0, "")
+		checkLegacy("finalization_pending")
+		body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "legacy-finalize-progress", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+		adjudicationReceipt(t, body, err, evidence, "finalized", 3)
+		checkLegacy()
+	})
 }
 
 func TestPendingEvidenceRejectsDirtyOrCorruptSelectedRecords(t *testing.T) {

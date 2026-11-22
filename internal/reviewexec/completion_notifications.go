@@ -53,7 +53,7 @@ func completedReviewContext(provider, repositoryName string, number int64) (stri
 	return label, fmt.Sprintf("https://github.com/%s/pull/%d", repositoryName, number), true
 }
 
-// publishPartialFindingsNotice is terminal diagnostics, not review completion.
+// publishPartialFindingsNotice is triggered by a terminal CLI result.
 // The immutable capture, not changing adjudication decisions, binds count and deduplication.
 func (e *Engine) publishPartialFindingsNotice(ctx context.Context, tx *sql.Tx, operation Operation, provider, state string) (bool, error) {
 	if e.publishQueue == nil || (state != "failed" && state != "cancelled" && state != "rate_limited") {
@@ -71,7 +71,8 @@ func (e *Engine) publishPartialFindingsNotice(ctx context.Context, tx *sql.Tx, o
 	if !count.Valid || count.Int64 < 0 || count.Int64 > 100 {
 		return false, adjudicationStorageError()
 	}
-	if count.Int64 == 0 {
+	partial := usablePartialOperation(operation)
+	if count.Int64 == 0 && !partial {
 		return false, nil
 	}
 	label, link, ok := completedReviewContext(provider, facts.Repository, operation.PullNumber)
@@ -83,6 +84,13 @@ func (e *Engine) publishPartialFindingsNotice(ctx context.Context, tx *sql.Tx, o
 		channel = "Hosted"
 	}
 	body := fmt.Sprintf("%s %s partial findings need adjudication for PR #%d.\nRetained findings: %d. Review coverage is incomplete; this is not a completed review round.\nAdjudicate the retained findings and fix accepted issues before normal guarded recovery.\nGitHub: %s\nEvidence: %s\nOperation: %s", label, channel, operation.PullNumber, count.Int64, link, facts.ID, operation.ID)
+	if partial {
+		if count.Int64 == 0 {
+			body = fmt.Sprintf("%s %s returned a partial review with no findings for PR #%d.\nGitHub: %s\nEvidence: %s\nOperation: %s", label, channel, operation.PullNumber, link, facts.ID, operation.ID)
+		} else {
+			body = fmt.Sprintf("%s %s partial review needs adjudication for PR #%d.\nRetained findings: %d. The settled result counts as one review round, with partial coverage.\nGitHub: %s\nEvidence: %s\nOperation: %s", label, channel, operation.PullNumber, count.Int64, link, facts.ID, operation.ID)
+		}
+	}
 	scope := core.Scope{ProjectID: operation.ProjectID, PrincipalID: operation.ActorID, WorkerID: operation.WorkerID}
 	err = reviews.PublishFollowerNotice(ctx, tx, scope, operation.PullNumber, "review-partial-findings:"+facts.ID, body)
 	return err == nil, err

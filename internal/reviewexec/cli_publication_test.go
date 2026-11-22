@@ -161,9 +161,24 @@ func TestPublishEvidencePrepublicationFinalizationAndProofCorrection(t *testing.
 	adjudicationDecide(t, f, evidence.ID, "before-accept", 0, 0, "accepted")
 	adjudicationDecide(t, f, evidence.ID, "before-reject", 1, 1, "rejected")
 	adjudicationComplete(t, f, a)
+	frozen := adjudicationRead(t, f, evidence.ID)
+	if frozen.Revision != 3 || !frozen.Finalized || frozen.FrozenCounts == nil || *frozen.FrozenCounts != (FindingCounts{Found: 2, Accepted: 1}) {
+		t.Fatal("settling fully decided evidence did not freeze its source counts", frozen)
+	}
+	beforeFinalize := attemptState(t, f, a) + snapshotTable(t, f, "review_adjudication_changes")
 	scope := f.scope(t, attemptProject, f.writer, false)
-	body, err := f.e.FinalizeReviewEvidence(ctx, scope, "before-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	body, err := f.e.FinalizeReviewEvidence(ctx, scope, "before-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(3)})
 	adjudicationReceipt(t, body, err, evidence.ID, "finalized", 3)
+	if !reflect.DeepEqual(adjudicationRead(t, f, evidence.ID), frozen) ||
+		attemptState(t, f, a)+snapshotTable(t, f, "review_adjudication_changes") != beforeFinalize {
+		t.Fatal("current-revision explicit finalization changed frozen state or audit")
+	}
+	_, err = f.e.FinalizeReviewEvidence(ctx, scope, "stale-before-finalize", evidence.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	attemptCode(t, err, "review_conflict")
+	if !reflect.DeepEqual(adjudicationRead(t, f, evidence.ID), frozen) ||
+		attemptState(t, f, a)+snapshotTable(t, f, "review_adjudication_changes") != beforeFinalize {
+		t.Fatal("stale explicit finalization changed frozen state or audit")
+	}
 	body, err = f.e.RecordFindingFix(ctx, scope, "before-fix", evidence.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(3), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Original retained proof"})
 	adjudicationReceipt(t, body, err, evidence.ID, "fix_recorded", 4)
 	body, err = f.e.RecordFindingFix(ctx, scope, "before-fix-correction", evidence.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(4), Finding: 0, ExpectedSHA: adjudicationSHA(strings.Repeat("f", 40)), FixSHA: strings.Repeat("e", 40), ProofNote: "Corrected retained proof"})

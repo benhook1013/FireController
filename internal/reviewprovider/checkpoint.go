@@ -32,6 +32,7 @@ type CheckpointPayload struct {
 	AcceptedSeverity *CheckpointAcceptedSeverity `json:"accepted_severity,omitempty"`
 	Files            *int64                      `json:"files,omitempty"`
 	DurationSeconds  *int64                      `json:"duration_seconds,omitempty"`
+	Partial          bool                        `json:"partial,omitempty"`
 }
 
 // CheckpointAcceptedSeverity partitions the original accepted source findings.
@@ -84,7 +85,7 @@ func checkpointHex(value string, size int) bool {
 	return true
 }
 func validCheckpointPayload(p CheckpointPayload) bool {
-	if !p.AcceptedSeverity.Valid(p.Accepted) || !hostedTriggerID(p.PublicationID, "review_publication_") || !hostedTriggerID(p.EvidenceID, "review_evidence_") || p.RepositoryID <= 0 || !validPullNumber(p.PullNumber) || p.Channel != "cli" && p.Channel != "hosted" || !checkpointHex(p.HeadSHA, 40) || !checkpointHex(p.BaseSHA, 40) || !checkpointHex(p.ParentSHA, 40) || !checkpointHex(p.MergeBaseSHA, 40) || !checkpointHex(p.PatchSHA256, 64) || !checkpointHex(p.CaptureSHA256, 64) || len(p.BaseRef) > 256 || strings.TrimSpace(p.BaseRef) == "" || !utf8.ValidString(p.BaseRef) || p.ParentPullNumber < 0 || p.ParentPullNumber > 2147483647 || p.Found < 0 || p.Found > 100 || p.Accepted < 0 || p.Routed < 0 || p.Accepted > p.Found || p.Routed > p.Found-p.Accepted || p.Files != nil && *p.Files < 0 || p.DurationSeconds != nil && *p.DurationSeconds < 0 {
+	if !p.AcceptedSeverity.Valid(p.Accepted) || !hostedTriggerID(p.PublicationID, "review_publication_") || !hostedTriggerID(p.EvidenceID, "review_evidence_") || p.RepositoryID <= 0 || !validPullNumber(p.PullNumber) || p.Channel != "cli" && p.Channel != "hosted" || p.Partial && p.Channel != "cli" || !checkpointHex(p.HeadSHA, 40) || !checkpointHex(p.BaseSHA, 40) || !checkpointHex(p.ParentSHA, 40) || !checkpointHex(p.MergeBaseSHA, 40) || !checkpointHex(p.PatchSHA256, 64) || !checkpointHex(p.CaptureSHA256, 64) || len(p.BaseRef) > 256 || strings.TrimSpace(p.BaseRef) == "" || !utf8.ValidString(p.BaseRef) || p.ParentPullNumber < 0 || p.ParentPullNumber > 2147483647 || p.Found < 0 || p.Found > 100 || p.Accepted < 0 || p.Routed < 0 || p.Accepted > p.Found || p.Routed > p.Found-p.Accepted || p.Files != nil && *p.Files < 0 || p.DurationSeconds != nil && *p.DurationSeconds < 0 {
 		return false
 	}
 	for _, r := range p.BaseRef {
@@ -111,6 +112,9 @@ func RenderCheckpoint(payload CheckpointPayload) (CheckpointRender, error) {
 	label := "CLI"
 	if payload.Channel == "hosted" {
 		label = "Hosted"
+	}
+	if payload.Partial {
+		label += " (partial coverage)"
 	}
 	accepted := fmt.Sprintf("%d Accepted", payload.Accepted)
 	severity := payload.AcceptedSeverity

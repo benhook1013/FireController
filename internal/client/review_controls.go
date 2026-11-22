@@ -453,7 +453,9 @@ func (c *Client) reviewControl(ctx context.Context, key, id, suffix, state strin
 	if err := c.mutate(ctx, http.MethodPost, c.projectPath("reviews", "evidence", id, suffix), key, request, http.StatusOK, &result); err != nil {
 		return ReviewControlReceipt{}, err
 	}
-	if result.ID != id || result.State != state || result.Revision != expected+1 {
+	validRevision := result.Revision == expected+1 ||
+		suffix == "finalization" && expected > 0 && result.Revision == expected
+	if result.ID != id || result.State != state || !validRevision {
 		return ReviewControlReceipt{}, unknownMutation("invalid_response", "The service returned an invalid review receipt; its outcome is unknown.", http.StatusOK)
 	}
 	return result, nil

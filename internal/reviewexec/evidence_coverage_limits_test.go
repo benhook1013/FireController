@@ -111,15 +111,20 @@ func TestNativeCoverageLimitsSurvivePublicationDecisionsFinalizationAndFix(t *te
 	adjudicationDecide(t, f, receipt.ID, "coverage-accept", 0, 0, "accepted")
 	read()
 	adjudicationComplete(t, f, a)
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "coverage-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	state := adjudicationRead(t, f, receipt.ID)
+	if state.Revision != 2 || !state.Finalized || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
+		t.Fatal("settlement did not automatically finalize the early decision", state)
+	}
+	read()
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "coverage-finalize", receipt.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
 	adjudicationReceipt(t, body, err, receipt.ID, "finalized", 2)
 	read()
 	body, err = f.e.RecordFindingFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "coverage-fix", receipt.ID, FindingFixRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Retained fix proof"})
 	adjudicationReceipt(t, body, err, receipt.ID, "fix_recorded", 3)
 	read()
 	final := cliPublicationDetail(t, f, 2, receipt.ID)
-	state := adjudicationRead(t, f, receipt.ID)
-	if !final.Run.Finalized || final.Run.Accepted != 1 || final.Run.Fixed != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
+	state = adjudicationRead(t, f, receipt.ID)
+	if !final.Run.Finalized || final.Run.Accepted != 1 || final.Run.Fixed != 1 || state.Revision != 3 || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1, Accepted: 1}) {
 		t.Fatal("coverage metadata changed finalized accounting or effective fix proof", final.Run, state)
 	}
 	replay, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, input)

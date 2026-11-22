@@ -124,7 +124,7 @@ export function findingDisplayFingerprint(finding: ReviewFinding): string {
     route?.fix_sha ?? finding.fix_sha, route?.proof_note ?? finding.proof_note, route?.fixed_at ?? finding.resolved_at, finding.operational_proof]);
 }
 function partialCLIResult(run: ReviewRunSummary): boolean {
-  return run.source === 'native-executor' && run.channel === 'cli' && ['failed', 'cancelled', 'rate_limited'].includes(run.outcome) && !run.complete && run.found > 0;
+  return run.source === 'native-executor' && run.channel === 'cli' && ['failed', 'cancelled', 'rate_limited'].includes(run.outcome) && !run.complete && (run.found > 0 || run.finalized);
 }
 function visibleReviewCounts(run: ReviewRunSummary) {
   const settled = run.finalized || partialCLIResult(run) && run.retained_undecided === 0;
@@ -464,7 +464,7 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   const { accepted, routed } = visibleReviewCounts(run);
   const highlight = useSemanticHighlight(runDisplayFingerprint(run, head), highlights, JSON.stringify([run.source, run.source_run_id]));
   const warnings = [
-    partial ? 'Counts from retained findings. No completed round' : !run.complete && 'Incomplete record',
+    partial ? (run.finalized ? 'Finalized counts from the paths reviewed' : 'Counts from retained findings. No completed round') : !run.complete && 'Incomplete record',
     !partial && !run.attributable && 'Attribution unconfirmed',
     (!head || !run.head_sha) && 'Head association unknown',
   ].filter(Boolean).join('. ');
@@ -496,7 +496,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const returned = !activeAttempt && attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
     run.source_run_id === attempt.source_run_id && run.channel === channel && run.head_sha === attempt.head_sha &&
     (run.outcome === 'completed' || partialCLIResult(run))) : undefined;
-  const statusAttempt = returned && partialCLIResult(returned) && returned.retained_undecided === 0 && returned.current_pending_fixes === 0 && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '') && attempt?.state === 'failed'
+  const statusAttempt = returned && partialCLIResult(returned) && (attempt?.reason === 'coverage_partial' || returned.retained_undecided === 0 && returned.current_pending_fixes === 0 && ['coverage_incomplete', 'capture_retained'].includes(attempt?.reason ?? '')) && attempt?.state === 'failed'
     ? { ...attempt, reason: 'cli_partial_settled' }
     : attempt;
   const status = reviewAttemptStatus(statusAttempt, progress, positionHint, historical);

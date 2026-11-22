@@ -84,8 +84,8 @@ func TestUsageLifecycleSelectionRestartAdjudicationExternalAndMerge(t *testing.T
 	var old reviews.PullResponse
 	oldPullBytes := projectionRead(t, f, "/pulls/2", &old)
 	oldDetail := cliPublicationDetail(t, f, 2, captured.ID)
-	if oldDetail.Run.Finalized || oldDetail.Run.Fixed != 0 || oldDetail.Run.Accepted != 1 {
-		t.Fatal("pre-restart browser state fabricated completion", oldDetail.Run)
+	if !oldDetail.Run.Finalized || oldDetail.Run.Fixed != 0 || oldDetail.Run.Accepted != 1 {
+		t.Fatal("last decision did not publish automatic finalization while preserving the pending fix", oldDetail.Run)
 	}
 	// A completed provider attempt with unfinished correction must still block
 	// channel progression even though its one-round maximum is allocated.
@@ -109,9 +109,8 @@ func TestUsageLifecycleSelectionRestartAdjudicationExternalAndMerge(t *testing.T
 	if _, err = f.e.RecordFindingFix(t.Context(), f.scope(t, attemptProject, f.writer, false), "usage-fix", captured.ID, fix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "usage-finalize", captured.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)}); err != nil {
-		t.Fatal(err)
-	}
+	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "usage-finalize", captured.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(2)})
+	adjudicationReceipt(t, body, err, captured.ID, "finalized", 2)
 	native := cliPublicationDetail(t, f, 2, captured.ID)
 	if !native.Run.Finalized || native.Run.Accepted != 1 || native.Run.Fixed != 1 || native.Findings[0].Detail != input.Review.Findings[0].Detail {
 		t.Fatal("resumed control writes lost finalized correction or source", native)

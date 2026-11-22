@@ -19,10 +19,11 @@ import (
 // NativeAdjudication projects authoritative ledger state inside its caller's
 // serialized transaction. It cannot replace captured finding text or PR facts.
 type NativeAdjudication struct {
-	SourceRunID  string
-	Finalized    bool
-	FrozenCounts *NativeCounts
-	Findings     []NativeFindingUpdate
+	SourceRunID   string
+	Finalized     bool
+	UsablePartial bool
+	FrozenCounts  *NativeCounts
+	Findings      []NativeFindingUpdate
 }
 
 type NativeCounts struct{ Found, Accepted, Routed int64 }
@@ -179,7 +180,8 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 			return Receipt{}, false, nativeAdjudicationConflict()
 		}
 	} else if input.Finalized {
-		if !complete || outcome != "completed" || found != decisions.Found || *input.FrozenCounts != decisions {
+		partial := input.UsablePartial && source == "native-executor" && !complete && outcome == "failed"
+		if (!complete || outcome != "completed") && !partial || found != decisions.Found || *input.FrozenCounts != decisions {
 			return Receipt{}, false, nativeAdjudicationConflict()
 		}
 		accepted, routed = decisions.Accepted, decisions.Routed

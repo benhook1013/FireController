@@ -123,7 +123,11 @@ func checkpointSource(ctx context.Context, tx *sql.Tx, project, id, pubID string
 	if err != nil {
 		return ev, state, reviewprovider.CheckpointPayload{}, err
 	}
-	if a.State != "completed" || o.State != "completed" || !ev.Capture.Review.Complete || ev.Capture.Review.Outcome != "completed" || !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Found != int64(len(ev.Capture.Review.Findings)) {
+	eligible, err := finalizableEvidence(ctx, tx, ev, a)
+	if err != nil {
+		return ev, state, reviewprovider.CheckpointPayload{}, err
+	}
+	if !eligible || !usablePartialOperation(o) && o.State != "completed" || !state.Finalized || state.FrozenCounts == nil || state.FrozenCounts.Found != int64(len(ev.Capture.Review.Findings)) {
 		return ev, state, reviewprovider.CheckpointPayload{}, checkpointHold("source_not_finalized")
 	}
 	// Once accepted, an optional display fact stays exactly as retained. The
@@ -142,7 +146,7 @@ func checkpointSource(ctx context.Context, tx *sql.Tx, project, id, pubID string
 		deriveHostedFiles = original.Payload.Files != nil
 	}
 	counts := *state.FrozenCounts
-	p := reviewprovider.CheckpointPayload{PublicationID: pubID, EvidenceID: id, RepositoryID: ev.Anchor.RepositoryID, PullNumber: ev.Anchor.PullNumber, Channel: evidenceChannel(ev.Capture), HeadSHA: ev.Anchor.CandidateSHA, BaseSHA: ev.Anchor.BaseSHA, BaseRef: ev.Anchor.BaseRef, ParentSHA: ev.Anchor.ParentSHA, MergeBaseSHA: ev.Anchor.MergeBaseSHA, PatchSHA256: ev.Anchor.PatchSHA256, CaptureSHA256: ev.Capture.CaptureSHA256, ParentPullNumber: ev.Anchor.ParentPullNumber, Found: counts.Found, Accepted: counts.Accepted, Routed: counts.Routed, AcceptedSeverity: state.FrozenAcceptedSeverity}
+	p := reviewprovider.CheckpointPayload{PublicationID: pubID, EvidenceID: id, RepositoryID: ev.Anchor.RepositoryID, PullNumber: ev.Anchor.PullNumber, Channel: evidenceChannel(ev.Capture), HeadSHA: ev.Anchor.CandidateSHA, BaseSHA: ev.Anchor.BaseSHA, BaseRef: ev.Anchor.BaseRef, ParentSHA: ev.Anchor.ParentSHA, MergeBaseSHA: ev.Anchor.MergeBaseSHA, PatchSHA256: ev.Anchor.PatchSHA256, CaptureSHA256: ev.Capture.CaptureSHA256, ParentPullNumber: ev.Anchor.ParentPullNumber, Found: counts.Found, Accepted: counts.Accepted, Routed: counts.Routed, AcceptedSeverity: state.FrozenAcceptedSeverity, Partial: usablePartialOperation(o)}
 	if p.Channel == "cli" {
 		n := int64(len(ev.Capture.Review.ReviewedFiles))
 		p.Files = &n

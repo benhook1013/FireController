@@ -16,8 +16,11 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewexec"
 )
 
-// Grant before real acceptance; complete the actual journal/capture through
-// ordinary native APIs. Imported review rows cannot supply this completion.
+// Settle the retained zero-result capture before granting; then grant before
+// accepting the finding-bearing operation whose completion supplies round credit.
+// Imported review rows cannot supply this completion.
+// The undecided finding in the late branch preserves real pending evidence
+// until its last decision can earn credit under the current grant.
 func roundInventoryFixture(t *testing.T, late bool) *restoreFixture {
 	t.Helper()
 	f := newRestoreFixture(t)
@@ -26,27 +29,67 @@ func roundInventoryFixture(t *testing.T, late bool) *restoreFixture {
 		t.Fatal(err)
 	}
 	scope := routePolicyInventoryScope(t, f)
+	bundleNativeReferences(t, f)
+	var originalAttempt, originalEvidenceID string
+	var originalRevision int64
+	if err := f.store.DB().QueryRow(`SELECT a.id,a.revision,e.id FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE o.channel='cli'`).Scan(&originalAttempt, &originalRevision, &originalEvidenceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.Advance(t.Context(), f.project, originalAttempt, originalRevision, "completed", "zero-capture-settled-before-grant", ""); err != nil {
+		t.Fatal(err)
+	}
+	originalState, err := e.ReadReviewAdjudication(t.Context(), scope, originalEvidenceID)
+	if err != nil || !originalState.Finalized || originalState.Revision != 1 || originalState.FrozenCounts == nil || *originalState.FrozenCounts != (reviewexec.FindingCounts{}) {
+		t.Fatal("complete zero-finding capture did not finalize on settlement", originalState, err)
+	}
 	zero, min, max := int64(0), int64(0), int64(4)
 	if _, err = e.ConfigureRoundControl(t.Context(), scope, "round-inventory-grant", 4, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &zero, Action: "grant", Minimum: &min, Maximum: &max}); err != nil {
 		t.Fatal(err)
 	}
-	bundleNativeReferences(t, f)
-	var attempt, evidence string
-	var revision int64
-	if err = f.store.DB().QueryRow(`SELECT a.id,a.revision,e.id FROM review_execution_attempts a JOIN review_operations o ON o.id=a.operation_id JOIN review_execution_evidence e ON e.attempt_id=a.id WHERE o.channel='cli'`).Scan(&attempt, &revision, &evidence); err != nil {
+	raw, err := e.Enqueue(t.Context(), scope, "round-inventory-review", reviewexec.Request{ExpectedConfigurationRevision: 2, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("d", 40)})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.Advance(t.Context(), f.project, attempt, revision, "completed", "captured_native_result", ""); err != nil {
+	var receipt reviewexec.Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal("invalid native operation receipt", err)
+	}
+	a, err := e.StartAttempt(t.Context(), f.project, receipt.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	finalize := func() {
-		t.Helper()
-		if _, err = e.FinalizeReviewEvidence(t.Context(), scope, "round-inventory-finalize", evidence, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+	at := time.Now().UTC()
+	anchor := reviewexec.Anchor{RepositoryID: 991, Repository: "synthetic/restore", PullNumber: 4, BaseRef: "main", CandidateSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("b", 40), ParentSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("b", 40), PatchSHA256: strings.Repeat("e", 64), ObservedAt: at.Format(time.RFC3339Nano)}
+	a, err = e.Admit(t.Context(), f.project, a.ID, a.Revision, anchor, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	captures, err := reviewruntime.NewCaptureStore(filepath.Join(f.dir, "review-captures"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := captures.Save(t.Context(), a.ID, reviewruntime.CaptureRecord{Capture: reviewprocess.Capture{Stdout: []byte("synthetic round-credit finding"), Started: true}, StartedAt: at, FinishedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := e.RecordReviewEvidence(t.Context(), f.project, a.ID, reviewexec.ReviewEvidenceInput{CaptureID: ref.ID, CaptureSHA256: ref.SHA256, CaptureBytes: ref.Bytes, StartedAt: at.Format(time.RFC3339Nano), FinishedAt: at.Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, ReportedFindings: 1, Findings: []reviewprovider.ParsedFinding{{Title: "Synthetic round-credit finding", Detail: "Retained source finding for adjudication", Severity: "low"}}, ReviewedFiles: []string{"example.go"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !late {
+		if _, err = e.DecideReviewFinding(t.Context(), scope, "round-inventory-reject", evidence.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "rejected", Reason: "Synthetic finding is not actionable"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if !late {
-		finalize()
+	a, err = e.Advance(t.Context(), f.project, a.ID, a.Revision, "completed", "captured_native_result", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if late {
+		pending, err := e.ReadReviewAdjudication(t.Context(), scope, evidence.ID)
+		if err != nil || pending.Finalized || pending.Revision != 0 || pending.FrozenCounts != nil || len(pending.Findings) != 1 || pending.Findings[0].Disposition != "unadjudicated" {
+			t.Fatal("late completion fixture lost its genuinely undecided finding", pending, err)
+		}
 	}
 	one := int64(1)
 	if _, err = e.ConfigureRoundControl(t.Context(), scope, "round-inventory-close", 4, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &one, Action: "close"}); err != nil {
@@ -57,7 +100,17 @@ func roundInventoryFixture(t *testing.T, late bool) *restoreFixture {
 		if _, err = e.ConfigureRoundControl(t.Context(), scope, "round-inventory-reopen", 4, "cli", reviewexec.RoundControlRequest{ExpectedRevision: &two, Action: "grant", Minimum: &min, Maximum: &max}); err != nil {
 			t.Fatal(err)
 		}
-		finalize()
+		if _, err = e.DecideReviewFinding(t.Context(), scope, "round-inventory-late-reject", evidence.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "rejected", Reason: "Synthetic finding is not actionable"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := e.ReadReviewAdjudication(t.Context(), scope, evidence.ID)
+	wantRevision := int64(2)
+	if late {
+		wantRevision = 1
+	}
+	if err != nil || !state.Finalized || state.Revision != wantRevision || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{Found: 1}) {
+		t.Fatal("native round capture did not preserve settlement/decision finalization", state, err)
 	}
 	c, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")
 	if err != nil {
@@ -278,9 +331,9 @@ func TestRoundInventoryAcceptedPendingCaptureCountsWithoutReadyCredit(t *testing
 	if _, err = e.DecideReviewFinding(t.Context(), scope, "pending-round-accept", ev.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "accepted", Reason: "Verified correction still pending"}); err != nil {
 		t.Fatal(err)
 	}
-	one := int64(1)
-	if _, err = e.FinalizeReviewEvidence(t.Context(), scope, "pending-round-finalize", ev.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &one}); err != nil {
-		t.Fatal(err)
+	state, err := e.ReadReviewAdjudication(t.Context(), scope, ev.ID)
+	if err != nil || !state.Finalized || state.Revision != 1 || state.FrozenCounts == nil || *state.FrozenCounts != (reviewexec.FindingCounts{Found: 1, Accepted: 1}) {
+		t.Fatal("last accepted decision did not finalize the settled native capture", state, err)
 	}
 	c, err := e.ReadRoundControl(t.Context(), scope, 4, "cli")
 	if err != nil || c.Epoch != 1 || c.Used != 2 || c.Dry != 0 {

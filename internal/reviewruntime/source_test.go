@@ -21,7 +21,8 @@ func sourceConfiguration(mode string, queue ...int64) reviewexec.Configuration {
 }
 
 // Seed trusted hosted ledger evidence through the actual journal methods.
-// It is a synthetic scope-proven zero-finding capture, not a provider claim.
+// Its exact synthetic source identity keeps pending cases nonempty without
+// making a provider claim.
 func seedSourceHostedEvidence(t *testing.T, f *cliDriverFixture, finalize bool) string {
 	t.Helper()
 	ctx := t.Context()
@@ -56,18 +57,43 @@ func seedSourceHostedEvidence(t *testing.T, f *cliDriverFixture, finalize bool) 
 		t.Fatal(err)
 	}
 	digest := strings.Repeat("d", 64)
-	capture := reviewexec.ReviewEvidenceInput{CaptureID: "review_capture_" + digest[:32], CaptureSHA256: digest, CaptureBytes: 1000, StartedAt: time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano), FinishedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, Findings: []reviewprovider.ParsedFinding{}}, Hosted: &reviewexec.HostedEvidenceMetadata{PublicationID: "11111111-1111-1111-1111-111111111111", ProviderAttemptID: "22222222-2222-2222-2222-222222222222", TriggerCommentID: 101, ReviewIDs: []int64{201}, ObservedBaseSHA: f.baseSHA, Sources: []reviewexec.HostedFindingSource{}}}
+	fingerprint := strings.Repeat("1", 24)
+	finding := reviewprovider.ParsedFinding{Title: "Synthetic hosted source finding", Detail: "Exact retained source evidence.", Severity: "high", Path: "reviewed.txt", StartLine: 1, EndLine: 1}
+	source := reviewexec.HostedFindingSource{SourceKey: "hosted-comment:301:" + fingerprint, Fingerprint: fingerprint, Kind: "inline", Side: "RIGHT", ReviewID: 201, CommentID: 301}
+	capture := reviewexec.ReviewEvidenceInput{CaptureID: "review_capture_" + digest[:32], CaptureSHA256: digest, CaptureBytes: 1000, StartedAt: time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano), FinishedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpectedAnchor: anchor, Review: reviewprovider.ParsedReview{Outcome: "completed", Complete: true, Findings: []reviewprovider.ParsedFinding{finding}, ReportedFindings: 1}, Hosted: &reviewexec.HostedEvidenceMetadata{PublicationID: "11111111-1111-1111-1111-111111111111", ProviderAttemptID: "22222222-2222-2222-2222-222222222222", TriggerCommentID: 101, ReviewIDs: []int64{201}, ObservedBaseSHA: f.baseSHA, Sources: []reviewexec.HostedFindingSource{source}}}
 	retained, err := f.engine.RecordReviewEvidence(ctx, f.project, a.ID, capture)
 	if err != nil {
 		t.Fatal(err)
+	}
+	stored, err := f.engine.ReadReviewEvidence(ctx, f.scope(t, f.writer, false), retained.ID)
+	if err != nil || stored.Capture.Review.Findings == nil || len(stored.Capture.Review.Findings) != 1 || stored.Capture.Review.Findings[0] != finding || stored.Capture.Hosted == nil || stored.Capture.Hosted.Sources == nil || len(stored.Capture.Hosted.Sources) != 1 || stored.Capture.Hosted.Sources[0] != source {
+		t.Fatal("synthetic hosted finding lost its exact retained source identity", stored, err)
 	}
 	if _, err = f.engine.Advance(ctx, f.project, a.ID, a.Revision, "completed", "source_fixture_capture", ""); err != nil {
 		t.Fatal(err)
 	}
 	if finalize {
 		zero := int64(0)
-		if _, err = f.engine.FinalizeReviewEvidence(ctx, f.scope(t, f.writer, false), "source-hosted-finalize", retained.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+		if _, err = f.engine.DecideReviewFinding(ctx, f.scope(t, f.writer, false), "source-hosted-decision", retained.ID, reviewexec.FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "rejected", Reason: "Synthetic fixture finding is deliberately rejected"}); err != nil {
 			t.Fatal(err)
+		}
+		adjudication, err := f.engine.ReadReviewAdjudication(ctx, f.scope(t, f.writer, false), retained.ID)
+		if err != nil || adjudication.Revision != 1 || !adjudication.Finalized || adjudication.FrozenCounts == nil || adjudication.FrozenCounts.Found != 1 || adjudication.FrozenCounts.Accepted != 0 {
+			t.Fatal("settled source did not auto-finalize at revision one", adjudication, err)
+		}
+		if _, err = f.engine.FinalizeReviewEvidence(ctx, f.scope(t, f.writer, false), "source-hosted-stale-finalize", retained.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+			t.Fatal("stale zero revision finalized the source")
+		} else {
+			assertCoreErrorCode(t, err, "review_conflict")
+		}
+		revision := int64(1)
+		finalized, err := f.engine.FinalizeReviewEvidence(ctx, f.scope(t, f.writer, false), "source-hosted-finalize", retained.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision})
+		if err != nil {
+			t.Fatal(err)
+		}
+		replay, err := f.engine.FinalizeReviewEvidence(ctx, f.scope(t, f.writer, false), "source-hosted-finalize", retained.ID, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision})
+		if err != nil || string(finalized) != string(replay) {
+			t.Fatal("exact finalization replay changed receipt", string(finalized), string(replay), err)
 		}
 	}
 	return retained.ID
@@ -130,8 +156,26 @@ func TestResolveReviewSourceHostedPendingAndCoverageAreSelectedChannelOnly(t *te
 		t.Fatal("source gate wrote while reading")
 	}
 	zero := int64(0)
-	if _, err = f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "close-hosted-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err != nil {
+	if _, err = f.engine.DecideReviewFinding(t.Context(), f.scope(t, f.writer, false), "close-hosted-source-decision", id, reviewexec.FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "rejected", Reason: "Synthetic fixture finding is deliberately rejected"}); err != nil {
 		t.Fatal(err)
+	}
+	adjudication, err := f.engine.ReadReviewAdjudication(t.Context(), f.scope(t, f.writer, false), id)
+	if err != nil || adjudication.Revision != 1 || !adjudication.Finalized || adjudication.FrozenCounts == nil || adjudication.FrozenCounts.Found != 1 || adjudication.FrozenCounts.Accepted != 0 {
+		t.Fatal("deciding the final finding did not finalize at revision one", adjudication, err)
+	}
+	if _, err = f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "close-hosted-source-stale", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+		t.Fatal("stale zero revision finalized hosted source")
+	} else {
+		assertCoreErrorCode(t, err, "review_conflict")
+	}
+	revision := int64(1)
+	finalized, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "close-hosted-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := f.engine.FinalizeReviewEvidence(t.Context(), f.scope(t, f.writer, false), "close-hosted-source", id, reviewexec.FinalizeReviewRequest{ExpectedRevision: &revision})
+	if err != nil || string(finalized) != string(replay) {
+		t.Fatal("exact hosted finalization replay changed receipt", string(finalized), string(replay), err)
 	}
 	before = sourceState(t, f)
 	_, _, err = resolveReviewSource(t.Context(), f.engine, newSourceReads(f.reader), 901, config, sourceOperation(f, 2, "hosted"))

@@ -137,7 +137,8 @@ func TestEvidenceHTTPDecisionFixFinalizationReplayAndFrozenCounts(t *testing.T) 
 	}
 	evidenceHTTPRequire(t, f.request("POST", path+"/decisions", f.writer, "accept", strings.Replace(decision, "Explicit acceptance", "Different request", 1)), 409, "idempotency_conflict")
 	evidenceHTTPRequire(t, f.request("POST", path+"/decisions", f.writer, "stale-revision", decision), 409, "review_conflict")
-	evidenceHTTPReceipt(t, f.request("POST", path+"/decisions", f.writer, "reject", `{"expected_revision":1,"finding":1,"disposition":"rejected","reason":"Explicit rejection"}`), id, "adjudicated", 2)
+	secondDecision := `{"expected_revision":1,"finding":1,"disposition":"rejected","reason":"Explicit rejection"}`
+	secondDecisionReceipt := evidenceHTTPReceipt(t, f.request("POST", path+"/decisions", f.writer, "reject", secondDecision), id, "adjudicated", 2)
 	fix := `{"expected_revision":2,"finding":0,"expected_sha":"","fix_sha":"` + strings.Repeat("a", 40) + `","proof_note":"Focused proof"}`
 	fixReceipt := evidenceHTTPReceipt(t, f.request("POST", path+"/fixes", f.writer, "fix", fix), id, "fix_recorded", 3)
 	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "pending-finalization", `{"expected_revision":3}`), 409, "review_conflict")
@@ -145,27 +146,83 @@ func TestEvidenceHTTPDecisionFixFinalizationReplayAndFrozenCounts(t *testing.T) 
 		t.Fatal("HTTP adjudication settled attempt")
 	}
 	adjudicationComplete(t, f, a)
-	finalRequest := `{"expected_revision":3}`
-	finalReceipt := evidenceHTTPReceipt(t, f.request("POST", path+"/finalization", f.writer, "finalize", finalRequest), id, "finalized", 4)
-	evidenceHTTPReceipt(t, f.request("POST", path+"/decisions", f.writer, "correction", `{"expected_revision":4,"finding":1,"disposition":"accepted","reason":"Audited later correction"}`), id, "adjudicated", 5)
 	state := evidenceHTTPRequire(t, f.request("GET", path+"/adjudication", f.reader, "", ""), 200, "")
-	if state["finalized"] != true || state["revision"] != float64(5) || !reflect.DeepEqual(state["frozen_counts"], map[string]any{"found": float64(2), "accepted": float64(1), "routed": float64(0)}) {
-		t.Fatal("HTTP correction changed frozen source counts", state)
+	if state["finalized"] != true || state["revision"] != float64(4) || !reflect.DeepEqual(state["frozen_counts"], map[string]any{"found": float64(2), "accepted": float64(1), "routed": float64(0)}) {
+		t.Fatal("settlement did not automatically freeze the early decisions", state)
 	}
-	before = adjudicationState(t, f, a)
+	if publications := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id); publications != 1 {
+		t.Fatal("settlement did not queue exactly one checkpoint", publications)
+	}
+	correction := `{"expected_revision":4,"finding":1,"disposition":"accepted","reason":"Audited later correction"}`
+	evidenceHTTPReceipt(t, f.request("POST", path+"/decisions", f.writer, "correction", correction), id, "adjudicated", 5)
+	corrected := evidenceHTTPRequire(t, f.request("GET", path+"/adjudication", f.reader, "", ""), 200, "")
+	if corrected["finalized"] != true || corrected["revision"] != float64(5) || !reflect.DeepEqual(corrected["frozen_counts"], map[string]any{"found": float64(2), "accepted": float64(1), "routed": float64(0)}) {
+		t.Fatal("HTTP correction changed frozen source counts", corrected)
+	}
+	beforeProofGuard := adjudicationState(t, f, a)
+	evidenceHTTPRequire(t, f.request("POST", path+"/decisions", f.writer, "withdraw-proof", `{"expected_revision":5,"finding":0,"disposition":"rejected","reason":"Must not erase proof"}`), 409, "review_conflict")
+	if adjudicationState(t, f, a) != beforeProofGuard {
+		t.Fatal("HTTP rejection erased accepted finding fix proof")
+	}
+	stateBeforeConfirmation := adjudicationRead(t, f, id)
+	settledJournal := attemptState(t, f, a)
+	changesBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id)
+	publicationsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id)
+	receiptsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	eventsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	finalRequest := `{"expected_revision":5}`
+	finalReceipt := evidenceHTTPReceipt(t, f.request("POST", path+"/finalization", f.writer, "finalize-current", finalRequest), id, "finalized", 5)
+	assertNoopFinalization := func(expectedReceipts int) {
+		t.Helper()
+		if !reflect.DeepEqual(adjudicationRead(t, f, id), stateBeforeConfirmation) || attemptState(t, f, a) != settledJournal ||
+			attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, id) != changesBeforeConfirmation ||
+			attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id) != publicationsBeforeConfirmation ||
+			attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != expectedReceipts ||
+			attemptCount(t, f.store, `SELECT count(*) FROM events`) != eventsBeforeConfirmation ||
+			f.request("GET", path, f.reader, "", "").Body.String() != original {
+			t.Fatal("current-revision finalization changed domain state")
+		}
+	}
+	assertNoopFinalization(receiptsBeforeConfirmation + 1)
 	for _, x := range []struct {
 		suffix, key, body string
 		receipt           []byte
-	}{{"/decisions", "accept", decision, first}, {"/fixes", "fix", fix, fixReceipt}, {"/finalization", "finalize", finalRequest, finalReceipt}} {
+	}{{"/decisions", "accept", decision, first}, {"/decisions", "reject", secondDecision, secondDecisionReceipt}, {"/fixes", "fix", fix, fixReceipt}, {"/finalization", "finalize-current", finalRequest, finalReceipt}} {
 		w := f.request("POST", path+x.suffix, f.writer, x.key, x.body)
 		if w.Code != 200 || !bytes.Equal(w.Body.Bytes(), x.receipt) {
-			t.Fatal("historical HTTP replay lost compact receipt")
+			t.Fatal("exact HTTP replay lost its compact receipt")
 		}
 	}
-	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "already-finalized", `{"expected_revision":5}`), 409, "review_conflict")
-	evidenceHTTPRequire(t, f.request("POST", path+"/decisions", f.writer, "withdraw-proof", `{"expected_revision":5,"finding":0,"disposition":"rejected","reason":"Must not erase proof"}`), 409, "review_conflict")
-	if adjudicationState(t, f, a) != before || f.request("GET", path, f.reader, "", "").Body.String() != original {
-		t.Fatal("replay/refusal changed immutable capture or audit")
+	assertNoopFinalization(receiptsBeforeConfirmation + 1)
+	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "stale-finalization", `{"expected_revision":4}`), 409, "review_conflict")
+	assertNoopFinalization(receiptsBeforeConfirmation + 1)
+	if f.request("GET", path, f.reader, "", "").Body.String() != original {
+		t.Fatal("replay/refusal changed immutable capture")
+	}
+
+	// A decision made after settlement is the final source action and shares its
+	// revision with automatic finalization.
+	g, settledAttempt, settledID, settledPath := evidenceHTTPFixture(t, 2)
+	adjudicationComplete(t, g, settledAttempt)
+	firstSettledDecision := `{"expected_revision":0,"finding":0,"disposition":"accepted","reason":"Explicit acceptance"}`
+	evidenceHTTPReceipt(t, g.request("POST", settledPath+"/decisions", g.writer, "settled-first", firstSettledDecision), settledID, "adjudicated", 1)
+	firstSettledState := evidenceHTTPRequire(t, g.request("GET", settledPath+"/adjudication", g.reader, "", ""), 200, "")
+	if firstSettledState["revision"] != float64(1) || firstSettledState["finalized"] != false || firstSettledState["frozen_counts"] != nil ||
+		attemptCount(t, g.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, settledID) != 0 {
+		t.Fatal("settled source finalized before its last finding decision", firstSettledState)
+	}
+	lastDecision := `{"expected_revision":1,"finding":1,"disposition":"rejected","reason":"Explicit final decision"}`
+	lastReceipt := evidenceHTTPReceipt(t, g.request("POST", settledPath+"/decisions", g.writer, "settled-last", lastDecision), settledID, "adjudicated", 2)
+	lastState := evidenceHTTPRequire(t, g.request("GET", settledPath+"/adjudication", g.reader, "", ""), 200, "")
+	if lastState["revision"] != float64(2) || lastState["finalized"] != true || !reflect.DeepEqual(lastState["frozen_counts"], map[string]any{"found": float64(2), "accepted": float64(1), "routed": float64(0)}) ||
+		attemptCount(t, g.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, settledID) != 2 ||
+		attemptCount(t, g.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, settledID) != 1 {
+		t.Fatal("last settled decision did not finalize in its single revision", lastState)
+	}
+	lastBeforeReplay := adjudicationState(t, g, settledAttempt)
+	lastReplay := g.request("POST", settledPath+"/decisions", g.writer, "settled-last", lastDecision)
+	if lastReplay.Code != 200 || !bytes.Equal(lastReplay.Body.Bytes(), lastReceipt) || adjudicationState(t, g, settledAttempt) != lastBeforeReplay {
+		t.Fatal("exact replay of the last decision changed automatic finalization")
 	}
 }
 
@@ -371,7 +428,13 @@ func TestEvidenceHTTPRejectsCorruptHostedSourceInventory(t *testing.T) {
 func TestEvidenceHTTPStoredNullFindingsAreArrayWithoutWrites(t *testing.T) {
 	f, a, id, path := evidenceHTTPFixture(t, 0)
 	adjudicationComplete(t, f, a)
-	evidenceHTTPRequire(t, f.request("POST", path+"/finalization", f.writer, "zero-finalize", `{"expected_revision":0}`), 200, "")
+	settled := evidenceHTTPRequire(t, f.request("GET", path+"/adjudication", f.reader, "", ""), 200, "")
+	if settled["revision"] != float64(1) || settled["finalized"] != true || !reflect.DeepEqual(settled["frozen_counts"], map[string]any{"found": float64(0), "accepted": float64(0), "routed": float64(0)}) {
+		t.Fatal("zero-finding settlement did not automatically freeze counts", settled)
+	}
+	if publications := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, id); publications != 1 {
+		t.Fatal("zero-finding settlement did not queue one checkpoint", publications)
+	}
 	if _, err := f.store.DB().Exec(`UPDATE review_adjudication_state SET body_json=json_set(body_json,'$.findings',NULL) WHERE evidence_id=?`, id); err != nil {
 		t.Fatal(err)
 	}

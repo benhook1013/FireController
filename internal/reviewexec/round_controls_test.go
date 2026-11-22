@@ -151,16 +151,14 @@ func roundCaptureWithProgress(t *testing.T, f *attemptFixture, n int, accepted b
 }
 func roundFinalize(t *testing.T, f *attemptFixture, a Attempt, evidence string, n int, accepted bool) {
 	t.Helper()
-	previous := int64(0)
 	if accepted {
-		_, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("round-decision-%d", n), evidence, FindingDecisionRequest{ExpectedRevision: &previous, Finding: 0, Disposition: "accepted", Reason: "Verified source correction"})
+		_, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("round-decision-%d", n), evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Verified source correction"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		previous = 1
 	}
-	if _, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), fmt.Sprintf("round-finalize-%d", n), evidence, FinalizeReviewRequest{ExpectedRevision: &previous}); err != nil {
-		t.Fatal(err)
+	if state := adjudicationRead(t, f, evidence); !state.Finalized {
+		t.Fatal("completed review did not freeze source counts", state)
 	}
 	roundCompleteHook(t, f, a.OperationID)
 }
@@ -477,8 +475,7 @@ func TestRoundControlsOriginalFrozenCountsSurviveDecisionCorrection(t *testing.T
 	if before.Used != 1 || before.Dry != 1 {
 		t.Fatal("original zero-accepted source did not count dry")
 	}
-	two := int64(2)
-	if _, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), "later-acceptance", id, FindingDecisionRequest{ExpectedRevision: &two, Finding: 0, Disposition: "accepted", Reason: "Later source correction"}); err != nil {
+	if _, err := f.e.DecideReviewFinding(t.Context(), f.scope(t, attemptProject, f.writer, false), "later-acceptance", id, FindingDecisionRequest{ExpectedRevision: &one, Finding: 0, Disposition: "accepted", Reason: "Later source correction"}); err != nil {
 		t.Fatal(err)
 	}
 	roundCompleteHook(t, f, a.OperationID)
@@ -493,14 +490,14 @@ func TestRoundControlsOriginalFrozenCountsSurviveDecisionCorrection(t *testing.T
 func TestRoundControlsClosePreservesPostedCompletion(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 2, "grant")
-	a, id := roundCapture(t, f, 0, false)
+	a, id := roundCapture(t, f, 0, true)
 	one := int64(1)
 	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-completed-source", 2, "cli", RoundControlRequest{ExpectedRevision: &one, Action: "close"}); err != nil {
 		t.Fatal(err)
 	}
-	roundFinalize(t, f, a, id, 0, false)
+	roundFinalize(t, f, a, id, 0, true)
 	c := roundRead(t, f, 2, "cli")
-	if !c.Closed || c.Revision != 2 || c.Epoch != 1 || c.Used != 1 || c.Dry != 1 {
+	if !c.Closed || c.Revision != 2 || c.Epoch != 1 || c.Used != 1 || c.Dry != 0 {
 		t.Fatal("close discarded original grant's finalized completion")
 	}
 }
@@ -508,14 +505,15 @@ func TestRoundControlsClosePreservesPostedCompletion(t *testing.T) {
 func TestRoundControlsCompletionFailureRollsBackNativeFinalization(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 2, "grant")
-	a, id := roundCapture(t, f, 0, false)
+	a, id := roundCapture(t, f, 0, true)
 	if _, err := f.store.DB().Exec(`CREATE TRIGGER round_completion_failure BEFORE INSERT ON review_round_completions BEGIN SELECT RAISE(ABORT,'fixture failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 	before, authority := roundTables(t, f), adjudicationState(t, f, a)
 	zero := int64(0)
 	scope := f.scope(t, attemptProject, f.writer, false)
-	if _, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "retry-finalization", id, FinalizeReviewRequest{ExpectedRevision: &zero}); err == nil {
+	request := FindingDecisionRequest{ExpectedRevision: &zero, Finding: 0, Disposition: "rejected", Reason: "Source finding was disproved"}
+	if _, err := f.e.DecideReviewFinding(t.Context(), scope, "retry-finalization", id, request); err == nil {
 		t.Fatal("completion storage failure did not fail native finalization")
 	}
 	if roundTables(t, f) != before || adjudicationState(t, f, a) != authority {
@@ -527,7 +525,7 @@ func TestRoundControlsCompletionFailureRollsBackNativeFinalization(t *testing.T)
 	if _, err := f.store.DB().Exec(`DROP TRIGGER round_completion_failure`); err != nil {
 		t.Fatal(err)
 	}
-	first, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "retry-finalization", id, FinalizeReviewRequest{ExpectedRevision: &zero})
+	first, err := f.e.DecideReviewFinding(t.Context(), scope, "retry-finalization", id, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +533,7 @@ func TestRoundControlsCompletionFailureRollsBackNativeFinalization(t *testing.T)
 		t.Fatal("retried finalization did not count exactly one round")
 	}
 	after := roundTables(t, f)
-	replay, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "retry-finalization", id, FinalizeReviewRequest{ExpectedRevision: &zero})
+	replay, err := f.e.DecideReviewFinding(t.Context(), scope, "retry-finalization", id, request)
 	if err != nil || string(first) != string(replay) || after != roundTables(t, f) {
 		t.Fatal("recovered native finalization duplicated completion")
 	}

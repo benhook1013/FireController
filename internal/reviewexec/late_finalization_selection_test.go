@@ -16,7 +16,7 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 	f := attemptProjectionFixture(t, true)
 	roundGrant(t, f, 2, "cli", 0, 1, 1, "audit-exact-cli")
 	roundGrant(t, f, 2, "hosted", 0, 1, 1, "audit-exact-hosted")
-	a, evidence := roundCapture(t, f, 710, false)
+	a, evidence := roundCapture(t, f, 710, true)
 	revision := int64(1)
 	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "audit-close-pending-cli", 2, "cli", RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,11 @@ func TestLateFinalizationSelectionRemainsChannelLocalAcrossHeadMove(t *testing.T
 	if progress[0].Used != 0 || progress[0].Pending != 0 || progress[1].Used != 0 || progress[1].Pending != 1 {
 		t.Fatal("archive/pending evidence supplied native completion credit", progress)
 	}
-	roundFinalize(t, f, a, evidence, 710, false)
+	adjudicationDecide(t, f, evidence, "late-reject", 0, 0, "rejected")
+	if state := adjudicationRead(t, f, evidence); state.Revision != 1 || !state.Finalized || state.FrozenCounts == nil || *state.FrozenCounts != (FindingCounts{Found: 1}) {
+		t.Fatal("late last decision did not finalize the retained capture at the same revision", state)
+	}
+	roundCompleteHook(t, f, a.OperationID)
 	if got := roundRead(t, f, 2, "cli"); !got.Closed || got.Used != 1 {
 		t.Fatal("late original-grant finalization not credited under closure", got)
 	}

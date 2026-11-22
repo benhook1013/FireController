@@ -62,17 +62,30 @@ func TestOperationAttentionRetainsCompletedWorkThroughFinalizationAndFix(t *test
 		}
 	}
 	scope := f.scope(t, attemptProject, f.writer, false)
-	if _, err = f.e.DecideReviewFinding(t.Context(), scope, "attention-decide", evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Verified actual defect"}); err != nil {
-		t.Fatal(err)
+	decision, err := f.e.DecideReviewFinding(t.Context(), scope, "attention-decide", evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Verified actual defect"})
+	adjudicationReceipt(t, decision, err, evidence, "adjudicated", 1)
+	assertAutoFinalizedAndPublished(t, f, evidence, 1, FindingCounts{Found: 1, Accepted: 1})
+	finalizedBeforeConfirmation := encoded(adjudicationRead(t, f, evidence))
+	changesBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence)
+	publicationsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidence)
+	receiptsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM receipts`)
+	eventsBeforeConfirmation := attemptCount(t, f.store, `SELECT count(*) FROM events`)
+	confirmed, err := f.e.FinalizeReviewEvidence(t.Context(), scope, "attention-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
+	adjudicationReceipt(t, confirmed, err, evidence, "finalized", 1)
+	if encoded(adjudicationRead(t, f, evidence)) != finalizedBeforeConfirmation ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_adjudication_changes WHERE evidence_id=?`, evidence) != changesBeforeConfirmation ||
+		attemptCount(t, f.store, `SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidence) != publicationsBeforeConfirmation ||
+		attemptCount(t, f.store, `SELECT count(*) FROM receipts`) != receiptsBeforeConfirmation+1 ||
+		attemptCount(t, f.store, `SELECT count(*) FROM events`) != eventsBeforeConfirmation {
+		t.Fatal("current-revision confirmation changed automatic finalization")
 	}
-	if _, err = f.e.FinalizeReviewEvidence(t.Context(), scope, "attention-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)}); err != nil {
-		t.Fatal(err)
-	}
+	_, err = f.e.FinalizeReviewEvidence(t.Context(), scope, "attention-stale-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)})
+	attemptCode(t, err, "review_conflict")
 	next = listOperationPage(t, f, "?status=attention&channel=cli&pull_number=2&limit=1"+cursor)
 	if len(next.Items) != 1 || next.Items[0].ID != a.OperationID {
 		t.Fatal("finalization hid accepted unfinished fix", next)
 	}
-	if _, err = f.e.RecordFindingFix(t.Context(), scope, "attention-fix", evidence, FindingFixRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Focused proof passed"}); err != nil {
+	if _, err = f.e.RecordFindingFix(t.Context(), scope, "attention-fix", evidence, FindingFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Focused proof passed"}); err != nil {
 		t.Fatal(err)
 	}
 	if next = listOperationPage(t, f, "?status=attention&channel=cli&pull_number=2&limit=1"+cursor); len(next.Items) != 0 || next.HasMore {
@@ -90,28 +103,26 @@ func TestOperationAttentionCleanResultsAndNativeSourceIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			scope := f.scope(t, attemptProject, f.writer, false)
-			revision := int64(0)
-			if count != 0 {
-				if _, err = f.e.DecideReviewFinding(t.Context(), scope, "attention-reject", evidence, FindingDecisionRequest{ExpectedRevision: &revision, Finding: 0, Disposition: "rejected", Reason: "Verified false positive"}); err != nil {
-					t.Fatal(err)
+			if count == 0 {
+				assertAutoFinalizedAndPublished(t, f, evidence, 1, FindingCounts{})
+			} else {
+				assertAutoFinalizationAbsent(t, f, evidence, 0)
+				if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 1 || page.Items[0].ID != a.OperationID {
+					t.Fatal("unadjudicated completed result hidden", page)
 				}
-				revision++
-			}
-			if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 1 || page.Items[0].ID != a.OperationID {
-				t.Fatal("unfinalized clean result hidden", page)
-			}
-			// A foreign project or wrong original attempt cannot supply attention credit
-			// to this operation. This corruption exists only in the disposable fixture.
-			admissionSQL(t, f, `UPDATE review_execution_evidence SET project_id=? WHERE id=?`, otherAttemptProject, evidence)
-			if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 0 {
-				t.Fatal("foreign evidence supplied operation attention", page)
-			}
-			admissionSQL(t, f, `UPDATE review_execution_evidence SET project_id=? WHERE id=?`, attemptProject, evidence)
-			if _, err = f.e.FinalizeReviewEvidence(t.Context(), scope, "attention-finalize-clean", evidence, FinalizeReviewRequest{ExpectedRevision: &revision}); err != nil {
-				t.Fatal(err)
+				// A foreign project or wrong original attempt cannot supply attention credit
+				// to this operation. This corruption exists only in the disposable fixture.
+				admissionSQL(t, f, `UPDATE review_execution_evidence SET project_id=? WHERE id=?`, otherAttemptProject, evidence)
+				if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 0 {
+					t.Fatal("foreign evidence supplied operation attention", page)
+				}
+				admissionSQL(t, f, `UPDATE review_execution_evidence SET project_id=? WHERE id=?`, attemptProject, evidence)
+				decision, err := f.e.DecideReviewFinding(t.Context(), scope, "attention-reject", evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "rejected", Reason: "Verified false positive"})
+				adjudicationReceipt(t, decision, err, evidence, "adjudicated", 1)
+				assertAutoFinalizedAndPublished(t, f, evidence, 1, FindingCounts{Found: 1})
 			}
 			if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 0 {
-				t.Fatal("finalized clean result stayed in attention", page)
+				t.Fatal("automatically finalized clean result stayed in attention", page)
 			}
 		})
 	}
@@ -125,13 +136,10 @@ func TestOperationAttentionMalformedStopAndFixFactsCannotHideWork(t *testing.T) 
 		t.Fatal(err)
 	}
 	scope := f.scope(t, attemptProject, f.writer, false)
-	if _, err = f.e.DecideReviewFinding(t.Context(), scope, "attention-corrupt-decide", evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Verified defect"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.e.FinalizeReviewEvidence(t.Context(), scope, "attention-corrupt-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.e.RecordFindingFix(t.Context(), scope, "attention-corrupt-fix", evidence, FindingFixRequest{ExpectedRevision: adjudicationRevision(2), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Valid retained fix"}); err != nil {
+	decision, err := f.e.DecideReviewFinding(t.Context(), scope, "attention-corrupt-decide", evidence, FindingDecisionRequest{ExpectedRevision: adjudicationRevision(0), Finding: 0, Disposition: "accepted", Reason: "Verified defect"})
+	adjudicationReceipt(t, decision, err, evidence, "adjudicated", 1)
+	assertAutoFinalizedAndPublished(t, f, evidence, 1, FindingCounts{Found: 1, Accepted: 1})
+	if _, err = f.e.RecordFindingFix(t.Context(), scope, "attention-corrupt-fix", evidence, FindingFixRequest{ExpectedRevision: adjudicationRevision(1), Finding: 0, ExpectedSHA: adjudicationSHA(""), FixSHA: strings.Repeat("f", 40), ProofNote: "Valid retained fix"}); err != nil {
 		t.Fatal(err)
 	}
 	if page := listOperationPage(t, f, "?status=attention"); len(page.Items) != 0 {

@@ -43,7 +43,7 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 			if original, err := readRoundGrant(t.Context(), f.store.DB(), attemptProject, 2, "cli", 2, 1); err != nil || original.Tapered {
 				t.Fatal("reopened grant cannot bind a new request", original, err)
 			}
-			a, evidence := roundCapture(t, f, 3, tc.accepted)
+			a, evidence := roundCapture(t, f, 3, true)
 			if current := roundRead(t, f, 2, "cli"); current.Tapered || current.Used != 3 {
 				t.Fatal("unfinalized result received early taper credit", current)
 			}
@@ -74,7 +74,11 @@ func TestRoundGrantReopensTaperWithoutChangingBoundsOrEarnedStreak(t *testing.T)
 				t.Fatal("restart changed reopened progress", current)
 			}
 			adoptionValid(t, f)
-			roundFinalize(t, f, a, evidence, 3, tc.accepted)
+			if tc.accepted {
+				roundFinalize(t, f, a, evidence, 3, true)
+			} else {
+				roundRejectAndFinalize(t, f, a, evidence, 3)
+			}
 			current := roundRead(t, f, 2, "cli")
 			wantDry := int64(4)
 			if tc.accepted {
@@ -105,7 +109,7 @@ func TestRoundGrantReopeningIncludesAlreadyCapturedRound(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 8, "initial")
 	retainHistoricalRoundTaper(t, f, 2, "cli")
-	late, evidence := roundCapture(t, f, 0, false)
+	late, evidence := roundCapture(t, f, 0, true)
 	for i := 1; i <= 3; i++ {
 		a, id := roundCapture(t, f, i, false)
 		roundFinalize(t, f, a, id, i, false)
@@ -121,7 +125,7 @@ func TestRoundGrantReopeningIncludesAlreadyCapturedRound(t *testing.T) {
 	if pending := readProgress(t, f, 2).Items[0].Channels[1].Pending; pending != 1 {
 		t.Fatal("reopening lost original occupied round", pending)
 	}
-	roundFinalize(t, f, late, evidence, 0, false)
+	roundRejectAndFinalize(t, f, late, evidence, 0)
 	current = roundRead(t, f, 2, "cli")
 	if current.Used != 4 || current.Dry != 4 || !current.Tapered || !roundDone(current) {
 		t.Fatal("original occupied round did not satisfy reopening exactly once", current)

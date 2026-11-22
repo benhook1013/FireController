@@ -43,11 +43,26 @@ func TestReviewCheckpointCLIActualRequestReplayReadRecovery(t *testing.T) {
 	}))
 	defer srv.Close()
 	path := mutationProfiles(t, f, srv.URL, map[string][2]string{"builder": {project, worker}})
-	for _, step := range [][]string{{"decide", evidence, "--finding", "0", "--expect-revision", "0", "--disposition", "rejected", "--reason", "Original first rejected", "--key", "reject-first"}, {"decide", evidence, "--finding", "1", "--expect-revision", "1", "--disposition", "rejected", "--reason", "Original second rejected", "--key", "reject-second"}, {"finalize", evidence, "--expect-revision", "2", "--key", "freeze"}} {
-		mutationSuccess(t, path, "builder", append([]string{"reviews"}, step...)...)
+	firstDecision := mutationSuccess(t, path, "builder", "reviews", "decide", evidence, "--finding", "0", "--expect-revision", "0", "--disposition", "rejected", "--reason", "Original first rejected", "--key", "reject-first")
+	lastDecision := mutationSuccess(t, path, "builder", "reviews", "decide", evidence, "--finding", "1", "--expect-revision", "1", "--disposition", "rejected", "--reason", "Original second rejected", "--key", "reject-second")
+	if firstDecision["revision"] != float64(1) || lastDecision["revision"] != float64(2) {
+		t.Fatal("decision revisions changed", firstDecision, lastDecision)
+	}
+	stateCode, stateOut, stateDiagnostic := mutationInvoke(t, path, "builder", "reviews", "adjudication", evidence)
+	var adjudication client.ReviewAdjudication
+	if stateCode != 0 || stateDiagnostic != "" || json.Unmarshal([]byte(stateOut), &adjudication) != nil || adjudication.Revision != 2 || !adjudication.Finalized || adjudication.FrozenCounts == nil || adjudication.FrozenCounts.Found != 2 {
+		t.Fatal("last decision did not finalize the completed source", stateCode, stateOut, stateDiagnostic)
+	}
+	var queued int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_checkpoint_publications WHERE evidence_id=?`, evidence).Scan(&queued); err != nil || queued != 1 {
+		t.Fatal("last decision did not queue one checkpoint", queued, err)
+	}
+	finalized := mutationSuccess(t, path, "builder", "reviews", "finalize", evidence, "--expect-revision", "2", "--key", "confirm-finalized")
+	if finalized["state"] != "finalized" || finalized["revision"] != float64(2) {
+		t.Fatal("present-current-revision finalization changed source revision", finalized)
 	}
 	provider := f.resolverHit.Load()
-	args := []string{"reviews", "publish", evidence, "--expect-revision", "3", "--key", "publish-once", "--wait-seconds", "0"}
+	args := []string{"reviews", "publish", evidence, "--expect-revision", "2", "--key", "publish-once", "--wait-seconds", "0"}
 	drop.Store(true)
 	code, out, diagnostic := mutationInvoke(t, path, "builder", args...)
 	if code != cli.ExitService || out != "" || !strings.Contains(diagnostic, `"outcome_unknown":true`) || posts.Load() != 1 {
@@ -61,7 +76,7 @@ func TestReviewCheckpointCLIActualRequestReplayReadRecovery(t *testing.T) {
 	id := receipt["id"].(string)
 	code, out, diagnostic = mutationInvoke(t, path, "builder", "reviews", "publication", id)
 	var current client.ReviewCheckpointPublication
-	if code != 0 || diagnostic != "" || json.Unmarshal([]byte(out), &current) != nil || current.EvidenceID != evidence || current.State != "queued" || current.SourceRevision != 3 || current.Counts != (client.ReviewCounts{Found: 2}) {
+	if code != 0 || diagnostic != "" || json.Unmarshal([]byte(out), &current) != nil || current.EvidenceID != evidence || current.State != "queued" || current.SourceRevision != 2 || current.Counts != (client.ReviewCounts{Found: 2}) {
 		t.Fatal("local publication read changed source", code, out, diagnostic)
 	}
 	for _, retry := range []bool{false, true} {

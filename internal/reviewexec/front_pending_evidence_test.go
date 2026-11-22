@@ -65,11 +65,9 @@ func TestFrontPendingFixesStagesAndAdmissionUnchanged(t *testing.T) {
 	}
 	check("review_evidence_pending")
 	adjudicationDecide(t, f, id, "front-accept", 0, 0, "accepted")
-	check("review_evidence_pending")
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "front-finalize", id, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, id, "finalized", 2)
+	assertAutoFinalizedAndPublished(t, f, id, 1, FindingCounts{Found: 1, Accepted: 1})
 	check("review_fixes_pending")
-	coverageFix(t, f, id, "front-fix", 2, 0, "")
+	coverageFix(t, f, id, "front-fix", 1, 0, "")
 	if got := pendingFrontRead(t, f); got.Reason == "review_fixes_pending" || got.Reason == "review_evidence_pending" {
 		t.Fatal("fixed evidence still pending", got)
 	}
@@ -249,9 +247,8 @@ func TestRoundProgressKeepsFixStatusWhenFrontAdvances(t *testing.T) {
 	adjudicationComplete(t, f, attempt)
 	check(false)
 	adjudicationDecide(t, f, evidence, "progress-accept", 0, 0, "accepted")
-	body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "progress-finalize", evidence, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)})
-	adjudicationReceipt(t, body, err, evidence, "finalized", 2)
+	assertAutoFinalizedAndPublished(t, f, evidence, 1, FindingCounts{Found: 1, Accepted: 1})
 	check(true)
-	coverageFix(t, f, evidence, "progress-fix", 2, 0, "")
+	coverageFix(t, f, evidence, "progress-fix", 1, 0, "")
 	check(false)
 }

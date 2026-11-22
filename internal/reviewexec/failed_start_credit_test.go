@@ -68,19 +68,21 @@ func TestFailedEmptyCLIStartCannotConsumeCompletedRoundsOrTaper(t *testing.T) {
 	if progress.Channel != "cli" || progress.Pending != 0 || progress.Used != 2 || progress.Dry != 2 || progress.Tapered || progress.Minimum-progress.Used != 1 || progress.Maximum-progress.Used != 3 {
 		t.Fatal("public accounting treated failed 0/0/0 as a completed round", progress)
 	}
-	// A genuinely completed zero-finding result remains eligible once, even
-	// when both channels were explicitly closed before its finalization.
+	// A genuinely completed zero-finding result freezes on settlement and remains
+	// eligible once when both channels close before the explicit completion hook.
 	clean, evidence := roundCapture(t, f, 102, false)
+	settled := adjudicationRead(t, f, evidence)
+	if !settled.Finalized || settled.Revision != 1 || settled.FrozenCounts == nil || *settled.FrozenCounts != (FindingCounts{}) {
+		t.Fatal("completed zero result did not freeze on settlement", settled)
+	}
 	for _, channel := range []string{"cli", "hosted"} {
 		if _, err := f.e.ConfigureRoundControl(t.Context(), writer, "close-after-failed-start-"+channel, 2, channel, RoundControlRequest{ExpectedRevision: adjudicationRevision(1), Action: "close"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	finalize := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(0)}
+	finalize := FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(1)}
 	original, err := f.e.FinalizeReviewEvidence(t.Context(), writer, "genuine-clean-zero-finalize", evidence, finalize)
-	if err != nil {
-		t.Fatal(err)
-	}
+	adjudicationReceipt(t, original, err, evidence, "finalized", 1)
 	finalized := adjudicationRead(t, f, evidence)
 	if !finalized.Finalized || finalized.FrozenCounts == nil || *finalized.FrozenCounts != (FindingCounts{}) {
 		t.Fatal("genuine completed zero result did not retain exact 0/0/0 counts", finalized)

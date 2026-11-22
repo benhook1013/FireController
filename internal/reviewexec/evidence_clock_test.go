@@ -84,9 +84,10 @@ func TestEvidenceClockRollbackRetainedLifecycle(t *testing.T) {
 				adjudicationDecide(t, f, r.ID, "clock-decision-"+strings.Repeat("x", i+1), int64(i), int64(i), "accepted")
 			}
 			revision := int64(len(input.Review.Findings))
+			_, err = f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "clock-stale-finalize", r.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision - 1)})
+			attemptCode(t, err, "review_conflict")
 			body, err := f.e.FinalizeReviewEvidence(t.Context(), f.scope(t, attemptProject, f.writer, false), "clock-finalize", r.ID, FinalizeReviewRequest{ExpectedRevision: adjudicationRevision(revision)})
-			adjudicationReceipt(t, body, err, r.ID, "finalized", revision+1)
-			revision++
+			adjudicationReceipt(t, body, err, r.ID, "finalized", revision)
 			for i := range input.Review.Findings {
 				coverageFix(t, f, r.ID, "clock-fix-"+strings.Repeat("x", i+1), revision, int64(i), "")
 				revision++

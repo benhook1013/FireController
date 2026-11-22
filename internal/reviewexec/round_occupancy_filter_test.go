@@ -20,7 +20,7 @@ func TestRoundOccupancyFilterAuthorityAndScope(t *testing.T) {
 			} else {
 				roundGrant(t, f, 2, "cli", 0, 0, 3, "first")
 			}
-			a, evidence := roundCapture(t, f, 0, false)
+			a, evidence := roundCapture(t, f, 0, true)
 			check := func(mutate func(*roundRecord), excluding string, want int64) {
 				t.Helper()
 				roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
@@ -88,7 +88,7 @@ func TestRoundOccupancyFilterRetainedHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a, evidence := roundCapture(t, f, 1000, false)
+	a, evidence := roundCapture(t, f, 1000, true)
 	roundHook(t, f, func(ctx context.Context, tx *sql.Tx) error {
 		c, err := readRoundRecord(ctx, tx, attemptProject, 2, "cli")
 		if err != nil {
@@ -122,7 +122,7 @@ func TestRoundOccupancyFilterRetainedHistory(t *testing.T) {
 		}
 		return err
 	})
-	roundFinalize(t, f, a, evidence, 1000, false)
+	roundRejectAndFinalize(t, f, a, evidence, 1000)
 	if got := roundPendingCount(t, f, 2, "cli"); got != 0 {
 		t.Fatal("finalized occupancy", got)
 	}
@@ -162,7 +162,7 @@ func TestRoundOccupancyFilterIndexedPlan(t *testing.T) {
 func TestRoundOccupancyFilterStillValidatesCapture(t *testing.T) {
 	f := roundFixture(t)
 	roundGrant(t, f, 2, "cli", 0, 0, 3, "first")
-	_, evidence := roundCapture(t, f, 0, false)
+	_, evidence := roundCapture(t, f, 0, true)
 	// Fault injection: preserve the cheap complete-result fields while corrupting
 	// original attribution, then bypass invalidation to challenge canonical proof.
 	if _, err := f.store.DB().Exec(`UPDATE review_execution_evidence SET body_json=json_set(body_json,'$.capture.capture_sha256','invalid') WHERE id=?`, evidence); err != nil {
@@ -194,7 +194,7 @@ func TestRoundOccupancyFilterPagesCompleteResults(t *testing.T) {
 					t.Logf("native fixture capture=%d phase=%s phase_elapsed=%s", i, phase, time.Since(phaseStarted))
 				}
 			})
-			roundCaptureWithProgress(t, f, i, false, func(next string) {
+			roundCaptureWithProgress(t, f, i, true, func(next string) {
 				phase, phaseStarted = next, time.Now()
 			})
 		}) {
