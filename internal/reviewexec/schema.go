@@ -91,7 +91,10 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := ensureRoutePolicySchema(ctx, store); err != nil {
 		return err
 	}
-	return EnsureSelectionSchema(ctx, store)
+	if err := EnsureSelectionSchema(ctx, store); err != nil {
+		return err
+	}
+	return EnsureFrontSchema(ctx, store)
 }
 
 // Execution migration nine rebuilds attempts independently of the comparison
