@@ -110,5 +110,5 @@ export function reviewQueueBadges(pull: ReviewPullSummary, snapshot: string, fro
   }
   if (position <= first) return [];
 
-  return [{kind:'queued',text:'Queued',description:'Behind the first PR with review rounds remaining.'}];
+  return [{kind:'queued',text:'Review queue',description:'Behind the first PR with review rounds remaining.'}];
 }

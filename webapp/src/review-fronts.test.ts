@@ -18,16 +18,16 @@ describe('current review position badges',()=>{
     const v=value();
     v.channels=v.channels.map(channel=>({...channel,state:'held',reason:'review_evidence_pending'}));
     const progress:ReviewProgressItem={pull_number:4,incoming_routes_pending:1,channels:[control('hosted'),control('cli')].map(channel=>({...channel,pending:1,pending_execution:0,pending_adjudication:1}))};
-    expect(reviewQueueBadges(pull(4),snapshot,v,progress)[0]).toMatchObject({kind:'queued',text:'Queued'});
+    expect(reviewQueueBadges(pull(4),snapshot,v,progress)[0]).toMatchObject({kind:'queued',text:'Review queue'});
     for (const absent of [undefined,{...progress,incoming_routes_pending:0},{...progress,incoming_routes_pending:undefined},{...progress,pull_number:3}]) {
-      expect(reviewQueueBadges(pull(4),snapshot,v,absent)[0]?.text).toBe('Queued');
+      expect(reviewQueueBadges(pull(4),snapshot,v,absent)[0]?.text).toBe('Review queue');
     }
     expect(reviewQueueBadges(pull(4),'stale',v,progress)).toEqual([]);
     expect(reviewQueueBadges({...pull(4),state:'merged'},snapshot,v,progress)).toEqual([]);
     expect(reviewQueueBadges(pull(4),snapshot,v,{...progress,channels:[control('hosted',true),control('cli',true)]})[0]?.text).toBe('Review closed');
-    expect(reviewQueueBadges(pull(4),snapshot,v,{...progress,channels:[{...control('cli'),pending:1,pending_execution:1,pending_adjudication:0}]})[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(pull(4),snapshot,v,{...progress,channels:[{...control('cli'),pending:1,pending_execution:1,pending_adjudication:0}]})[0]?.text).toBe('Review queue');
     const active={...pull(4),latest_attempts:[{channel:'cli',state:'active'} as ReviewPullSummary['latest_attempts'][number]]};
-    expect(reviewQueueBadges(active,snapshot,v,progress)[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(active,snapshot,v,progress)[0]?.text).toBe('Review queue');
     const stale=currentReviewFronts(snapshot,[{...pull(2),head_sha:'c'.repeat(40)},{...pull(3),head_sha:'c'.repeat(40)},pull(4)],v);
     expect(reviewQueueBadges(pull(4),snapshot,stale,progress)).toEqual([]);
     expect(reviewQueueBadges(pull(2),snapshot,v,{...progress,pull_number:2})[0]?.text).toBe('Review front');
@@ -62,7 +62,7 @@ describe('current review position badges',()=>{
     v.channels=[{...front('hosted',3),queued_priority:priority(2)},{...front('cli',4),queued_priority:priority(3)}];
     expect(reviewQueueBadges(pull(1),snapshot,v)).toEqual([]);
     expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
-    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Review queue');
     expect(reviewChannelPosition(pull(3),snapshot,'hosted',v)?.text).toBe('Up next');
     v.channels[0].queued_priority=priority(4);
     expect(reviewQueueBadges(pull(2),snapshot,v)).toEqual([]);
@@ -74,7 +74,7 @@ describe('current review position badges',()=>{
     expect(reviewQueueBadges(pull(3),snapshot,current)).toEqual([]);
     expect(reviewQueueBadges(pull(4),snapshot,current)).toEqual([]);
     expect(currentReviewFronts('review_snapshot_old',[pull(2)],v)).toBeUndefined();
-    expect(reviewQueueBadges(pull(4),snapshot,currentReviewFronts(snapshot,[pull(4)],v))[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(pull(4),snapshot,currentReviewFronts(snapshot,[pull(4)],v))[0]?.text).toBe('Review queue');
   });
   it('uses current controls for closure without converting missing controls into completion',()=>{
     const progress:ReviewProgressItem={pull_number:2,channels:[control('hosted',true),control('cli',true)]};
@@ -105,8 +105,8 @@ describe('current review position badges',()=>{
     const progress:ReviewProgressItem[]=pulls.map(p=>({pull_number:p.number,channels:[control('hosted',p.number===2),control('cli')]}));
     const current=currentReviewFronts(snapshot,pulls,v);
     expect(reviewQueueBadges(pull(2),snapshot,current,progress[0])[0]?.text).toBe('Review front');
-    expect(reviewQueueBadges(pull(3),snapshot,current,progress[1])[0]?.text).toBe('Queued');
-    expect(reviewQueueBadges(pull(4),snapshot,current,progress[2])[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(pull(3),snapshot,current,progress[1])[0]?.text).toBe('Review queue');
+    expect(reviewQueueBadges(pull(4),snapshot,current,progress[2])[0]?.text).toBe('Review queue');
     expect(reviewChannelPosition(pull(2),snapshot,'cli',current)?.text).toBe('Queue position');
     const unavailable={...v,channels:v.channels.map(c=>({channel:c.channel,state:'unknown' as const,reason:'source_frame_unavailable'}))};
     expect(reviewQueueBadges(pull(3),snapshot,currentReviewFronts(snapshot,pulls,unavailable),progress[1])).toEqual([]);
@@ -168,7 +168,7 @@ describe('independent queued priority during source failure',()=>{
     const v=waiting();
     expect(reviewQueueBadges(pull(2),snapshot,v)[0]).toMatchObject({text:'Review front',channels:['hosted']});
     expect(reviewChannelPosition(pull(2),snapshot,'hosted',v)).toMatchObject({text:'Source unverified',description:expect.stringContaining('Check the current head and base')});
-    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Queued');
+    expect(reviewQueueBadges(pull(3),snapshot,v)[0]?.text).toBe('Review queue');
     expect(v.channels[0].state).toBe('unknown');
     expect(v.channels[0].pull_number).toBeUndefined();
     expect(reviewQueueBadges(pull(2),snapshot,v,{pull_number:2,channels:[control('hosted',true)]})[0]?.text).toBe('Review closed');

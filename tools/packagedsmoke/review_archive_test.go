@@ -358,7 +358,7 @@ func TestPackagedReviewArchiveSmoke(t *testing.T) {
 	if err != nil || browserStderr.len() != 0 || len(lines) != 2 || result.State != "PASS" || result.MaxLimit != 25 || !result.ExplicitPagesVerified || result.ExplicitArchiveRequests != 19 || result.PreviewRequests < 1 || result.ArchiveRequests != result.ExplicitArchiveRequests+result.PreviewRequests || !result.SourceCollisions || !result.PinnedTail || !result.CurrentReset || !result.InlineFindings || !result.MobilePagination || result.InitialPreviewReads < 1 || result.InitialPreviewReads >= result.TotalPreviewReads || result.TotalPreviewReads != 28 || !result.QueueWindow || !result.MergedHistory || result.DetailRequests != 3 || result.FixtureWrites != 1 {
 		phase := "unavailable"
 		switch result.Phase {
-		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history", "mobile-queue-pagination", "queue-preview-visibility":
+		case "configuration", "launch", "current-first-pages", "pinned-first-pages", "metadata-refresh", "inline-empty-findings", "inline-current-findings", "pinned-continuation", "recent-queue", "merged-history", "queue-pagination", "queue-preview-visibility":
 			phase = result.Phase
 		}
 		if result.DriverLine > 0 && result.DriverLine <= 10000 {

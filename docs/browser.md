@@ -22,6 +22,8 @@ Before reloading, the existing reading-position mechanism saves stable queue/del
 
 The **Review queue** jump links use `#review-queue-head`, resolved from the current first queue page on navigation or browser reload. Completed and closed entries are skipped; an unknown or unloaded head falls back to the queue heading rather than guessing. These jumps start at the current page and take precedence over saved reading offsets. Once positioned, background data updates preserve the reader's position until another navigation. Explicit `#review-pr-N` links continue to select that specific loaded PR.
 
+**Next** and **Previous** in the review queue and queue history align the new PR list below the header once the replacement page loads, including when Routed Findings appears above the list.
+
 A rejected saved queue cursor returns to the first page with a notice. Failed Delivery reconstruction stops at the successfully loaded prefix and displays the continuation error. When the ready region no longer contains any saved landmark, restoration releases the missing anchor rather than waiting forever. Windows beyond the retained bounds, failed history writes and other noninitial pagers defer updates with instructions to return to the first page or refresh loaded work. The URL, browser session and selected worker restore normally. A tab-local target marker prevents repeated automatic reloads if a rollout serves a stale index. When tab storage is unavailable, the explicit safe update control remains available for an otherwise restorable window. Session expiration and revoked credentials still follow ordinary connection recovery.
 
 ## Project presentation

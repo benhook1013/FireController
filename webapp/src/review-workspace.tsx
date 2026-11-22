@@ -169,8 +169,19 @@ const movingCIReasons: Record<string, string> = {
   ci_target_changed:'The PR changed during the CI check.',
 };
 const ciChecksHelp = 'Open the PR’s Checks tab on GitHub for workflow progress.';
+function reviewCIVerdict(state: string | undefined) {
+  if (state === 'success' || state === 'failure' || state === 'not_required') {
+    return { state, label: `Required CI: ${state === 'not_required' ? 'None' : reviewLabel(state)}`, detail: state === 'not_required' ? 'Optional checks are separate.' : '' };
+  }
+  return undefined;
+}
+
 function reviewCIDisplay(pull: ReviewPullSummary) {
   const observation = pull.observation;
+  if (pull.parent_base_moved) {
+    const previous = reviewCIVerdict(observation?.ci_gate_state) ?? reviewCIVerdict(pull.ci_state);
+    if (previous) return previous;
+  }
   const reason = observation?.ci_error ?? '';
   if (pull.state === 'open' && Object.hasOwn(movingCIReasons, reason)) {
     return { state: 'unknown', label: 'Checking CI', detail: movingCIReasons[reason] };
@@ -178,9 +189,8 @@ function reviewCIDisplay(pull: ReviewPullSummary) {
   const attempted = Boolean(observation?.ci_error || observation?.ci_checked_at);
   const retained = attempted || observation?.state === 'comparison_changed' ? 'unknown' : pull.ci_state;
   const state = observation?.ci_gate_state ?? retained;
-  if (state === 'success' || state === 'failure' || state === 'not_required') {
-    return { state, label: `Required CI: ${state === 'not_required' ? 'None' : reviewLabel(state)}`, detail: state === 'not_required' ? 'Optional checks are separate.' : '' };
-  }
+  const verdict = reviewCIVerdict(state);
+  if (verdict) return verdict;
   // The observer binds these fields to the current head, base SHA and base ref.
   if (observation?.ci_gate_state === 'pending' && observation.ci_error === 'ci_required_checks_pending') {
     return { state: 'pending', label: 'CI pending', detail: ciChecksHelp };
@@ -206,7 +216,7 @@ function reviewCIDisplay(pull: ReviewPullSummary) {
 export function ReviewMergeStatus({pull}: {pull:ReviewPullSummary}) {
   if (pull.state === 'merged' || pull.state === 'closed') return null;
   const status=pull.merge_status ?? {state:'unknown' as const,reason:'merge_state_unknown'};
-  if (pull.parent_base_moved && status.state === 'ready') return <span title={parentBaseMovedDescription(pull.parent_pull_number)} className="badge review-fact-pill review-mergeability review-fact-unknown">Merge: Parent changed</span>;
+  if (pull.parent_base_moved && status.state === 'ready') return <span title="Waiting for verified checks on the updated comparison." className="badge review-fact-pill review-mergeability review-fact-pending">Merge: Waiting</span>;
   const labels:Record<string,string>={github_behind:'Behind',github_dirty:'Conflicts',github_draft:'Draft',draft:'Draft',github_unstable:'Checks failing',github_has_hooks:'Hooks'};
   const states={ready:'Ready',blocked:'Blocked',pending:'Waiting',unknown:'Unknown'};
   const colours={ready:'mergeable',blocked:'conflicting',pending:'pending',unknown:'unknown'};
@@ -234,8 +244,8 @@ function reviewCITooltip(pull: ReviewPullSummary, display: ReturnType<typeof rev
   const gate = pull.observation?.ci_gate_ref;
   const scope = gate && pull.base_ref && gate !== pull.base_ref ? `Checks for ${gate} on the PR against ${pull.base_ref}.` : '';
   const checked = pull.observation?.ci_checked_at ? `Last checked ${time(pull.observation.ci_checked_at)}.` : '';
-  const detail = pull.parent_base_moved ? `Parent PR #${pull.parent_pull_number} changed; this CI is for the earlier base.` : display.detail;
-  return [detail, scope, checked].filter(Boolean).join(' ') || undefined;
+  const previousBase = pull.parent_base_moved ? 'Checks for the base this PR still targets.' : '';
+  return [previousBase, display.detail, scope, checked].filter(Boolean).join(' ') || undefined;
 }
 
 function ReviewBaseTarget({ pull }: { pull: ReviewPullSummary }) {
@@ -253,6 +263,7 @@ function ReviewBaseTarget({ pull }: { pull: ReviewPullSummary }) {
 export function ReviewPullFacts({ pull, status }: { pull: ReviewPullSummary; status?: ReviewQueueBadge }) {
   const missing = missingPullFacts(pull);
   const ci = reviewCIDisplay(pull);
+  const ciScope = pull.parent_base_moved ? 'previous base' : pull.observation?.ci_gate_ref;
   const primaryStatus = pull.state === 'merged' || pull.state === 'closed'
     ? <span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span>
     : pull.state === 'open' && pull.is_draft
@@ -260,7 +271,7 @@ export function ReviewPullFacts({ pull, status }: { pull: ReviewPullSummary; sta
       : pull.state === 'open' && status
         ? <span className={`badge review-position-${status.kind}`} title={status.description}>{status.text}</span>
         : null;
-  return <div className="review-pull-facts">{primaryStatus}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}<span className="badge review-fact-pill review-diff"><ReviewBaseTarget pull={pull} />{pull.diff && <> · {pull.review_size ? <span className={`review-file-count${pull.review_size.above_suggested || pull.review_size.excess_files ? ' review-size-exceeded' : ''}`} title={reviewSizeTooltip(pull)}>{pull.diff.files.toLocaleString('en-US')}</span> : pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</>}</span>{pull.state !== 'merged' && <span title={reviewCITooltip(pull, ci)} className={`badge review-fact-pill review-ci review-fact-${pull.parent_base_moved ? 'unknown' : ci.state}`}>{pull.parent_base_moved ? 'CI for previous base' : ci.label}{!pull.parent_base_moved && pull.observation?.ci_gate_ref ? ` · ${pull.observation.ci_gate_ref}` : ""}</span>}<ReviewMergeStatus pull={pull} /><ReviewObservationBadge value={pull.observation} />{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
+  return <div className="review-pull-facts">{primaryStatus}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}<span className="badge review-fact-pill review-diff"><ReviewBaseTarget pull={pull} />{pull.diff && <> · {pull.review_size ? <span className={`review-file-count${pull.review_size.above_suggested || pull.review_size.excess_files ? ' review-size-exceeded' : ''}`} title={reviewSizeTooltip(pull)}>{pull.diff.files.toLocaleString('en-US')}</span> : pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</>}</span>{pull.state !== 'merged' && <span title={reviewCITooltip(pull, ci)} className={`badge review-fact-pill review-ci review-fact-${ci.state}`}>{ci.label}{ciScope ? ` · ${ciScope}` : ''}</span>}<ReviewMergeStatus pull={pull} /><ReviewObservationBadge value={pull.observation} />{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Global stored positions preserve gaps in filtered pages; legacy pages require known predecessors.
 export function reviewQueueDistances(items: ReviewPullSummary[], firstPage: boolean, headPosition?: number): (number | undefined)[] {

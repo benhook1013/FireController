@@ -89,7 +89,7 @@ export function useReviewQueuePaginationScroll(pageKey: string, ready: boolean, 
     return () => cancelAnimationFrame(frame);
   }, [pageKey, ready, failed]);
   return () => {
-    requested.current = !window.matchMedia('(min-width: 651px)').matches;
-    if (requested.current) notifyReadingNavigation();
+    requested.current = true;
+    notifyReadingNavigation();
   };
 }

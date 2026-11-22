@@ -156,17 +156,19 @@ describe('truthful stored review presentation', () => {
     expect(html).toContain('>1 incoming routed finding</a>');
     expect(html).toContain('1 awaiting adjudication');
     expect(html).not.toContain('>Needs adjudication</span>');
-    expect(html.match(/>Queued<\/span>/gu)).toHaveLength(1);
+    expect(html.match(/>Review queue<\/span>/gu)).toHaveLength(1);
+    expect(html).not.toContain('>Queued</span>');
     expect(html).toContain('class="badge review-position-queued"');
     const [hosted, cli] = progress.channels;
     const requested = markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={{
       ...progress, channels: [{...hosted, pending_execution:1, pending_adjudication:0}, cli],
     }} />);
-    expect(requested.match(/>Queued<\/span>/gu)).toHaveLength(2);
+    expect(requested.match(/>Review queue<\/span>/gu)).toHaveLength(1);
+    expect(requested.match(/>Queued<\/span>/gu)).toHaveLength(1);
     expect(requested).toContain('aria-label="hosted current review state"');
     expect(requested).not.toContain('aria-label="cli current review state"');
     for (const incoming of [0,undefined]) {
-      expect(markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={{...progress,incoming_routes_pending:incoming}} />)).toContain('>Queued</span>');
+      expect(markup(<ReviewQueueRow pull={pull(3)} snapshot="snapshot" fronts={v} progress={{...progress,incoming_routes_pending:incoming}} />)).toContain('>Review queue</span>');
     }
   });
 
@@ -205,17 +207,17 @@ describe('truthful stored review presentation', () => {
     const html=markup(<ReviewQueueView />,queue([pull(1,'merged'),pull(2),pull(3)]),undefined,{fronts:v});
     for(const number of [2,3]) {
       const row=html.match(new RegExp(`<li id="review-pr-${number}"[\\s\\S]*?<\\/li>`,'u'))![0];
-      expect(row).toContain(number===2 ? '>Review front</span>' : '>Queued</span>');
+      expect(row).toContain(number===2 ? '>Review front</span>' : '>Review queue</span>');
       expect(row).toContain('>Source unverified</span>');
       expect(row).not.toMatch(/Hosted review priority|CLI review priority|>Queue priority</u);
     }
     expect(html.match(/>Review front<\/span>/gu)).toHaveLength(1);
     expect(html).not.toContain('>Up next</span>');
   });
-  it('shows Draft without the redundant Queued badge', () => {
-    const html = markup(<ReviewPullFacts pull={{ ...pull(2), is_draft: true }} status={{kind:'queued',text:'Queued',description:'Waiting in the queue'}} />);
+  it('shows Draft without the redundant Review queue badge', () => {
+    const html = markup(<ReviewPullFacts pull={{ ...pull(2), is_draft: true }} status={{kind:'queued',text:'Review queue',description:'Waiting in the queue'}} />);
     expect(html).toContain('Draft');
-    expect(html).not.toContain('>Queued<');
+    expect(html).not.toContain('>Review queue<');
   });
 
   it('distinguishes no required CI from an unknown observation without claiming workflow success', () => {
@@ -351,7 +353,7 @@ describe('truthful stored review presentation', () => {
     expect(rows[0]).toContain('review-state-merged');
     expect(rows[1]).toContain('review-pull-facts"><span class="badge review-state-draft">Draft</span>');
     expect(rows[1]).not.toContain('>Review front</span>');
-    expect(rows[2].match(/>Queued<\/span>/gu)).toHaveLength(1);
+    expect(rows[2].match(/>Review queue<\/span>/gu)).toHaveLength(1);
     expect(rows[2]).not.toContain('aria-label="hosted current review state"');
     const atFront = markup(<ReviewQueueRow pull={pull(2)} snapshot="snapshot" fronts={fronts()} />);
     expect(atFront).toContain('review-pull-facts"><span class="badge review-position-front"');
@@ -381,32 +383,39 @@ describe('truthful stored review presentation', () => {
     expect(row).toContain('title="Parent PR #2 changed; this child still targets its earlier base."');
     expect(row).toMatch(/aria-label="hosted current review state"><span data-lane-label-tone="alert"><span[^>]*>Parent changed<\/span>/u);
     expect(row).toMatch(/aria-label="cli current review state"><span data-lane-label-tone="alert"><span[^>]*>Parent changed<\/span>/u);
-    expect(row.match(/>Queued<\/span>/gu)).toHaveLength(1);
+    expect(row.match(/>Review queue<\/span>/gu)).toHaveLength(1);
 
     const alignedChild = { ...pull(3), parent_pull_number: 2, base_sha: pull(2).head_sha };
     const aligned = markup(<ReviewQueueView />, queue([alignedChild]), undefined, { fronts: stackedFronts() });
     const alignedRow = aligned.match(/<li id="review-pr-3"[\s\S]*?<\/li>/u)![0];
-    expect(alignedRow).toContain('>Queued</span>');
+    expect(alignedRow).toContain('>Review queue</span>');
     expect(alignedRow).not.toContain('Parent changed');
   });
   it('keeps old CI and merge-ready facts from reading as current proof after the parent moves', () => {
     const observation = { state: 'current' as const, ci_checked_at: '2026-10-28T12:12:35Z', ci_gate_ref: 'main', ci_gate_state: 'success' as const };
     const moved = { ...pull(3), parent_pull_number: 2, parent_base_moved: true as const, observation, merge_status: { state: 'ready' as const, reason: 'github_clean' } };
     const html = markup(<ReviewPullFacts pull={moved} />);
-    expect(html).toContain('>CI for previous base</span>');
-    expect(html).toContain('review-ci review-fact-unknown');
-    expect(html).toContain('title="Parent PR #2 changed; this CI is for the earlier base. Last checked');
-    expect(html).toContain('Last checked');
-    expect(html).toContain('>Merge: Parent changed</span>');
+    expect(html).toContain('>Required CI: Success · previous base</span>');
+    expect(html).toContain('review-ci review-fact-success');
+    expect(html).toContain('title="Checks for the base this PR still targets. Last checked');
+    expect(html).toContain('>Merge: Waiting</span>');
     expect(html).not.toContain('>Merge: Ready</span>');
+    expect(html).not.toContain('Parent changed');
     const conflict = markup(<ReviewPullFacts pull={{ ...moved, merge_status: { state: 'blocked', reason: 'github_dirty' } }} />);
     expect(conflict).toContain('>Merge: Conflicts</span>');
-    expect(conflict).not.toContain('>Merge: Parent changed</span>');
 
     const aligned = markup(<ReviewPullFacts pull={{ ...moved, parent_base_moved: undefined }} />);
     expect(aligned).toContain('>Required CI: Success · main</span>');
     expect(aligned).toContain('>Merge: Ready</span>');
-    expect(aligned).not.toContain('CI for previous base');
+    expect(aligned).not.toContain('previous base');
+  });
+  it('preserves a retained verdict during an inconclusive refresh on a moved parent', () => {
+    const observation = { state: 'current' as const, ci_gate_state: 'unknown' as const, ci_error: 'ci_merge_base_mismatch' };
+    const moved = { ...pull(3), parent_pull_number: 2, parent_base_moved: true as const, observation };
+    const failed = markup(<ReviewPullFacts pull={{ ...moved, ci_state: 'failure' }} />);
+    expect(failed).toContain('review-ci review-fact-failure">Required CI: Failure · previous base');
+    const unverified = markup(<ReviewPullFacts pull={{ ...moved, ci_state: 'unknown' }} />);
+    expect(unverified).toContain('review-ci review-fact-unknown">Checking CI · previous base');
   });
   it('preserves active work, closed channels, completed rounds and incoming routed-finding data', () => {
     const completed: ReviewRunSummary = { source: 'native-executor', id: 'completed-run', pull_number: 3, source_run_id: 'completed-source-run', channel: 'hosted', head_sha: pull(3).head_sha, reviewer: 'reviewer', scope: 'full', coverage_limits: [], outcome: 'completed', attributable: true, complete: true, started_at: '2026-10-20T00:00:00Z', finished_at: '2026-10-20T00:01:00Z', found: 1, accepted: 1, routed: 0, finalized: true, fixed: 1, current_accepted: 1, current_pending_fixes: 0 };
@@ -421,7 +430,7 @@ describe('truthful stored review presentation', () => {
 
     const closedProgress: ReviewProgressItem = { pull_number: 3, channels: (['hosted', 'cli'] as const).map(channel => ({ channel, configured: true, revision: 1, epoch: 1, closed: true, minimum: 0, maximum: 5, taper: 2, used: 1, dry: 0, tapered: false, pending: 0, pending_execution: 0, pending_adjudication: 0 })) };
     const closed = markup(<ReviewQueueView />, queue([{ ...pull(3), parent_pull_number: 2, parent_base_moved: true }]), undefined, { fronts: stackedFronts(), progress: [closedProgress] });
-    expect(closed).toContain('>CI for previous base</span>');
+    expect(closed).toContain('>Required CI: Success · previous base</span>');
     expect(closed).not.toContain('>Parent changed</span>');
     expect(closed).toContain('>Review closed</span>');
     expect(closed).not.toContain('current review state');

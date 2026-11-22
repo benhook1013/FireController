@@ -316,6 +316,7 @@ try {
   }
   need(await queue.locator('#review-pr-205 .review-pull-facts > .badge:not(.review-fact-pill)').count() === 0);
   await expect(queue.locator('#review-pr-205 .review-ci')).toHaveText('Required CI: Success');
+  const successColor = await queue.locator('#review-pr-205 .review-ci').evaluate(element => getComputedStyle(element).backgroundColor);
   await expect(queue.locator('#review-pr-205 .review-mergeability')).toHaveText('Merge: Unknown');
   need(await queue.locator('.review-queue-panel').evaluate(panel=>getComputedStyle(panel).borderTopLeftRadius === '0px'));
   const attention = current.page.getByRole('region', {name:'Routed findings requiring attention',exact:true});
@@ -419,8 +420,9 @@ try {
   need(explicit.length === 19 && archives.length === explicit.length+previews.length);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2 && details.length === 3);
   const verifiedArchiveRequests = archives.length;
-  phase = 'mobile-queue-pagination';
+  phase = 'queue-pagination';
   const queueRoute = '**/reviews/queue?*';
+  const progressRoute = '**/reviews/rounds/progress?*';
   const paginateQueue = async route => {
     const url = new URL(route.request().url());
     if (url.searchParams.get('view') !== 'recent') { await route.continue(); return; }
@@ -429,16 +431,32 @@ try {
     const response = await route.fetch({url:url.toString()});
     const data = await response.json();
     data.items = second ? data.items.slice(3) : data.items.slice(0,3);
+    const moved = data.items.find(item => item.number === number);
+    if (moved) Object.assign(moved, {
+      parent_pull_number: 301, parent_base_moved: true, ci_state: 'success',
+      merge_status: {state:'ready', reason:'github_clean'},
+    });
     data.has_more = !second;
     if (second) delete data.cursor; else data.cursor = 'mobile-page-two';
     await route.fulfill({response,json:data});
   };
+  const showProgress = async route => {
+    const pulls = new URL(route.request().url()).searchParams.get('pull_numbers').split(',').map(Number);
+    if (!pulls.includes(number)) { await route.continue(); return; }
+    const empty = channel => ({channel, configured:false, revision:0, epoch:0, closed:false, minimum:0, maximum:0, used:0, dry:0, taper:0, tapered:false, pending:0});
+    const hosted = {...empty('hosted'), configured:true, revision:1, epoch:1, maximum:3, used:1, dry:1, taper:2, pending:1, pending_execution:0, pending_adjudication:1};
+    await route.fulfill({json:{project_id:config.project, evaluated_at:new Date().toISOString(),
+      items:pulls.map(pull_number => ({pull_number, channels:[pull_number === number ? hosted : empty('hosted'), empty('cli')]})),
+    }});
+  };
   await current.page.route(queueRoute, paginateQueue);
-  await current.page.goto(`${config.origin}${current.home}#review-queue`);
-  for (const width of [390,320]) {
+  await current.page.route(progressRoute, showProgress);
+  for (const [width, hash] of [[1440,'#review-queue-head'],[390,'#review-queue'],[320,'#review-queue']]) {
     await current.page.setViewportSize({width,height:900});
-    await current.page.reload();
+    await current.page.goto(`${config.origin}${current.home}${hash}`);
     await expect(queue.locator('.review-queue-row')).toHaveCount(3);
+    await expect(queue.getByRole('heading', {name:'Routed Findings',exact:true})).toBeVisible();
+    let movedChecked = false;
     for (const [direction, count] of [['Next',2],['Previous',3]]) {
       await queue.getByRole('button',{name:`${direction} review queue`,exact:true}).click();
       await expect(queue.locator('.review-queue-row')).toHaveCount(count);
@@ -450,9 +468,29 @@ try {
         return Math.abs(Math.min(delta,document.documentElement.scrollHeight-innerHeight-scrollY));
       })).toBeLessThan(3);
       need(await current.page.evaluate(()=>window.scrollY>0));
+      need(new URL(current.page.url()).hash===hash);
+      const moved = queue.locator(`#review-pr-${number}`);
+      if (await moved.count()) {
+        await expect(moved.locator('.review-ci')).toHaveText('Required CI: Success · previous base');
+        await expect(moved.locator('.review-ci')).toHaveCSS('background-color', successColor);
+        await expect(moved.locator('.review-mergeability')).toHaveText('Merge: Waiting');
+        const streak = moved.getByText('Clean streak 1/2', {exact:true});
+        const adjudication = moved.getByText('1 awaiting adjudication', {exact:true});
+        await expect(streak).toBeVisible();
+        await expect(adjudication).toBeVisible();
+        const typography = locator => locator.evaluate(element => {
+          const style = getComputedStyle(element);
+          return [style.fontFamily, style.fontWeight, style.fontSize, style.lineHeight, style.fontVariantNumeric];
+        });
+        expect(await typography(streak)).toEqual(await typography(adjudication));
+        expect((await typography(streak)).at(-1)).toBe('tabular-nums');
+        movedChecked = true;
+      }
     }
+    need(movedChecked);
   }
   await current.page.unroute(queueRoute,paginateQueue);
+  await current.page.unroute(progressRoute,showProgress);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2);
   // A full queue page with mixed channel coverage, short prefixes and a
   // channel whose recent summaries are all failed starts.
