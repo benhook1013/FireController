@@ -302,7 +302,7 @@ Focused proof covers parser-to-native source identity, strict HTTP/client varian
 
 A [durable channel selection](review-round-controls.md#one-explicit-channel-front-run) may link one ordinary request through the same transactional admission helper used by exact-target requests. The selector adds no provider privilege, round allowance or completion credit. Native preparation and final provider guards remain authoritative after selection.
 
-The selector retains its bounded observed queue prefix by project and channel. It records the repository, configuration revision, source freshness, and exact observed head, base, and parent identities. A partial prefix preserves its stop reason. Backup verification checks the retained order, comparison identities, timestamps, and parent graph before accepting those observations for restore. These records do not establish that provider work started or completed.
+The selector retains its bounded observed queue prefix by project and channel. It records the repository, configuration revision, source freshness, and exact observed head, base, and parent identities. A partial prefix records any source-acquisition stop reason. Backup verification checks the retained order, comparison identities, timestamps, and parent graph before accepting those observations for restore. These records do not establish that provider work started or completed.
 
 ## Project management authority
 
