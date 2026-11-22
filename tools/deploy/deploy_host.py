@@ -130,31 +130,35 @@ def repoint_dropin(text, source, fcd_sha):
 
 
 def install_helpers(fcd, source, fcd_sha, releases=HELPER_RELEASES, dropins=DROPINS, reload=True):
+    updates = []
+    for name, path in dropins.items():
+        before = path.read_text()
+        after = repoint_dropin(before, source, fcd_sha)
+        if after != before:
+            updates.append((name, path, after, path.stat().st_mode & 0o777))
+
     target = releases / source / "fcd"
     if target.exists():
         if sha256(target) != fcd_sha:
             raise DeployError("existing helper binary for this source has a different hash")
     else:
-        target.parent.mkdir(mode=0o755)
+        # An earlier interrupted attempt may have created the release directory.
+        target.parent.mkdir(mode=0o755, exist_ok=True)
         tmp = target.with_suffix(".tmp")
         shutil.copy2(fcd, tmp)
         os.chmod(tmp, 0o555)
         if sha256(tmp) != fcd_sha:
             raise DeployError("helper binary copy hash mismatch")
         tmp.replace(target)
-    changed = []
-    for name, path in dropins.items():
-        before = path.read_text()
-        after = repoint_dropin(before, source, fcd_sha)
-        if after != before:
-            tmp = path.with_suffix(".deploy.tmp")
-            tmp.write_text(after)
-            os.chmod(tmp, path.stat().st_mode & 0o777)
-            tmp.replace(path)
-            changed.append(name)
-    if reload and changed:
+    for _, path, content, mode in updates:
+        tmp = path.with_suffix(".deploy.tmp")
+        tmp.write_text(content)
+        os.chmod(tmp, mode)
+        tmp.replace(path)
+    # All files may already match after an interruption before the last reload.
+    if reload:
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=60)
-    return changed
+    return [name for name, _, _, _ in updates]
 
 
 def kubectl_json(*args):

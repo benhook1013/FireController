@@ -14,10 +14,10 @@ python3 tools/deploy/deploy.py --dry-run  # build and check only
 1. Take the deploy lock and the shared backup phase lock. Managed backups and the offsite batch wait for that lock, so a deploy never replaces the daemon mid-snapshot and there is no backup window to schedule around. A deploy waits up to twenty minutes for a running backup, then gives up without changing anything.
 2. Snapshot the live database with SQLite's online backup into `/var/lib/firecontroller/predeploy/`. This is the rollback point; the newest two are kept.
 3. Run `fcd migrate` from the new binary on a private copy of that snapshot and require a clean `quick_check`. This rehearses the exact migrations the daemon will run at startup, on real data, before anything live changes.
-4. Install the new `fcd` for the backup-health and offsite helpers and repoint their systemd drop-ins, so helpers always read the newest schema.
+4. Validate both helper drop-ins, install the new `fcd` for the backup-health and offsite helpers, repoint both drop-ins and reload systemd. Rerunning the same release completes an interrupted copy or drop-in update and reapplies the manager reload even if the files already match.
 5. Drain and replace the controller image with the [rollout helper](../tools/deploy/kubernetes.py), then verify the deployment, the running image digest, `/readyz` and the served browser assets.
 
-If the rollout fails after replacement, the script reports the previous image and the snapshot path. Rolling back is selecting the previous image and, only when the new binary migrated the schema, restoring that snapshot. Full CI and container publication continue in the background; pending CI is not a deployment gate. Investigate and repair CI failures.
+If the rollout fails after replacement, the script reports the previous image and the snapshot path. Select the previous image and its matching backup-helper binaries for rollback. When the new binary migrated the schema, restore the pre-deployment snapshot before starting the older image. Keep a reader from the creating generation for backups that require its schema or bundle format. Development deploys may proceed while CI and container publication are pending. Investigate and repair CI failures.
 
 ## Published artifacts
 

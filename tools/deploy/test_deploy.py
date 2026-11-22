@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import deploy
 import deploy_host as h
@@ -49,6 +50,38 @@ class DropIns(unittest.TestCase):
             fcd.write_bytes(b"other")
             with self.assertRaises(h.DeployError):
                 h.install_helpers(fcd, NEW, hashlib.sha256(b"other").hexdigest(), releases, dropins, reload=False)
+
+    def test_invalid_second_dropin_leaves_first_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            health = root / "health.conf"
+            batch = root / "batch.conf"
+            health.write_text(HEALTH)
+            batch.write_text("[Service]\n")
+            releases = root / "releases"
+            with self.assertRaises(h.DeployError):
+                h.install_helpers(root / "fcd", NEW, "2" * 64, releases,
+                                  {"health": health, "batch": batch}, reload=False)
+            self.assertEqual(health.read_text(), HEALTH)
+            self.assertFalse(releases.exists())
+
+    def test_retry_finishes_staged_copy_and_reloads_unchanged_dropins(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            fcd = root / "fcd"
+            fcd.write_bytes(b"binary")
+            digest = hashlib.sha256(b"binary").hexdigest()
+            releases = root / "releases"
+            (releases / NEW).mkdir(parents=True)
+            health = root / "health.conf"
+            batch = root / "batch.conf"
+            health.write_text(h.repoint_dropin(HEALTH, NEW, digest))
+            batch.write_text(h.repoint_dropin(BATCH, NEW, digest))
+            with patch.object(h.subprocess, "run") as run:
+                self.assertEqual(h.install_helpers(fcd, NEW, digest, releases,
+                                                   {"health": health, "batch": batch}), [])
+            self.assertEqual((releases / NEW / "fcd").read_bytes(), b"binary")
+            run.assert_called_once_with(["systemctl", "daemon-reload"], check=True, timeout=60)
 
 
 class Snapshots(unittest.TestCase):
