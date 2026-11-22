@@ -199,5 +199,9 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.queuedRunResponseHeader(w, r, scope, state)
+	if state.Operation != nil {
+		operation := operationForResponse(*state.Operation, r.Header.Get(operationWaitHeader))
+		state.Operation = &operation
+	}
 	core.WriteJSON(w, http.StatusOK, state)
 }

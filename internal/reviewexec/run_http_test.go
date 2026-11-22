@@ -247,3 +247,64 @@ func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T
 		t.Fatal("unavailable diagnostic must be omitted")
 	}
 }
+
+func TestRunHTTPProjectsSelectedCLIWait(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "selected-cli-wait", "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	a := f.start(t, attemptProject, Receipt{ID: selectionRead(t, f, receipt.ID).OperationID})
+	anchor := attemptAnchor(attemptProject, 2)
+	in := CLIAllowanceObservation{Anchor: anchor, ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 86400000, RollingWindowMS: 86400000, ChangedFiles: 2}
+	if err := f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	original := cliWaitRead(t, f, a.OperationID).Wait
+	if original == nil || original.CLIAllowance == nil || original.RetryNotBefore == "" || original.BaselineAttemptID == "" {
+		t.Fatal("fixture did not retain a CLI quota wait", original)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	read := "/api/v1/projects/" + attemptProject + "/reviews/selections/" + receipt.ID
+	before := selectionCounts(t, f)
+	for _, tc := range []struct {
+		version                           string
+		hasWait, hasBaseline, hasEstimate bool
+	}{
+		{"", false, false, false},
+		{"1", true, false, false},
+		{"2", true, true, false},
+		{"3", true, true, true},
+		{"5", true, true, true},
+		{"unsupported", false, false, false},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "GET", read, "", "", "wait=0", tc.version)
+			var state RunState
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.ID != a.OperationID {
+				t.Fatal("selected CLI operation unavailable", w.Code, w.Body.String())
+			}
+			wait := state.Operation.Wait
+			if (wait != nil) != tc.hasWait {
+				t.Fatal("incorrect wait projection", w.Body.String())
+			}
+			if wait == nil {
+				return
+			}
+			if (wait.BaselineAttemptID != "") != tc.hasBaseline || (wait.RetryNotBefore != "") != tc.hasBaseline || (wait.CLIAllowance != nil) != tc.hasEstimate {
+				t.Fatal("incorrect wait detail projection", w.Body.String())
+			}
+			if tc.hasBaseline && (wait.BaselineAttemptID != original.BaselineAttemptID || wait.RetryNotBefore != original.RetryNotBefore) {
+				t.Fatal("projection changed retained wait identity", wait)
+			}
+			if tc.hasEstimate && (wait.CLIAllowance.ObservedAt != original.CLIAllowance.ObservedAt || wait.CLIAllowance.FullCapacityInMS == nil || *wait.CLIAllowance.FullCapacityInMS != in.FullCapacityInMS) {
+				t.Fatal("projection changed retained allowance", wait.CLIAllowance)
+			}
+		})
+	}
+	if encoded(original) != encoded(cliWaitRead(t, f, a.OperationID).Wait) || selectionCounts(t, f) != before {
+		t.Fatal("response projection changed retained state")
+	}
+}
