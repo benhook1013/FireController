@@ -2,6 +2,8 @@
 
 Retirement removes a worker from ordinary active lists, assignment choices and Delivery lanes while preserving its identity and history. Direct worker, completed-job, conversation and historical reads remain available. Worker credentials continue to use the existing project credential controls.
 
+Worker IDs are permanent. Active display names are unique within a project. A new or renamed active worker can use a name from a retired worker, even if an older record still displays that name in history. Archived and active records retain separate IDs, inboxes, job attribution and credential bindings. Rename applies to active workers.
+
 ## Clear unfinished work first
 
 The retirement preview identifies three kinds of blockers in the selected project:
@@ -26,6 +28,6 @@ The Workers page shows blockers and links to the relevant jobs, notes and inbox.
 
 ## Persistence and proof
 
-The separately versioned `worker_retirements` domain retains the original worker table and foreign keys. Backups, inspection and inactive restore preserve retirement facts and reject malformed schema or retirement records. Existing bundles without that optional domain retain their original contents. Installed backup helpers must support the selected daemon's domain versions before it begins producing new bundles; the [offsite procedure](offsite-backups.md) owns that deployment requirement.
+The separately versioned `worker_retirements` domain references permanent worker IDs. Base schema version 6 preserves these references while replacing the all-history name constraint with an index for active-name checks. Backups, inspection and inactive restore preserve retirement facts and reject malformed records and duplicate active names. Existing bundles without the optional retirement domain retain their original contents. Installed backup helpers must support the selected daemon's schema versions before it begins producing new bundles; the [offsite procedure](offsite-backups.md) owns that deployment requirement.
 
 Focused proof exercises all blocker kinds, cleanup followed by retirement, assignment/delivery races, exact-key replay, retained history, cross-project authorization, owner acknowledgements and browser controls. Installed qualification is reported with the release rather than inferred from source tests.

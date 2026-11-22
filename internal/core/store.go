@@ -20,7 +20,7 @@ import (
 )
 
 // Version five fences older binaries that assume one connector project binding.
-const schemaVersion = 5
+const schemaVersion = 6
 
 // OpenOption configures a store before it opens or creates any files.
 type OpenOption func(*storeOptions) error
@@ -151,12 +151,32 @@ func databaseURL(absolute string) url.URL {
 	return url.URL{Scheme: "file", Path: path}
 }
 
-func (s *Store) initialize(ctx context.Context, dir string) error {
+func (s *Store) initialize(ctx context.Context, dir string) (resultErr error) {
 	conn, err := s.writer.Conn(ctx)
 	if err != nil {
 		return storageError(err)
 	}
 	defer conn.Close()
+	var openedVersion int
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&openedVersion); err != nil {
+		return storageError(err)
+	}
+	rebuildWorkers := openedVersion > 0 && openedVersion < 6
+	if rebuildWorkers {
+		// SQLite's table-rebuild procedure keeps the original parent name
+		// for referencing foreign keys. Disable enforcement on this startup
+		// connection before the transaction and check every FK before commit.
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+			return storageError(err)
+		}
+		defer func() {
+			pragmaCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if _, err := conn.ExecContext(pragmaCtx, "PRAGMA foreign_keys=ON"); err != nil && resultErr == nil {
+				resultErr = storageError(err)
+			}
+		}()
+	}
 	if _, err = conn.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
 		return storageError(err)
 	}
@@ -172,6 +192,9 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 	}
 	if version > schemaVersion {
 		return Fail("schema_unsupported", "The database schema is newer than this service; use a compatible binary.", 500)
+	}
+	if openedVersion != version {
+		return Fail("schema_unsupported", "The database schema changed while the service was opening it.", 500)
 	}
 	if version == 0 {
 		// A fresh schema must not adopt an unrelated unversioned database.
@@ -231,6 +254,11 @@ func (s *Store) initialize(ctx context.Context, dir string) error {
 		}
 	} else if version == 4 {
 		if err = migrateConnectorCredentials(ctx, conn); err != nil {
+			return err
+		}
+	}
+	if rebuildWorkers {
+		if err = migrateWorkerNames(ctx, conn); err != nil {
 			return err
 		}
 	}
@@ -412,7 +440,8 @@ const writeTimeout = 2 * time.Second
 var schema = []string{
 	`CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)`,
 	`CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,github_repository_id INTEGER NOT NULL UNIQUE CHECK(github_repository_id>0),repository TEXT NOT NULL)`,
-	`CREATE TABLE workers(project_id TEXT NOT NULL REFERENCES projects(id),id TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(project_id,id),UNIQUE(project_id,name))`,
+	workersV6Table,
+	workersV6NameIndex,
 	`CREATE TABLE credentials(id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,token_sha256 TEXT NOT NULL UNIQUE,is_admin INTEGER NOT NULL CHECK(is_admin IN(0,1)),revoked INTEGER NOT NULL CHECK(revoked IN(0,1)))`,
 	`CREATE TABLE grants(credential_id TEXT NOT NULL REFERENCES credentials(id),project_id TEXT NOT NULL REFERENCES projects(id),can_read INTEGER NOT NULL CHECK(can_read IN(0,1)),can_write INTEGER NOT NULL CHECK(can_write IN(0,1)),PRIMARY KEY(credential_id,project_id))`,
 	`CREATE TABLE receipts(instance_id TEXT NOT NULL,principal_id TEXT NOT NULL,project_id TEXT NOT NULL,operation TEXT NOT NULL,target TEXT NOT NULL,key TEXT NOT NULL,fingerprint TEXT NOT NULL,response_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT '',PRIMARY KEY(instance_id,principal_id,project_id,operation,target,key))`,

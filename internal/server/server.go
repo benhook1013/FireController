@@ -311,19 +311,14 @@ func (a *api) createWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.create", Target: "workers", Key: k, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var exists int
-		err := tx.QueryRowContext(ctx, "SELECT 1 FROM workers WHERE project_id=? AND name=?", scope.ProjectID, request.Name).Scan(&exists)
-		if err == nil {
-			return nil, core.Fail("worker_already_configured", "A worker with this name already exists in the selected project.", 409)
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		if err := checkWorkerNameAvailable(ctx, tx, scope.ProjectID, request.Name); err != nil {
 			return nil, err
 		}
 		id := core.NewID("worker")
-		if _, err = tx.ExecContext(ctx, "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", scope.ProjectID, id, request.Name); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO workers(project_id,id,name) VALUES(?,?,?)", scope.ProjectID, id, request.Name); err != nil {
 			return nil, err
 		}
-		if err = core.AppendEvent(ctx, tx, scope, "workers.created", id, 1, map[string]string{"id": id}); err != nil {
+		if err := core.AppendEvent(ctx, tx, scope, "workers.created", id, 1, map[string]string{"id": id}); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": id, "revision": 1, "outcome": "created"}, nil

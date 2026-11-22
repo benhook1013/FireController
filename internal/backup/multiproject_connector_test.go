@@ -30,9 +30,10 @@ func connectorBackupFixture(t *testing.T, version, bindings int) (*restoreFixtur
 				t.Fatal(err)
 			}
 		}
-		if _, err = tx.Exec(`PRAGMA user_version=4`); err != nil {
-			t.Fatal(err)
-		}
+	}
+	// The fresh store no longer defaults to the v5 connector generation.
+	if _, err = tx.Exec(fmt.Sprintf(`PRAGMA user_version=%d`, version)); err != nil {
+		t.Fatal(err)
 	}
 	active, revoked := core.NewID("credential"), core.NewID("credential")
 	for i, id := range []string{active, revoked} {
@@ -162,7 +163,7 @@ func TestConnectorBackupRejectsResealedSchemaAndBindingCorruption(t *testing.T) 
 			f, credential := connectorBackupFixture(t, version, bindings)
 			bundle := restoreBundle(t, f)
 			cases := []struct{ name, statement string }{
-				{"future_base", `PRAGMA user_version=6`},
+				{"future_base", `PRAGMA user_version=7`},
 				{"wrong_base_layout", fmt.Sprintf(`PRAGMA user_version=%d`, otherVersion)},
 				{"missing_table", `DROP TABLE connector_credentials`},
 				{"extra_index", `CREATE INDEX connector_extra ON connector_credentials(worker_id)`},

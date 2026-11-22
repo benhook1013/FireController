@@ -457,7 +457,7 @@ func TestMultiProjectConnectorV4MigrationPreservesHistoryAndCanonicalSchema(t *t
 		`SELECT * FROM credentials ORDER BY id`, `SELECT * FROM grants ORDER BY credential_id,project_id`,
 		`SELECT * FROM projects ORDER BY id`, `SELECT * FROM workers ORDER BY project_id,id`,
 		`SELECT * FROM metadata ORDER BY key`, `SELECT * FROM events ORDER BY sequence`, `SELECT * FROM receipts`,
-		`SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'connector_%' ORDER BY type,name`,
+		`SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'connector_%' AND name<>'workers' ORDER BY type,name`,
 	}
 	before := make([][][]string, len(queries))
 	for i, query := range queries {
@@ -480,8 +480,8 @@ func TestMultiProjectConnectorV4MigrationPreservesHistoryAndCanonicalSchema(t *t
 			t.Fatalf("migration changed retained history or unrelated schema: %s", query)
 		}
 	}
-	if got := receiptRows(t, s.DB(), `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{"5"}}) {
-		t.Fatal("v4 migration did not advance to v5", got)
+	if got := receiptRows(t, s.DB(), `PRAGMA user_version`); !reflect.DeepEqual(got, [][]string{{"6"}}) {
+		t.Fatal("v4 migration did not advance to the current base version", got)
 	}
 	for i, name := range []string{"connector_credentials", "connector_binding_update", "connector_binding_delete", "connector_binding_insert"} {
 		var actual string

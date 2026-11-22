@@ -46,7 +46,7 @@ export function WorkerNameEditor({ worker }: { worker: Worker }) {
     {input && <form className="browser-action-form" data-browser-draft data-browser-dirty={input.name !== input.expectedName} data-browser-busy={action.busy} onSubmit={submit}>
       <label>Display name<input autoFocus value={input.name} disabled={action.locked} required maxLength={200} onChange={event => { action.clearNotice(); setDraft({ expectedName: input.expectedName, name: event.target.value }); }} /></label>
       {stale && !action.locked && <p className="notice" role="alert">The worker name changed. Reload the current name before saving your edit.</p>}
-      {refusal === 'worker_already_configured' && <p className="notice" role="alert">A worker with this name already exists in this project.</p>}
+      {refusal === 'worker_already_configured' && <p className="notice" role="alert">An active worker already uses this name.</p>}
       <div className="action-buttons">
         {stale && !action.locked ? <button type="button" onClick={() => void useCurrentName()}>Reload current name</button> :
           <button className="primary" type="submit" disabled={action.busy || !action.locked && (!input.name.trim() || input.name.trim() === input.expectedName)}>{action.busy ? 'Saving…' : action.locked ? 'Retry rename' : 'Save name'}</button>}

@@ -597,7 +597,7 @@ func validateJobUpdateIdentity(ctx context.Context, db sqlReader) error {
 
 func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[string]int, error) {
 	var version int
-	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 5) {
+	if db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version) != nil || (version < 1 || version > 6) {
 		return nil, invalid()
 	}
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 129`)
@@ -755,6 +755,11 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			if contextErr := checkContext(ctx); contextErr != nil {
 				return nil, contextErr
 			}
+			return nil, err
+		}
+	}
+	if version == 6 {
+		if err := validateWorkerNameSchema(ctx, db, versions["worker_retirements"] > 0); err != nil {
 			return nil, err
 		}
 	}
@@ -1639,6 +1644,34 @@ func validateHistoryViews(ctx context.Context, db sqlReader, reviewVersion int) 
 }
 
 type physicalSchemaObject struct{ kind, definition string }
+
+func validateWorkerNameSchema(ctx context.Context, db sqlReader, hasRetirements bool) error {
+	definitions := core.WorkerSchemaV6SQL()
+	objects := map[string]physicalSchemaObject{
+		"workers":              {"table", historyDefinitionSQL(definitions[0])},
+		"workers_project_name": {"index", historyDefinitionSQL(definitions[1])},
+	}
+	if err := validatePhysicalSchemaObjects(ctx, db, objects, []string{"workers"}); err != nil {
+		if contextErr := checkContext(ctx); contextErr != nil {
+			return contextErr
+		}
+		return err
+	}
+	// The lookup index is not unique: retired IDs may retain the name.
+	query := `SELECT EXISTS(SELECT 1 FROM workers w`
+	if hasRetirements {
+		query += ` WHERE NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)`
+	}
+	query += ` GROUP BY w.project_id,w.name HAVING count(*)>1)`
+	var duplicates bool
+	if err := db.QueryRowContext(ctx, query).Scan(&duplicates); err != nil || duplicates {
+		if contextErr := checkContext(ctx); contextErr != nil {
+			return contextErr
+		}
+		return invalid()
+	}
+	return nil
+}
 
 // Exact canonical DDL binds CHECK, PK, UNIQUE, default and partial-index
 // semantics in addition to the independent column/FK inventory below.

@@ -3,11 +3,24 @@ package server
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
+
+// checkWorkerNameAvailable must run inside the same serialized mutation as the write.
+func checkWorkerNameAvailable(ctx context.Context, tx *sql.Tx, projectID, name string) error {
+	var duplicate bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM workers w
+		WHERE w.project_id=? AND w.name=? AND NOT EXISTS(
+			SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id))`, projectID, name).Scan(&duplicate); err != nil {
+		return err
+	}
+	if duplicate {
+		return core.Fail("worker_already_configured", "An active worker with this name already exists in the selected project.", http.StatusConflict)
+	}
+	return nil
+}
 
 func (a *api) renameWorker(w http.ResponseWriter, r *http.Request) {
 	scope, err := a.store.AdminScope(r)
@@ -38,12 +51,11 @@ func (a *api) renameWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("worker_id")
 	result, err := a.store.Mutate(r.Context(), scope, core.Mutation{Operation: "workers.rename", Target: id, Key: k, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		var current string
-		err := tx.QueryRowContext(ctx, "SELECT name FROM workers WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&current)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, core.Fail("not_found", "The worker is unavailable in this project.", 404)
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, id); err != nil {
+			return nil, err
 		}
-		if err != nil {
+		var current string
+		if err := tx.QueryRowContext(ctx, "SELECT name FROM workers WHERE project_id=? AND id=?", scope.ProjectID, id).Scan(&current); err != nil {
 			return nil, err
 		}
 		if current != request.ExpectedName {
@@ -53,12 +65,8 @@ func (a *api) renameWorker(w http.ResponseWriter, r *http.Request) {
 		if current == request.Name {
 			return receipt, nil
 		}
-		var duplicate bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workers WHERE project_id=? AND name=?)", scope.ProjectID, request.Name).Scan(&duplicate); err != nil {
+		if err := checkWorkerNameAvailable(ctx, tx, scope.ProjectID, request.Name); err != nil {
 			return nil, err
-		}
-		if duplicate {
-			return nil, core.Fail("worker_already_configured", "A worker with this name already exists in the selected project.", 409)
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE workers SET name=? WHERE project_id=? AND id=?", request.Name, scope.ProjectID, id); err != nil {
 			return nil, err
