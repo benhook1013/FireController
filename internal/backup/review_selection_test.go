@@ -244,6 +244,9 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 		t.Fatal(err)
 	}
 	before := backupRows(t, db)
+	if _, ok := before["review_front_frames"]; !ok {
+		t.Fatal("predecessor must already include review front frames")
+	}
 	schema := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
 	metadata := restoreRows(t, db, `SELECT key,value FROM metadata ORDER BY key`)
 	for domain, version := range map[string]string{"reviews": "11", "review_execution": "10", "review_policy": "1", "review_rounds": "5"} {
@@ -286,7 +289,7 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 	if len(after) != len(before)+1 {
 		t.Fatal("upgrade added another table domain")
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name IN ('review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames','review_pr_followers')`).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name IN ('review_scheduling','review_pull_scheduling','review_automatic_selections','review_pr_followers')`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("deferred domain installed", count, err)
 	}
 	if err := reviewexec.ValidateSelectionSnapshot(t.Context(), db); err != nil {
