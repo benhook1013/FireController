@@ -71,29 +71,30 @@ class SelectionTests(unittest.TestCase):
             for occurrence in repeated:
                 self.assertEqual(sum(bool(re.fullmatch(expr, occurrence)) for expr in expressions), 1)
 
-    def test_reviewexec_split_changes_only_the_overloaded_partition(self):
+    def test_all_twelve_halves_preserve_the_six_former_partitions(self):
         package = SELECT.PREFIX + "internal/reviewexec"
-        names = sorted([f"TestCase{i:04}" for i in range(1021)] + ["ExampleAPI", "FuzzDecode"])
+        names = sorted([f"TestCase{i:04}" for i in range(1097)] + ["ExampleAPI", "FuzzDecode"])
         inventory = "\n".join(reversed(names))
-        old_slices = [set(names[index::6]) for index in range(6)]
 
-        def matches(shard):
+        def names_for(shard):
             expression = SELECT.select_tests(shard, package, inventory)
-            return {name for name in names if re.fullmatch(expression, name)}
+            return [name for name in names if re.fullmatch(expression, name)]
 
-        for index in (0, 2, 3, 4, 5):
-            self.assertEqual(matches(f"reviewexec-{index}"), old_slices[index])
-        left, right = matches("reviewexec-1"), matches("reviewexec-1b")
-        self.assertTrue(left and right)
-        self.assertFalse(left & right)
-        self.assertEqual(left | right, old_slices[1])
-        self.assertLessEqual(abs(len(left) - len(right)), 1)
+        for index in range(6):
+            first = f"reviewexec-{index}"
+            second = "reviewexec-1b" if index == 1 else f"reviewexec-{index + 6}"
+            former = names[index::6]
+            left, right = names_for(first), names_for(second)
+            self.assertEqual(left, former[::2])
+            self.assertEqual(right, former[1::2])
+            self.assertFalse(set(left) & set(right))
+        self.assertNotIn("reviewexec-7", SELECT.shards())
 
     def test_bad_package_inventories_and_unknown_shards_fail_closed(self):
         for inventory in ["", "bad/package", "\n".join(self.inventory() * 2), self.inventory()[0] + "\n\n"]:
             with self.subTest(inventory=inventory), self.assertRaises(ValueError):
                 SELECT.select_packages("rest-0", inventory)
-        for shard in ["rest-2", "backup-8", "reviewexec-6", "unknown-0"]:
+        for shard in ["rest-2", "backup-8", "reviewexec-7", "reviewexec-12", "unknown-0"]:
             with self.subTest(shard=shard), self.assertRaises(ValueError):
                 SELECT.select_packages(shard, "\n".join(self.inventory()))
         with self.assertRaises(ValueError):
