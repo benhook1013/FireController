@@ -213,6 +213,29 @@ func (e *Engine) fixEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, receipt)
 }
 
+func (e *Engine) correctEvidenceFixHTTP(w http.ResponseWriter, r *http.Request) {
+	scope, id, ok := e.evidenceHTTPScope(w, r, "write")
+	if !ok {
+		return
+	}
+	var request FindingFixCorrectionRequest
+	if err := core.ReadJSON(w, r, &request); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	key, err := core.IdempotencyKey(r, "idempotency_key_required")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	receipt, err := e.CorrectFinalizedFindingFix(r.Context(), scope, key, id, request)
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, receipt)
+}
+
 func (e *Engine) finalizeEvidenceHTTP(w http.ResponseWriter, r *http.Request) {
 	scope, id, ok := e.evidenceHTTPScope(w, r, "write")
 	if !ok {

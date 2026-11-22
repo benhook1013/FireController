@@ -293,6 +293,9 @@ func parseArguments(name string, data json.RawMessage) (arguments, error) {
 }
 
 func mutationTool(name string) bool {
+	if name == "review_finding_correct_fix" {
+		return true
+	}
 	if name == "review_following_update" || name == externalHostedSettlementTool {
 		return true
 	}

@@ -30,6 +30,7 @@ type mutationInvocation struct {
 	reviewRouteFix           client.ReviewRouteFixRequest
 	reviewDecision           client.ReviewDecisionRequest
 	reviewFix                client.ReviewFixRequest
+	reviewFixCorrection      client.ReviewFixCorrectionRequest
 	reviewOperationalFix     client.ReviewOperationalFixRequest
 	reviewDecisionBatch      client.ReviewDecisionBatchRequest
 	reviewFixBatch           client.ReviewFixBatchRequest
@@ -55,6 +56,8 @@ func isMutation(command, operation string) bool {
 		return true
 	}
 	switch command + " " + operation {
+	case "reviews correct-fix":
+		return true
 	case "reviews publish", "reviews publication-recover", "jobs create", "inbox send", "inbox seen", "inbox ack", "reviews decide", "reviews fix", "reviews operational-fix", "reviews decide-batch", "reviews fix-batch", "reviews settle-hosted", "reviews finalize", "reviews request", "reviews source-refresh", "reviews route-create", "reviews route-decide", "reviews route-fix":
 		return true
 	}
@@ -249,6 +252,8 @@ func executeMutation(ctx context.Context, service *client.Client, call *mutation
 		return service.RecordReviewOperationalFix(ctx, call.key, call.id, call.reviewOperationalFix)
 	case "reviews fix":
 		return service.RecordReviewFix(ctx, call.key, call.id, call.reviewFix)
+	case "reviews correct-fix":
+		return service.CorrectReviewFindingFix(ctx, call.key, call.id, call.reviewFixCorrection)
 	case "reviews finalize":
 		return service.FinalizeReviewSource(ctx, call.key, call.id, call.reviewFinalize)
 	default:

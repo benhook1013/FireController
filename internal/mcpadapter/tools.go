@@ -62,6 +62,7 @@ type arguments struct {
 	reviewRouteFix             client.ReviewRouteFixRequest
 	reviewDecision             client.ReviewDecisionRequest
 	reviewFix                  client.ReviewFixRequest
+	reviewFixCorrection        client.ReviewFixCorrectionRequest
 	reviewOperationalFix       client.ReviewOperationalFixRequest
 	reviewDecisionBatch        client.ReviewDecisionBatchRequest
 	reviewFixBatch             client.ReviewFixBatchRequest
@@ -138,7 +139,7 @@ func connectorToolServer(stdioBinding profile.Binding, remote *remoteMCP, multiP
 		write := reviewSchedulingWrite(tool.name) || projectMapWrite(tool.name) || trackingWrite(tool.name) || noteWrite(tool.name) || tool.name == "worker_pause_replace" || checkpointWrite(tool.name) || mutationTool(tool.name) || tool.name == "review_request" || tool.name == "review_source_refresh"
 		openWorld := tool.name == "review_pull_scheduling_update" || tool.name == "review_scheduling_configure" || existingManagementExternal(tool.name) || checkpointWrite(tool.name) || tool.name == "review_start" || tool.name == "review_request" || tool.name == "review_source_refresh" || tool.name == "actions_liveness_read" || tool.name == "actions_run_read" || tool.name == "wait_for_ci"
 		destructive := trackingWrite(tool.name) || reviewSchedulingWrite(tool.name) || existingManagementDestructive(tool.name) || ownerManagementDestructive(tool.name) || tool.name == "review_queue_move" || tool.name == "review_queue_remove" || tool.name == "review_subagent_update" || tool.name == "review_rounds_configure" || tool.name == "worker_pause_replace" || tool.name == "job_primary_replace" || tool.name == "map_entry_replace" || tool.name == "map_entry_update" || tool.name == "job_workstream_replace" || tool.name == "note_update" || tool.name == "job_update" || tool.name == "job_summary_set" || tool.name == "job_checklist_replace" || tool.name == "job_checklist_item_update" || reviewBatchTool(tool.name) || tool.name == externalHostedSettlementTool || tool.name == "review_finding_decide" || tool.name == "review_finding_fix" || tool.name == "review_finding_operational_fix" || tool.name == "review_finding_route" || tool.name == "review_route_decide" || tool.name == "review_route_fix"
-		destructive = destructive || tool.name == "review_queue_reorder"
+		destructive = destructive || tool.name == "review_queue_reorder" || tool.name == "review_finding_correct_fix"
 		s.AddTool(&mcp.Tool{Name: tool.name, Description: tool.description, InputSchema: tool.schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: !write, IdempotentHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, request *mcp.CallToolRequest) (response *mcp.CallToolResult, protocolErr error) {
 			defer func() { updates.Apply(response) }()
 			var args arguments
@@ -388,6 +389,8 @@ func connectorToolServer(stdioBinding profile.Binding, remote *remoteMCP, multiP
 					value, err = service.RecordReviewOperationalFix(ctx, args.key, args.id, args.reviewOperationalFix)
 				case "review_finding_fix":
 					value, err = service.RecordReviewFix(ctx, args.key, args.id, args.reviewFix)
+				case "review_finding_correct_fix":
+					value, err = service.CorrectReviewFindingFix(ctx, args.key, args.id, args.reviewFixCorrection)
 				case "review_source_finalize":
 					value, err = service.FinalizeReviewSource(ctx, args.key, args.id, args.reviewFinalize)
 				case "worker_pause_read":

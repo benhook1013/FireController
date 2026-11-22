@@ -266,9 +266,10 @@ func TestReviewControlsStdioSchemasAndLocalContext(t *testing.T) {
 	}
 	want := map[string][]string{
 		"review_evidence_read": {"evidence_id"}, "review_adjudication_read": {"evidence_id"},
-		"review_finding_decide":  {"evidence_id", "idempotency_key", "expected_revision", "finding", "disposition", "reason"},
-		"review_finding_fix":     {"evidence_id", "idempotency_key", "expected_revision", "finding", "expected_sha", "fix_sha", "proof_note"},
-		"review_source_finalize": {"evidence_id", "idempotency_key", "expected_revision"},
+		"review_finding_decide":      {"evidence_id", "idempotency_key", "expected_revision", "finding", "disposition", "reason"},
+		"review_finding_fix":         {"evidence_id", "idempotency_key", "expected_revision", "finding", "expected_sha", "fix_sha", "proof_note"},
+		"review_finding_correct_fix": {"evidence_id", "idempotency_key", "expected_revision", "finding", "expected_sha", "reason"},
+		"review_source_finalize":     {"evidence_id", "idempotency_key", "expected_revision"},
 	}
 	for _, tool := range listed.Tools {
 		required, ok := want[tool.Name]
@@ -292,8 +293,8 @@ func TestReviewControlsStdioSchemasAndLocalContext(t *testing.T) {
 		if finding := schema.Properties["finding"]; finding != nil && (finding["minimum"] != float64(0) || finding["maximum"] != float64(99) || !strings.Contains(finding["description"].(string), "zero-based")) {
 			t.Fatal("finding index does not advertise zero-based bounds")
 		}
-		write := tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_source_finalize"
-		destructive := tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix"
+		write := tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_correct_fix" || tool.Name == "review_source_finalize"
+		destructive := tool.Name == "review_finding_decide" || tool.Name == "review_finding_fix" || tool.Name == "review_finding_correct_fix"
 		a := tool.Annotations
 		if a == nil || a.ReadOnlyHint == write || !a.IdempotentHint || a.DestructiveHint == nil || *a.DestructiveHint != destructive || a.OpenWorldHint == nil || *a.OpenWorldHint {
 			t.Fatal("review control annotations do not match effects")
@@ -429,11 +430,12 @@ func TestReviewControlsArgumentsRejectBeforeCredentialAndHTTP(t *testing.T) {
 	session := reviewControlsStdio(t, path, "alpha")
 	id := "review_evidence_" + strings.Repeat("a", 32)
 	base := map[string]map[string]any{
-		"review_evidence_read":     {"evidence_id": id},
-		"review_adjudication_read": {"evidence_id": id},
-		"review_finding_decide":    {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0, "finding": 0, "disposition": "accepted", "reason": "source proof"},
-		"review_finding_fix":       {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0, "finding": 0, "expected_sha": "", "fix_sha": strings.Repeat("f", 40), "proof_note": "fix proof"},
-		"review_source_finalize":   {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0},
+		"review_evidence_read":       {"evidence_id": id},
+		"review_adjudication_read":   {"evidence_id": id},
+		"review_finding_decide":      {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0, "finding": 0, "disposition": "accepted", "reason": "source proof"},
+		"review_finding_fix":         {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0, "finding": 0, "expected_sha": "", "fix_sha": strings.Repeat("f", 40), "proof_note": "fix proof"},
+		"review_finding_correct_fix": {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0, "finding": 0, "expected_sha": strings.Repeat("f", 40), "reason": "correction reason"},
+		"review_source_finalize":     {"evidence_id": id, "idempotency_key": "explicit", "expected_revision": 0},
 	}
 	for name, valid := range base {
 		t.Run(name, func(t *testing.T) {

@@ -154,6 +154,10 @@ func adjudicationMatches(state ReviewAdjudication, expected int64) bool {
 // event, plus an installed native browser projection. Mutate creates the receipt;
 // projection failure rolls back all changes without altering captured evidence.
 func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication, kind string, finding int64, request any, at string) (any, error) {
+	return e.persistReviewAdjudicationChange(ctx, tx, scope, state, kind, finding, request, at, nil)
+}
+
+func (e *Engine) persistReviewAdjudicationChange(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication, kind string, finding int64, request any, at string, correction *reviews.NativeFixCorrection) (any, error) {
 	prior := state.Revision
 	state.Revision++
 	body, err := json.Marshal(state)
@@ -178,12 +182,19 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 	if eventKind == "operational_fix_recorded" {
 		eventKind = "fix_recorded"
 	}
+	if correction != nil {
+		eventKind = "adjudicated"
+	}
 	if err = core.AppendEvent(ctx, tx, scope, "review.evidence."+eventKind, state.EvidenceID, state.Revision, struct {
 		Finding int64 `json:"finding"`
 	}{finding}); err != nil {
 		return nil, err
 	}
-	if e.publishAdjudication != nil {
+	if correction != nil && e.publishAdjudication != nil {
+		if err = publishReviewAdjudicationWithCorrection(ctx, tx, scope, state, correction); err != nil {
+			return nil, err
+		}
+	} else if e.publishAdjudication != nil {
 		if err = e.publishAdjudication(ctx, tx, scope, state); err != nil {
 			return nil, err
 		}
@@ -198,7 +209,7 @@ func (e *Engine) persistReviewAdjudication(ctx context.Context, tx *sql.Tx, scop
 	if err = refreshEvidenceComparison(ctx, tx, scope.ProjectID, state.EvidenceID); err != nil {
 		return nil, err
 	}
-	if state.Finalized {
+	if state.Finalized && correction == nil {
 		var operation string
 		if err = tx.QueryRowContext(ctx, `SELECT operation_id FROM review_execution_evidence WHERE project_id=? AND id=?`, scope.ProjectID, state.EvidenceID).Scan(&operation); err != nil {
 			return nil, err

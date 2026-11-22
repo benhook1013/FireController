@@ -355,6 +355,10 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		for _, flag := range []string{"--finding", "--expect-sha", "--fix-sha", "--proof"} {
 			allowed[flag] = true
 		}
+	case "correct-fix":
+		for _, flag := range []string{"--finding", "--expect-sha", "--reason"} {
+			allowed[flag] = true
+		}
 	case "route-create":
 		for _, flag := range []string{"--finding", "--target-pr", "--unassigned", "--reason", "--expect-route-revision"} {
 			allowed[flag] = true
@@ -429,7 +433,7 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 		}
 	}
 	var finding int64
-	if operation == "decide" || operation == "fix" || operation == "operational-fix" || operation == "route-create" {
+	if operation == "decide" || operation == "fix" || operation == "correct-fix" || operation == "operational-fix" || operation == "route-create" {
 		finding, err = strconv.ParseInt(values["--finding"], 10, 64)
 		if err != nil || finding < 0 || finding >= 100 || strconv.FormatInt(finding, 10) != values["--finding"] {
 			return nil, false
@@ -450,6 +454,12 @@ func parseReviewControl(operation string, args []string) (*mutationInvocation, b
 	case "fix":
 		call.reviewFix = client.ReviewFixRequest{ExpectedRevision: revision, Finding: finding, ExpectedSHA: values["--expect-sha"], FixSHA: values["--fix-sha"], ProofNote: values["--proof"]}
 		if err := client.ValidateReviewFixRequest(call.reviewFix); err != nil {
+			call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
+			return call, false
+		}
+	case "correct-fix":
+		call.reviewFixCorrection = client.ReviewFixCorrectionRequest{ExpectedRevision: revision, Finding: finding, ExpectedSHA: values["--expect-sha"], Reason: values["--reason"]}
+		if err := client.ValidateReviewFixCorrectionRequest(call.reviewFixCorrection); err != nil {
 			call.argumentDiagnostic = reviewFieldArgumentDiagnostic(err)
 			return call, false
 		}

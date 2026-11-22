@@ -75,6 +75,7 @@ func (e *Engine) Register(mux apiroutes.Registrar) {
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/decisions/batch", e.decideEvidenceBatchHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/fixes/batch", e.fixEvidenceBatchHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/fixes", e.fixEvidenceHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/corrections", e.correctEvidenceFixHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/operational-fixes", e.operationalFixEvidenceHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/evidence/{evidence_id}/finalization", e.finalizeEvidenceHTTP)
 }

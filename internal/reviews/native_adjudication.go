@@ -35,6 +35,22 @@ type NativeFindingUpdate struct {
 	FixSHA, ProofNote, ResolvedAt                                  string
 }
 
+// NativeFixCorrection pins the commit proof being retired from the current
+// native finding. It is supplied only by the trusted ledger correction path.
+type NativeFixCorrection struct {
+	SourceFindingID, PreviousSHA, PreviousNote, PreviousResolvedAt string
+}
+
+func (permit NativeFixCorrection) matches(before, next NativeFindingUpdate) bool {
+	return before.SourceFindingID == permit.SourceFindingID &&
+		before.Disposition == "accepted" && before.Route == nil && before.OperationalProof == nil &&
+		before.FixSHA == permit.PreviousSHA && len(before.FixSHA) == 40 && strings.ToLower(before.FixSHA) == before.FixSHA && validSHA(before.FixSHA) &&
+		before.ProofNote == permit.PreviousNote && strings.TrimSpace(before.ProofNote) != "" && nativeAdjudicationText(before.ProofNote, 2048, true) &&
+		before.ResolvedAt == permit.PreviousResolvedAt && nativeAdjudicationTime(before.ResolvedAt) &&
+		next.Disposition == "rejected" && next.Route == nil && next.OperationalProof == nil &&
+		next.FixSHA == "" && next.ProofNote == "" && next.ResolvedAt == ""
+}
+
 func nativeAdjudicationConflict() error {
 	return core.Fail("observation_conflict", "Native adjudication cannot replace source identity, finalized counts or retained proof.", 409)
 }
@@ -108,9 +124,21 @@ func UpdateNativeAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	return updateSourceAdjudication(ctx, tx, scope, nativeSource, input)
 }
 
+// UpdateNativeAdjudicationCorrection projects one audited commit-fix correction
+// on an already finalized native run. Trusted callers own authorization, the
+// ledger transition and audit, and must roll back the transaction on error.
+// An absent current projection of the specified run produces no write.
+func UpdateNativeAdjudicationCorrection(ctx context.Context, tx *sql.Tx, scope core.Scope, input NativeAdjudication, permit NativeFixCorrection) (Receipt, bool, error) {
+	return updateSourceAdjudicationWithCorrection(ctx, tx, scope, nativeSource, input, &permit)
+}
+
 // updateSourceAdjudication preserves one history/projection implementation for
 // trusted native evidence and explicitly worker-reported independent reviews.
 func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, source string, input NativeAdjudication) (Receipt, bool, error) {
+	return updateSourceAdjudicationWithCorrection(ctx, tx, scope, source, input, nil)
+}
+
+func updateSourceAdjudicationWithCorrection(ctx context.Context, tx *sql.Tx, scope core.Scope, source string, input NativeAdjudication, permit *NativeFixCorrection) (Receipt, bool, error) {
 	updates, decisions, fixed, err := validateNativeAdjudication(input)
 	if err != nil {
 		return Receipt{}, false, err
@@ -128,6 +156,9 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err != nil {
 		return Receipt{}, false, err
 	}
+	if permit != nil && (source != nativeSource || !finalized || !input.Finalized) {
+		return Receipt{}, false, nativeAdjudicationConflict()
+	}
 	current := Receipt{ID: previous, Revision: revision, Outcome: "observed"}
 	rows, err := tx.QueryContext(ctx, `SELECT source_finding_id,disposition,decision_reason,actor,decided_at,fix_sha,proof_note,resolved_at,route_json,operational_proof_json FROM review_findings WHERE project_id=? AND snapshot_id=? AND run_id=? ORDER BY position`, scope.ProjectID, previous, runID)
 	if err != nil {
@@ -135,6 +166,7 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	}
 	ordered := make([]NativeFindingUpdate, 0, len(input.Findings))
 	changed := finalized != input.Finalized || oldFixed != fixed
+	usedPermit := false
 	for rows.Next() {
 		var before NativeFindingUpdate
 		var routeJSON, operationalProofJSON string
@@ -150,7 +182,20 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 			break
 		}
 		next, exists := updates[before.SourceFindingID]
-		if !exists || before.FixSHA != "" && (next.Disposition != "accepted" || next.FixSHA == "") || before.OperationalProof != nil && (next.Disposition != "accepted" || next.OperationalProof == nil) || len(ordered) >= maxRunFindings {
+		if !exists || len(ordered) >= maxRunFindings {
+			err = nativeAdjudicationConflict()
+			break
+		}
+		correcting := permit != nil && before.SourceFindingID == permit.SourceFindingID
+		if correcting {
+			if usedPermit || !permit.matches(before, next) {
+				err = nativeAdjudicationConflict()
+				break
+			}
+			usedPermit = true
+		}
+		if (!correcting && before.FixSHA != "" && (next.Disposition != "accepted" || next.FixSHA == "")) ||
+			(before.OperationalProof != nil && (next.Disposition != "accepted" || next.OperationalProof == nil)) {
 			err = nativeAdjudicationConflict()
 			break
 		}
@@ -162,7 +207,13 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 			err = nativeAdjudicationConflict()
 			break
 		}
-		changed = changed || !reflect.DeepEqual(before, next)
+		different := !reflect.DeepEqual(before, next)
+		// An audited correction covers the selected transition only.
+		if permit != nil && !correcting && different {
+			err = nativeAdjudicationConflict()
+			break
+		}
+		changed = changed || different
 		ordered = append(ordered, next)
 	}
 	if err == nil {
@@ -172,7 +223,7 @@ func updateSourceAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	if len(ordered) != len(input.Findings) || found < int64(len(ordered)) {
+	if (permit != nil && !usedPermit) || len(ordered) != len(input.Findings) || found < int64(len(ordered)) {
 		return Receipt{}, false, nativeAdjudicationConflict()
 	}
 	if finalized {

@@ -28,6 +28,10 @@ func projectionFindingID(evidenceID string, finding int64) string {
 }
 
 func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication) error {
+	return publishReviewAdjudicationWithCorrection(ctx, tx, scope, state, nil)
+}
+
+func publishReviewAdjudicationWithCorrection(ctx context.Context, tx *sql.Tx, scope core.Scope, state ReviewAdjudication, correction *reviews.NativeFixCorrection) error {
 	input := reviews.NativeAdjudication{
 		SourceRunID: state.EvidenceID,
 		Finalized:   state.Finalized,
@@ -79,6 +83,10 @@ func publishReviewAdjudication(ctx context.Context, tx *sql.Tx, scope core.Scope
 			ProofNote:        finding.ProofNote,
 			ResolvedAt:       finding.FixedAt,
 		})
+	}
+	if correction != nil {
+		_, _, err := reviews.UpdateNativeAdjudicationCorrection(ctx, tx, scope, input, *correction)
+		return err
 	}
 	_, _, err := reviews.UpdateNativeAdjudication(ctx, tx, scope, input)
 	return err

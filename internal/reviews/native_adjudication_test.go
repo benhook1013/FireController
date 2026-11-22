@@ -27,6 +27,17 @@ func applyNativeAdjudication(f *apiFixture, input NativeAdjudication) (Receipt, 
 	return receipt, changed, err
 }
 
+func applyNativeAdjudicationCorrection(f *apiFixture, input NativeAdjudication, permit NativeFixCorrection) (Receipt, bool, error) {
+	var receipt Receipt
+	var changed bool
+	err := f.store.BackgroundWrite(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		receipt, changed, err = UpdateNativeAdjudicationCorrection(ctx, tx, core.Scope{ProjectID: f.project, PrincipalID: "native-adjudicator"}, input, permit)
+		return err
+	})
+	return receipt, changed, err
+}
+
 func nativeAdjudicationInput(run RunInput) NativeAdjudication {
 	input := NativeAdjudication{SourceRunID: run.SourceRunID, Finalized: run.Finalized, Findings: make([]NativeFindingUpdate, len(run.Findings))}
 	if run.Finalized {
@@ -75,7 +86,7 @@ func decideNativeFinding(finding *NativeFindingUpdate, disposition string) {
 func TestNativeAdjudicationMissingCurrentProjectionIsNoOp(t *testing.T) {
 	f := newAPIFixture(t)
 	input := nativeAdjudicationInput(nativeUndecidedRun("same-source-run", 0))
-	for _, state := range []string{"unconfigured", "imported-only", "other-project-only", "historical-native-only"} {
+	for _, state := range []string{"unconfigured", "imported-only", "other-project-only", "historical-native-only", "different-current-native-run"} {
 		t.Run(state, func(t *testing.T) {
 			switch state {
 			case "imported-only":
@@ -94,11 +105,20 @@ func TestNativeAdjudicationMissingCurrentProjectionIsNoOp(t *testing.T) {
 				run := nativeUndecidedRun(input.SourceRunID, 0)
 				mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
 				f.observe(t, reviewRequest(2, []PullInput{nativePull(1)}), "new-current-without-native")
+			case "different-current-native-run":
+				run := nativeUndecidedRun("different-native-run", 0)
+				mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
 			}
 			counts := nativeProjectionCounts(t, f)
 			receipt, changed, err := applyNativeAdjudication(f, input)
 			if err != nil || changed || receipt != (Receipt{}) || !reflect.DeepEqual(nativeProjectionCounts(t, f), counts) {
 				t.Fatal("missing current native projection produced effects", receipt, changed, err)
+			}
+			correction := input
+			correction.Finalized, correction.FrozenCounts = true, &NativeCounts{}
+			receipt, changed, err = applyNativeAdjudicationCorrection(f, correction, NativeFixCorrection{SourceFindingID: "finding-0", PreviousSHA: strings.Repeat("f", 40), PreviousNote: "Previous proof", PreviousResolvedAt: "2026-01-01T00:05:00Z"})
+			if err != nil || changed || receipt != (Receipt{}) || !reflect.DeepEqual(nativeProjectionCounts(t, f), counts) {
+				t.Fatal("missing current native projection produced correction effects", receipt, changed, err)
 			}
 		})
 	}
@@ -323,6 +343,152 @@ func TestNativeAdjudicationFinalizationAndFixProofCannotBeErased(t *testing.T) {
 	if _, changed, err := applyNativeAdjudication(f, input); err != nil || !changed {
 		t.Fatal("valid proof correction rejected", err)
 	}
+}
+
+func rejectNativeFindingWithProof(finding *NativeFindingUpdate) {
+	decideNativeFinding(finding, "rejected")
+	finding.DecisionReason = "The prior fix was based on a mistaken attribution"
+	finding.FixSHA, finding.ProofNote, finding.ResolvedAt = "", "", ""
+	finding.Route, finding.OperationalProof = nil, nil
+}
+
+func TestNativeAdjudicationCorrectionRetiresOnlyPinnedProofAndKeepsHistory(t *testing.T) {
+	f := newAPIFixture(t)
+	run := nativeUndecidedRun("native-proof-correction", 4)
+	mustNativePublish(t, f, NativePublication{Pull: nativePull(1), Run: &run})
+	input := nativeAdjudicationInput(run)
+	for i := range input.Findings[:3] {
+		decideNativeFinding(&input.Findings[i], "accepted")
+	}
+	for i := range input.Findings[:2] {
+		finding := &input.Findings[i]
+		finding.FixSHA, finding.ProofNote, finding.ResolvedAt = strings.Repeat("f", 40), "Previous proof\nexact bytes", "2026-01-01T00:05:00Z"
+	}
+	note := "Operational settings verification"
+	digest := sha256.Sum256([]byte(note))
+	input.Findings[2].OperationalProof = &OperationalProof{Digest: hex.EncodeToString(digest[:]), Note: note, ActorID: "operator", RecordedAt: "2026-01-01T00:05:00Z"}
+	decideNativeFinding(&input.Findings[3], "routed")
+	route := nativeRouteFixture(3)
+	route.Disposition, route.Reason, route.Actor, route.DecidedAt = "accepted", "Receiving decision", "receiver", "2026-01-01T00:05:00Z"
+	route.FixSHA, route.ProofNote, route.FixedAt = strings.Repeat("c", 40), "Receiving proof", "2026-01-01T00:06:00Z"
+	input.Findings[3].Route = route
+	unfinalized, changed, err := applyNativeAdjudication(f, input)
+	if err != nil || !changed {
+		t.Fatal("setup unfinalized proof", unfinalized, changed, err)
+	}
+	input.Finalized, input.FrozenCounts = true, &NativeCounts{Found: 4, Accepted: 3, Routed: 1}
+	next := input
+	next.Findings = append([]NativeFindingUpdate(nil), input.Findings...)
+	before := input.Findings[0]
+	permit := NativeFixCorrection{SourceFindingID: before.SourceFindingID, PreviousSHA: before.FixSHA, PreviousNote: before.ProofNote, PreviousResolvedAt: before.ResolvedAt}
+	rejectNativeFindingWithProof(&next.Findings[0])
+
+	checkConflict := func(t *testing.T, candidate NativeAdjudication, permit NativeFixCorrection) {
+		t.Helper()
+		state := importDatabaseState(t, f)
+		receipt, changed, err := applyNativeAdjudicationCorrection(f, candidate, permit)
+		nativeErrorCode(t, err, "observation_conflict")
+		if changed || receipt != (Receipt{}) || !reflect.DeepEqual(state, importDatabaseState(t, f)) {
+			t.Fatal("refused correction changed projection state", receipt, changed)
+		}
+	}
+	// The permit is not authority to finalize and retire proof in one step.
+	checkConflict(t, next, permit)
+	previous, changed, err := applyNativeAdjudication(f, input)
+	if err != nil || !changed {
+		t.Fatal("setup finalization", previous, changed, err)
+	}
+	runPath := "/runs/" + runOpaqueID(f.project, nativeSource, run.SourceRunID)
+	var oldDetail RunDetailResponse
+	oldBytes := nativeRead(t, f, runPath+"?snapshot="+previous.ID, &oldDetail)
+	oldSnapshot := nativeSnapshotBytes(t, f, previous.ID)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*NativeAdjudication, *NativeFixCorrection)
+	}{
+		{"wrong-finding", func(_ *NativeAdjudication, p *NativeFixCorrection) { p.SourceFindingID = "missing-finding" }},
+		{"wrong-sha", func(_ *NativeAdjudication, p *NativeFixCorrection) { p.PreviousSHA = strings.Repeat("e", 40) }},
+		{"wrong-note", func(_ *NativeAdjudication, p *NativeFixCorrection) { p.PreviousNote += " " }},
+		{"wrong-resolved-at", func(_ *NativeAdjudication, p *NativeFixCorrection) { p.PreviousResolvedAt = "2026-01-01T00:05:00.0Z" }},
+		{"unused-permit", func(in *NativeAdjudication, _ *NativeFixCorrection) { in.Findings[0] = before }},
+		{"unfinalize", func(in *NativeAdjudication, _ *NativeFixCorrection) { in.Finalized, in.FrozenCounts = false, nil }},
+		{"change-frozen-counts", func(in *NativeAdjudication, _ *NativeFixCorrection) {
+			in.FrozenCounts = &NativeCounts{Found: 4, Accepted: 2, Routed: 1}
+		}},
+		{"erase-without-rejection", func(in *NativeAdjudication, _ *NativeFixCorrection) { in.Findings[0].Disposition = "accepted" }},
+		{"retire-second-commit-proof", func(in *NativeAdjudication, _ *NativeFixCorrection) { rejectNativeFindingWithProof(&in.Findings[1]) }},
+		{"change-unselected-finding", func(in *NativeAdjudication, _ *NativeFixCorrection) { in.Findings[1].DecisionReason += " (changed)" }},
+		{"operational-proof-is-not-commit-proof", func(in *NativeAdjudication, p *NativeFixCorrection) {
+			in.Findings[0] = before
+			*p = NativeFixCorrection{SourceFindingID: in.Findings[2].SourceFindingID}
+			rejectNativeFindingWithProof(&in.Findings[2])
+		}},
+		{"receiving-proof-is-not-source-proof", func(in *NativeAdjudication, p *NativeFixCorrection) {
+			in.Findings[0] = before
+			*p = NativeFixCorrection{SourceFindingID: in.Findings[3].SourceFindingID, PreviousSHA: route.FixSHA, PreviousNote: route.ProofNote, PreviousResolvedAt: route.FixedAt}
+			rejectNativeFindingWithProof(&in.Findings[3])
+		}},
+		{"erase-receiving-proof-on-unselected-finding", func(in *NativeAdjudication, _ *NativeFixCorrection) { rejectNativeFindingWithProof(&in.Findings[3]) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate, candidatePermit := next, permit
+			candidate.Findings = append([]NativeFindingUpdate(nil), next.Findings...)
+			tc.mutate(&candidate, &candidatePermit)
+			checkConflict(t, candidate, candidatePermit)
+		})
+	}
+	if _, changed, err = applyNativeAdjudication(f, next); changed {
+		t.Fatal("ordinary path retired proof")
+	}
+	nativeErrorCode(t, err, "observation_conflict")
+	t.Run("caller-rollback", func(t *testing.T) {
+		state := importDatabaseState(t, f)
+		scope := core.Scope{ProjectID: f.project, PrincipalID: "native-adjudicator"}
+		err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			if _, changed, err := UpdateNativeAdjudicationCorrection(ctx, tx, scope, next, permit); err != nil || !changed {
+				return fmt.Errorf("correction did not reach caller rollback: changed=%t err=%v", changed, err)
+			}
+			return core.Fail("test_rollback", "Synthetic caller rollback.", 409)
+		})
+		nativeErrorCode(t, err, "test_rollback")
+		if !reflect.DeepEqual(state, importDatabaseState(t, f)) {
+			t.Fatal("caller rollback left projection effects")
+		}
+	})
+	counts := nativeProjectionCounts(t, f)
+	corrected, changed, err := applyNativeAdjudicationCorrection(f, next, permit)
+	if err != nil || !changed || corrected.Revision != previous.Revision+1 {
+		t.Fatal("matching permit failed to project correction", corrected, changed, err)
+	}
+	var detail RunDetailResponse
+	nativeRead(t, f, runPath, &detail)
+	expectedRun := oldDetail.Run
+	expectedRun.Fixed--
+	if !reflect.DeepEqual(detail.Run, expectedRun) || !reflect.DeepEqual(detail.Findings[1:], oldDetail.Findings[1:]) {
+		t.Fatal("run facts, original counts, or other findings changed")
+	}
+	expectedFinding := oldDetail.Findings[0]
+	expectedFinding.Disposition, expectedFinding.DecisionReason = "rejected", next.Findings[0].DecisionReason
+	expectedFinding.FixSHA, expectedFinding.ProofNote, expectedFinding.ResolvedAt = "", "", ""
+	if !reflect.DeepEqual(detail.Findings[0], expectedFinding) {
+		t.Fatal("target finding did not change only its decision and effective proof", detail.Findings[0])
+	}
+	if !bytes.Equal(nativeRead(t, f, runPath+"?snapshot="+previous.ID, &detail), oldBytes) || nativeSnapshotBytes(t, f, previous.ID) != oldSnapshot {
+		t.Fatal("correction rewrote the previous snapshot")
+	}
+	after := nativeProjectionCounts(t, f)
+	if after["review_snapshots"] != counts["review_snapshots"]+1 || after["events"] != counts["events"]+1 || after["receipts"] != counts["receipts"] {
+		t.Fatal("correction did not append exactly one projection snapshot and event")
+	}
+	var storedDigest string
+	if err := f.store.DB().QueryRow(`SELECT payload_sha256 FROM review_snapshots WHERE project_id=? AND snapshot_id=?`, f.project, corrected.ID).Scan(&storedDigest); err != nil {
+		t.Fatal(err)
+	}
+	effectiveDigest := sha256.Sum256([]byte(previous.ID + "\x00" + mustJSON(next)))
+	if storedDigest != hex.EncodeToString(effectiveDigest[:]) {
+		t.Fatal("snapshot digest did not use just the effective adjudication input")
+	}
+	checkConflict(t, next, permit) // A spent permit is not a projection-level replay key.
 }
 
 func TestNativeAdjudicationZeroFindingsAndIncompleteFinalization(t *testing.T) {

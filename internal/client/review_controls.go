@@ -150,6 +150,12 @@ type ReviewFixRequest struct {
 	FixSHA           string `json:"fix_sha"`
 	ProofNote        string `json:"proof_note"`
 }
+type ReviewFixCorrectionRequest struct {
+	ExpectedRevision int64  `json:"expected_revision"`
+	Finding          int64  `json:"finding"`
+	ExpectedSHA      string `json:"expected_sha"`
+	Reason           string `json:"reason"`
+}
 type ReviewOperationalFixRequest struct {
 	ExpectedRevision int64  `json:"expected_revision"`
 	Finding          int64  `json:"finding"`
@@ -196,6 +202,17 @@ func ValidateReviewFixRequest(r ReviewFixRequest) error {
 		return err
 	}
 	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || !controlText(r.ProofNote, 2048, true) {
+		return mutationValidation()
+	}
+	return nil
+}
+func ValidateReviewFixCorrectionRequest(r ReviewFixCorrectionRequest) error {
+	if !controlHex(r.ExpectedSHA, 40) {
+		err := fail("validation_failed", "expected_sha must be exactly 40 lowercase hexadecimal characters.", "Use the finding's full currently recorded fix SHA, not the PR head. No request was sent.", 400)
+		err.Details = map[string]string{"field": "expected_sha", "format": "exactly 40 lowercase hexadecimal characters"}
+		return err
+	}
+	if !validControlRevision(r.ExpectedRevision) || r.Finding < 0 || r.Finding >= 100 || !controlText(r.Reason, 2048, true) {
 		return mutationValidation()
 	}
 	return nil
@@ -431,6 +448,12 @@ func (c *Client) RecordReviewFix(ctx context.Context, key, id string, request Re
 		return ReviewControlReceipt{}, err
 	}
 	return c.reviewControl(ctx, key, id, "fixes", "fix_recorded", request.ExpectedRevision, request)
+}
+func (c *Client) CorrectReviewFindingFix(ctx context.Context, key, id string, request ReviewFixCorrectionRequest) (ReviewControlReceipt, error) {
+	if err := ValidateReviewFixCorrectionRequest(request); err != nil {
+		return ReviewControlReceipt{}, err
+	}
+	return c.reviewControl(ctx, key, id, "corrections", "adjudication_corrected", request.ExpectedRevision, request)
 }
 func (c *Client) RecordReviewOperationalFix(ctx context.Context, key, id string, request ReviewOperationalFixRequest) (ReviewControlReceipt, error) {
 	if err := ValidateReviewOperationalFixRequest(request); err != nil {
