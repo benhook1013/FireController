@@ -77,6 +77,10 @@ func (e *Engine) StartAttempt(ctx context.Context, project, id string) (Attempt,
 }
 
 func (e *Engine) startAttempt(ctx context.Context, project, id string, draftReadyRevision int64, expectedRevision int64) (Attempt, error) {
+	return e.startAttemptWithWitness(ctx, project, id, draftReadyRevision, expectedRevision, nil)
+}
+
+func (e *Engine) startAttemptWithWitness(ctx context.Context, project, id string, draftReadyRevision int64, expectedRevision int64, witness *independentClaimWitness) (Attempt, error) {
 	var result Attempt
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		o, err := readOperation(ctx, tx, project, id)
@@ -170,7 +174,7 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 			return nil
 		}
 		var repositoryID int64
-		if earlier, err := e.earlierQueuedReviewIntent(ctx, tx, o, c, revision); err != nil {
+		if earlier, err := e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, nil, witness); err != nil {
 			return err
 		} else if earlier != nil {
 			return nil

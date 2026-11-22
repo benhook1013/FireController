@@ -318,7 +318,7 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 			project, projectOK := k.p.(string)
 			id, idOK := k.id.(string)
 			if !projectOK || !idOK {
-				if _, err := quarantineNativeSelection(ctx, tx, k.p, k.id, "selecting", k.revision); err != nil {
+				if _, err := quarantineNativeSelection(ctx, tx, k.p, k.id, "selecting", k.revision); err != nil && !selectionCustodyUnproved(err) {
 					return err
 				}
 				continue
@@ -326,6 +326,11 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 			r, err := readRun(ctx, tx, project, id)
 			if automaticProjectRefused(err) || err == nil && r.Revision == math.MaxInt64 {
 				didChange, err := quarantineSelection(ctx, tx, Run{ProjectID: project, ID: id, State: "selecting", Revision: k.revision})
+				if selectionCustodyUnproved(err) {
+					// Only the pre-write row-local refusal is isolated. Keep
+					// the original link intact and recover other rows.
+					continue
+				}
 				if err != nil {
 					return err
 				}
@@ -437,7 +442,7 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	present, err := restoredDomain(ctx, tx, "review_selection", "review_selections", "1")
+	present, err := restoredDomain(ctx, tx, "review_selection", "review_selections", "1", "2")
 	if err != nil || !present {
 		return 0, err
 	}
@@ -484,28 +489,91 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 // A corrupt revision is an opaque retained value, never an arithmetic operand.
 const selectionClaimRevision = `CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision ELSE 0 END`
 
-// Quarantine only the observed pending row. Keep its original damaged fields
-// and any child link for diagnosis; do not fabricate a readable history entry.
+// Quarantine only the observed pending row. Never reinterpret a retained
+// live child as an explicit operation after removing its selection binding.
 func quarantineSelection(ctx context.Context, tx *sql.Tx, expected Run) (bool, error) {
-	if expected.State != "queued" && expected.State != "selecting" {
-		return false, nil
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='local_read_unavailable',revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END WHERE project_id=? AND id=? AND state=? AND `+selectionClaimRevision+`=?`, expected.ProjectID, expected.ID, expected.State, expected.Revision)
-	if err != nil {
-		return false, err
-	}
-	n, err := result.RowsAffected()
-	return n == 1, err
+	return quarantineNativeSelection(ctx, tx, expected.ProjectID, expected.ID, expected.State, expected.Revision)
 }
 
+// Unproved custody is classified only before any selection writes. It may
+// isolate a startup rebuild row, never a failed query or post-write error.
+type unprovedSelectionCustodyError struct{ error }
+
+func (e *unprovedSelectionCustodyError) Unwrap() error { return e.error }
+func selectionCustodyUnproved(err error) bool {
+	var refusal *unprovedSelectionCustodyError
+	return errors.As(err, &refusal)
+}
 func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any, state string, revision int64) (bool, error) {
 	if state != "queued" && state != "selecting" {
 		return false, nil
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='local_read_unavailable',revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END WHERE project_id=? AND id=? AND state=? AND `+selectionClaimRevision+`=?`, project, id, state, revision)
+	const observed = ` WHERE project_id=? AND id=? AND state=? AND ` + selectionClaimRevision + `=?`
+	var originalLink, originalRevision any
+	err := tx.QueryRowContext(ctx, `SELECT operation_id,revision FROM review_selections`+observed, project, id, state, revision).Scan(&originalLink, &originalRevision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	linkGuard := ` AND operation_id IS NULL`
+	holdReason := "local_read_unavailable"
+	args := []any{project, id, state, revision}
+	if originalLink != nil {
+		// Preserve only positively typed same-project custody. A missing
+		// child is valid diagnostic history; it cannot support a settled
+		// automatic binding or confer operation authority.
+		pid, projectOK := project.(string)
+		sid, selectionOK := id.(string)
+		op, linkOK := originalLink.(string)
+		native, revisionOK := originalRevision.(int64)
+		if !projectOK || !identifier.MatchString(pid) || !selectionOK || !validRunID(sid) ||
+			!linkOK || !identifier.MatchString(op) || !revisionOK || native < 1 {
+			return false, &unprovedSelectionCustodyError{runUnavailable()}
+		}
+		// A retained child must still match the original immutable binding.
+		// Refuse foreign or inconsistent provenance rather than moving that
+		// record into a project where an unrelated operation could be held.
+		var inconsistent bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		  SELECT 1 FROM review_selections s JOIN review_operations o ON o.id=s.operation_id
+		  WHERE s.id=? AND s.project_id=? AND
+		    (o.project_id<>s.project_id OR o.actor_id<>s.actor_id OR o.worker_id<>s.worker_id OR
+		     o.channel<>s.channel OR o.configuration_revision<>s.configuration_revision OR
+		     o.policy_revision<>s.policy_revision OR o.capability_fingerprint<>s.capability_fingerprint OR
+		     (s.expected_pull_number<>0 AND o.pull_number<>s.expected_pull_number))
+		  UNION ALL
+		  SELECT 1 FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id
+		  LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=? AND
+		    (a.project_id<>s.project_id OR a.actor_id<>s.actor_id OR a.worker_id<>s.worker_id OR
+		     typeof(a.pull_number)<>'integer' OR a.pull_number<0 OR a.pull_number>2147483647 OR
+		     (a.pull_number<>0 AND (o.id IS NULL OR o.pull_number<>a.pull_number)) OR
+		     (a.pull_number=0 AND a.pull_basis_sha256<>''))
+		)`, sid, pid, sid, pid).Scan(&inconsistent); err != nil {
+			return false, err
+		}
+		if inconsistent {
+			return false, &unprovedSelectionCustodyError{runUnavailable()}
+		}
+		// Preserve the observed exact link without copying child or credential
+		// state. The outer transaction rolls this back if the hold fails.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_selection_quarantine
+		  (selection_id,project_id,original_operation_id,original_state,observed_revision) VALUES(?,?,?,?,?)`, sid, pid, op, state, native); err != nil {
+			return false, err
+		}
+		holdReason = "linked_selection_quarantined"
+		linkGuard = ` AND operation_id=?`
+		args = append(args, op)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason=?,operation_id=NULL,
+	  revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END`+observed+linkGuard, append([]any{holdReason}, args...)...)
 	if err != nil {
 		return false, err
 	}
 	n, err := result.RowsAffected()
+	if err == nil && n != 1 && originalLink != nil {
+		return false, runUnavailable()
+	}
 	return n == 1, err
 }

@@ -279,6 +279,12 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 		if o.State != "queued" {
 			return Operation{}, nil
 		}
+		if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+			if automaticProjectRefused(err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
 		configuration, ok := configurations[o.ProjectID]
 		if !ok {
 			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
@@ -326,6 +332,11 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 		}
 		earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 		if err != nil {
+			var preflight *queuePriorityPreflight
+			if errors.As(err, &preflight) && preflight.repositoryID > 0 {
+				o.independentPreflight = preflight
+				return o, nil
+			}
 			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
@@ -723,7 +734,15 @@ func (e *Engine) processPendingBatchWithDraftCheck(ctx context.Context, drivers 
 		if draftReady {
 			draftReadyRevision = o.Revision
 		}
-		a, err := e.startAttempt(ctx, o.ProjectID, o.ID, draftReadyRevision, o.Revision)
+		var witness *independentClaimWitness
+		if pending := o.independentPreflight; pending != nil {
+			o.independentPreflight = nil
+			witness = e.probeIndependentClaim(ctx, drivers, pending, o)
+			if witness == nil {
+				continue
+			}
+		}
+		a, err := e.startAttemptWithWitness(ctx, o.ProjectID, o.ID, draftReadyRevision, o.Revision, witness)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -758,6 +777,7 @@ func (e *Engine) processPendingBatchWithDraftCheck(ctx context.Context, drivers 
 		if driver == nil {
 			return e.finishPreparation(a, "held", "capability_unavailable")
 		}
+		o.independentClaim = witness
 		prepareCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
@@ -802,6 +822,14 @@ func (e *Engine) processPendingBatchWithDraftCheck(ctx context.Context, drivers 
 				reason = "supervisor_stopping"
 			}
 			return e.finishPreparation(a, state, reason)
+		}
+		if witness != nil && !witness.matchesPreparedAnchor(prepared.Anchor) {
+			// A later comparison cannot borrow the earlier default-branch
+			// observation. No journaled external intent exists yet.
+			if err := e.finishPreparation(a, "held", "target_changed"); err != nil {
+				return err
+			}
+			continue
 		}
 		admitted, err := e.Admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent)
 		if err != nil {

@@ -125,6 +125,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	if err != nil {
 		return preparation, err
 	}
+	if !operation.MatchesIndependentSourcePlan(plan) {
+		return preparation, reviewHold("target_changed")
+	}
 	workspace, changedFiles, err := prepareReviewWorkspace(ctx, d.fetch, d.verify, d.manager, d.capability.GitHubCredential(), current, plan, attempt.ID)
 	if err != nil {
 		return preparation, err
@@ -285,3 +288,7 @@ func retryCLIExhaustionSave(ctx context.Context, wait func(context.Context, time
 	}
 	return err
 }
+
+// IndependentQueueTargetReader provides read-only source observation before a
+// reserved review attempt; ordinary preparation uses a separate fresh read.
+func (d *CLIDriver) IndependentQueueTargetReader() reviewexec.TargetReader { return d.reader }

@@ -178,6 +178,9 @@ func (d *HostedDriver) Prepare(ctx context.Context, operation reviewexec.Operati
 		}
 		return preparation, err
 	}
+	if !operation.MatchesIndependentSourcePlan(plan) {
+		return preparation, reviewHold("target_changed")
+	}
 	if err := d.checkIdle(ctx, plan); err != nil {
 		return preparation, err
 	}
@@ -332,3 +335,7 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 	}
 	return reviewexec.Result{State: "uncertain", Reason: "hosted_observation_pending", ExternalID: externalID}, nil
 }
+
+// IndependentQueueTargetReader provides read-only source observation before a
+// reserved review attempt; ordinary preparation uses a separate fresh read.
+func (d *HostedDriver) IndependentQueueTargetReader() reviewexec.TargetReader { return d.provider }

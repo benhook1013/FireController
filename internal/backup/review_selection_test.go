@@ -239,7 +239,7 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 // directly, so leaving it installed would not describe a valid predecessor.
 func dropSelectionPredecessorDomains(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DROP TABLE review_front_frames; DROP TABLE review_selections; DELETE FROM metadata WHERE key IN ('schema:review_scheduling','schema:review_fronts','schema:review_selection')`); err != nil {
+	if _, err := db.Exec(`DROP TABLE review_selection_quarantine; DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DROP TABLE review_front_frames; DROP TABLE review_selections; DELETE FROM metadata WHERE key IN ('schema:review_scheduling','schema:review_fronts','schema:review_selection')`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -276,7 +276,7 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 			t.Fatal("upgrade changed business bytes", table)
 		}
 	}
-	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT IN ('review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames') ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
+	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT IN ('review_selection_quarantine','review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames') ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
 		t.Fatal("upgrade changed predecessor physical SQL")
 	}
 	if got := restoreRows(t, db, `SELECT key,value FROM metadata WHERE key NOT IN ('schema:review_selection','schema:review_scheduling','schema:review_fronts') ORDER BY key`); !reflect.DeepEqual(metadata, got) {
@@ -287,19 +287,19 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 		t.Fatal("upgrade manufactured selection activity", count, err)
 	}
 	var version string
-	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "1" {
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "2" {
 		t.Fatal("selection domain version", version, err)
 	}
-	if len(after) != len(before)+5 {
+	if len(after) != len(before)+6 {
 		t.Fatal("upgrade did not reinstall the newer optional domains", len(before), len(after))
 	}
-	for domain, version := range map[string]string{"review_selection": "1", "review_scheduling": "2", "review_fronts": "1"} {
+	for domain, version := range map[string]string{"review_selection": "2", "review_scheduling": "2", "review_fronts": "1"} {
 		var got string
 		if err := db.QueryRow(`SELECT value FROM metadata WHERE key=?`, "schema:"+domain).Scan(&got); err != nil || got != version {
 			t.Fatal("reinstalled domain version", domain, got, err)
 		}
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames')`).Scan(&count); err != nil || count != 5 {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('review_selection_quarantine','review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames')`).Scan(&count); err != nil || count != 6 {
 		t.Fatal("new optional domain tables were not reinstalled", count, err)
 	}
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_pr_followers'`).Scan(&count); err != nil || count != 0 {
@@ -313,4 +313,123 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 	if err := reviewexec.ValidateSelectionSnapshot(t.Context(), db); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSelectionQuarantineInventoryRetainsInertMissingLink(t *testing.T) {
+	f, id := selectionInventoryFixture(t, "queued")
+	ctx := t.Context()
+	// Exercise only the canonical post-recovery representation; this does
+	// not manufacture an invalid pending row, grant, or executing child.
+	err := f.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',
+		  reason='linked_selection_quarantined',revision=2 WHERE id=?`, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO review_selection_quarantine
+		  (selection_id,project_id,original_operation_id,original_state,observed_revision)
+		  VALUES(?,?,'review_operation_absent_fixture','queued',1)`, id, f.project)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const diagnostics = `SELECT selection_id,project_id,original_operation_id,original_state,observed_revision
+	  FROM review_selection_quarantine`
+	const children = `SELECT * FROM review_operations ORDER BY id`
+	before, kept := restoreRows(t, f.store.DB(), diagnostics), restoreRows(t, f.store.DB(), children)
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "inactive-with-diagnostic")
+	if _, err := Restore(ctx, bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSnapshot(ctx, filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if len(before) != 1 || !reflect.DeepEqual(before, restoreRows(t, db, diagnostics)) || !reflect.DeepEqual(kept, restoreRows(t, db, children)) {
+		t.Fatal("inert diagnostic or unchanged child state lost")
+	}
+	testBundle := restoreBundle(t, f)
+	mutateBundleSQL(t, testBundle.Path, `UPDATE review_selection_quarantine SET observed_revision=2`)
+	assertCurrentSummaryInventoryRefused(t, testBundle, false)
+}
+
+func TestSelectionQuarantineInventoryKeepsV1Restore(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	if _, err := f.store.DB().Exec(`DROP TABLE review_selection_quarantine;
+	  UPDATE metadata SET value='1' WHERE key='schema:review_selection'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "inactive-v1-selection")
+	if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSnapshot(t.Context(), filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "1" {
+		t.Fatal("offline restore migrated the previous snapshot", version, err)
+	}
+	mutateBundleSQL(t, bundle.Path, `UPDATE review_selections
+	   SET state='held',reason='linked_selection_quarantined',revision=2`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}
+
+func TestSelectionQuarantineInventoryRetainsAutomaticChildWithoutAuthority(t *testing.T) {
+	f, _, _ := schedulingBackupFixture(t)
+	ctx := t.Context()
+	const children = `SELECT * FROM review_operations ORDER BY id`
+	const authors = `SELECT * FROM review_automatic_selections ORDER BY selection_id`
+	const journal = `SELECT * FROM events ORDER BY sequence`
+	beforeChildren, beforeAuthors, beforeJournal := restoreRows(t, f.store.DB(), children), restoreRows(t, f.store.DB(), authors), restoreRows(t, f.store.DB(), journal)
+	var selection, operation string
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT s.id,s.operation_id,s.revision FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id WHERE a.pull_number<>0`).Scan(&selection, &operation, &revision); err != nil {
+		t.Fatal(err)
+	}
+	// Construct only the canonical post-hold metadata for a normal synthetic
+	// selection. No inconsistent queued binding or provider dispatch is staged.
+	if err := f.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_selection_quarantine
+		(selection_id,project_id,original_operation_id,original_state,observed_revision) VALUES(?,?,?,'selecting',?)`, selection, f.project, operation, revision); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='linked_selection_quarantined',
+		  revision=revision+1,operation_id=NULL WHERE id=?`, selection)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "inactive-custody")
+	if _, err := Restore(ctx, bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSnapshot(ctx, filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !reflect.DeepEqual(beforeChildren, restoreRows(t, db, children)) ||
+		!reflect.DeepEqual(beforeAuthors, restoreRows(t, db, authors)) ||
+		!reflect.DeepEqual(beforeJournal, restoreRows(t, db, journal)) {
+		t.Fatal("restoring forensic custody changed the child, origin, or event history")
+	}
+	var got string
+	if err := db.QueryRow(`SELECT original_operation_id FROM review_selection_quarantine WHERE selection_id=?`, selection).Scan(&got); err != nil || got != operation {
+		t.Fatal("original automatic operation identity was not retained", got, err)
+	}
+}
+
+func TestSelectionQuarantineInventoryRejectsDanglingEmptyV2Marker(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	bundle := restoreBundle(t, f)
+	mutateBundleSQL(t, bundle.Path, `UPDATE review_selections
+	   SET state='held',reason='linked_selection_quarantined',revision=2`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
 }

@@ -76,6 +76,13 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 		if !continuous {
 			return automaticDenied()
 		}
+	} else {
+		// A same-revision retry still requires the exact canonical event
+		// behind its enabled control. Use the same basis validation as
+		// a scheduling edit; a retained projection alone is not proof.
+		if _, _, err := schedulingBasisRevisions(ctx, tx, s); err != nil {
+			return err
+		}
 	}
 	_, err = e.store.ProjectAutomationScope(ctx, tx, r.ProjectID, actor, worker, credential)
 	var failure *core.Error
@@ -85,6 +92,9 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	return err
 }
 func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Operation) error {
+	if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+		return err
+	}
 	var selection string
 	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.operation_id=?`, o.ProjectID, o.ID).Scan(&selection)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -445,7 +455,7 @@ func (e *Engine) automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql
 	if err != nil {
 		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT q.key,a.selection_id FROM review_operations o
+	rows, err := tx.QueryContext(ctx, `SELECT q.key,a.selection_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number
 LEFT JOIN review_selections s ON s.project_id=o.project_id AND s.operation_id=o.id
 LEFT JOIN review_automatic_selections a ON a.project_id=s.project_id AND a.selection_id=s.id
@@ -464,8 +474,19 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 		}
 		var position int
 		var selection sql.NullString
-		if err := rows.Scan(&position, &selection); err != nil {
+		var operation string
+		var custodyPresent bool
+		if err := rows.Scan(&position, &selection, &operation, &custodyPresent); err != nil {
 			return 0, err
+		}
+		if custodyPresent {
+			if err := requireUnquarantinedSelectionLink(ctx, tx, project, operation); err != nil {
+				if isLinkedSelectionCustodyHeld(err) {
+					continue
+				}
+				return 0, err
+			}
+			return 0, runUnavailable()
 		}
 		// Explicit work has no automatic binding and keeps its position.
 		if !selection.Valid {
