@@ -24,6 +24,8 @@ Reads stay bounded and project-scoped. Reuse stored summaries and live invalidat
 
 On mobile, explicit queue Next and Previous navigation aligns the newly loaded queue list below the header, bounded by the document bottom for a short final page. It does not target the overall project page top. Initial loads, saved-position restoration, background observations and desktop pagination keep their existing behavior. Cursor and snapshot selection are unchanged.
 
+Pinned cursor pages retain ordinary 60-second polling for current health and size overlays; their fixed snapshots do not reconcile against current review fronts.
+
 ### Refresh and reading position
 
 Confirmed Review closed badges and striped rails follow current PR/channel controls independently of a replacement source snapshot. Keep the project’s last configured channel set and retained round controls while front/source reads catch up; missing source data cannot make a closed channel appear reopened. Fresh reopened controls take effect immediately. This retention stays inside the authenticated project/connection and never grants review permission.

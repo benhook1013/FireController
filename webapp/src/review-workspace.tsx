@@ -353,7 +353,9 @@ function ReviewQueueWindow({ embedded, history, jumpToHead }: { embedded: boolea
   const [windowNotice, setWindowNotice] = useState('');
   const query = useQuery(reviewQueueQuery(session, key, history ? 'merged' : 'recent', paging.cursor, paging.number === 1 ? 'current' : continuationSnapshot, jumpToHead && paging.number === 1));
   const fronts = useReviewFronts(!history && !!query.data?.configured);
-  const frame = useReviewQueueFrame(JSON.stringify([...key, 'review-queue', paging.cursor]), query, fronts, !history);
+  // A pinned cursor cannot converge to current fronts. Render its latest health
+  // overlays without retaining a coherent frame or scheduling futile repairs.
+  const frame = useReviewQueueFrame(JSON.stringify([...key, 'review-queue', paging.cursor]), query, fronts, !history && !paging.cursor);
   const page = history ? query.data : frame?.queue;
   const progress = useReviewProgress(history ? [] : page?.items.map(pull => pull.number) ?? []);
   const currentFronts = !history && page ? currentReviewFronts(page.snapshot_id, page.items, frame?.fronts) : undefined;

@@ -423,6 +423,9 @@ try {
   phase = 'queue-pagination';
   const queueRoute = '**/reviews/queue?*';
   const progressRoute = '**/reviews/rounds/progress?*';
+  const frontsRoute = config.origin+prefix+'/reviews/fronts';
+  let resolvePaginationSource;
+  const paginationSource = new Promise(resolve => { resolvePaginationSource = resolve; });
   let updateQueueHead = false, updateQueueFinding = false;
   const paginateQueue = async route => {
     const url = new URL(route.request().url());
@@ -431,6 +434,13 @@ try {
     url.searchParams.delete('cursor');
     const response = await route.fetch({url:url.toString()});
     const data = await response.json();
+    const priority = data.items.find(item => item.number === number);
+    need(data.snapshot_id !== config.snapshot && priority);
+    resolvePaginationSource({snapshot:data.snapshot_id, queue:data.items.map(item=>item.number),
+      priority:{pull_number:number, head_sha:priority.head_sha, base_sha:priority.base_sha, base_ref:priority.base_ref}});
+    // Cursor reads keep an older source identity and refresh their live
+    // observation and size overlays.
+    if (second) Object.assign(data, {snapshot_id:config.snapshot, revision:1});
     data.items = second ? data.items.slice(3) : data.items.slice(0,3);
     const moved = data.items.find(item => item.number === number);
     if (moved) Object.assign(moved, {
@@ -446,6 +456,13 @@ try {
     if (second) delete data.cursor; else data.cursor = 'mobile-page-two';
     await route.fulfill({response,json:data});
   };
+  const showFronts = async route => {
+    const source = await paginationSource;
+    await route.fulfill({json:{project_id:config.project, configured:true, repository_id:991,
+      configuration_revision:1, policy_revision:1, snapshot_id:source.snapshot, queue:source.queue,
+      channels:['hosted','cli'].map(channel=>({channel, state:'unknown', reason:'source_frame_unavailable', queued_priority:source.priority})),
+    }});
+  };
   const showProgress = async route => {
     const pulls = new URL(route.request().url()).searchParams.get('pull_numbers').split(',').map(Number);
     if (!pulls.includes(number)) { await route.continue(); return; }
@@ -455,8 +472,10 @@ try {
       items:pulls.map(pull_number => ({pull_number, channels:[pull_number === number ? hosted : empty('hosted'), empty('cli')]})),
     }});
   };
+  await current.page.clock.install({time:new Date()});
   await current.page.route(queueRoute, paginateQueue);
   await current.page.route(progressRoute, showProgress);
+  await current.page.route(frontsRoute, showFronts);
   for (const [width, hash] of [[1440,'#review-queue-head'],[390,'#review-queue'],[320,'#review-queue']]) {
     await current.page.setViewportSize({width,height:900});
     await current.page.goto(`${config.origin}${current.home}${hash}`);
@@ -464,6 +483,7 @@ try {
     await expect(queue.getByRole('heading', {name:'Routed Findings',exact:true})).toBeVisible();
     let movedChecked = false;
     for (const [direction, count] of [['Next',2],['Previous',3]]) {
+      const cursorReadsBefore = queueReads.filter(read=>read.cursor === 'mobile-page-two').length;
       await queue.getByRole('button',{name:`${direction} review queue`,exact:true}).click();
       await expect(queue.locator('.review-queue-row')).toHaveCount(count);
       await expect.poll(() => current.page.evaluate(() => {
@@ -492,6 +512,16 @@ try {
         expect((await typography(streak)).at(-1)).toBe('tabular-nums');
         movedChecked = true;
       }
+      if (width === 1440 && direction === 'Next') {
+        // Advance beyond the 100ms reconciliation interval, not the ordinary
+        // 60s poll. Count only this cursor, independently of hero/control reads.
+        await current.page.clock.runFor(500);
+        need(queueReads.filter(read=>read.cursor === 'mobile-page-two').length === cursorReadsBefore+1);
+        await expect(queue.locator('.review-queue-row')).toHaveCount(2);
+        expect(await queue.locator('.review-queue-row').evaluateAll(rows=>rows.map(row=>row.id))).toEqual([`review-pr-${number}`,'review-pr-205']);
+        await expect(queue.locator('.review-position-front, .review-position-queued')).toHaveCount(0);
+        await expect(moved.getByText('1 awaiting adjudication', {exact:true})).toBeVisible();
+      }
     }
     need(movedChecked);
   }
@@ -517,6 +547,7 @@ try {
   await retainedNode.dispose();
   await current.page.unroute(queueRoute,paginateQueue);
   await current.page.unroute(progressRoute,showProgress);
+  await current.page.unroute(frontsRoute,showFronts);
   need(errors === 0 && external === 0 && forbiddenWrites === 0 && sessionPosts === 2);
   // A full queue page with mixed channel coverage, short prefixes and a
   // channel whose recent summaries are all failed starts.
