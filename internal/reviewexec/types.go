@@ -75,6 +75,8 @@ type AllowanceObservation struct {
 }
 
 type Operation struct {
+	independentPreflight  *queuePriorityPreflight
+	independentClaim      *independentClaimWitness
 	Wait                  *OperationWait        `json:"wait,omitempty"`
 	Allowance             *AllowanceObservation `json:"allowance,omitempty"`
 	AllowOutOfOrder       bool                  `json:"allow_out_of_order,omitempty"`
@@ -123,6 +125,9 @@ type Engine struct {
 	configurationFailureMu     sync.Mutex
 	configurationFailureNext   map[string]time.Time
 	draftProbePermit           atomic.Bool
+	independentProbeMu         sync.Mutex
+	independentProbeActive     bool
+	independentProbeLast       time.Time
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	draftProbeCursor           string

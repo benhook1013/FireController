@@ -27,6 +27,20 @@ type queuePriorityKey struct {
 // An empty predecessor set can be reused only inside one read transaction.
 // Binding-dependent decisions still run separately for every candidate.
 func (e *Engine) earlierQueuedReviewIntentInSnapshot(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64, empty map[queuePriorityKey]bool) (*Operation, error) {
+	return e.earlierQueuedReviewIntentWithWitness(ctx, tx, o, c, revision, empty, nil)
+}
+
+type queuePriorityPreflight struct {
+	cause                  error
+	predecessor            Operation
+	configuration          Configuration
+	revision, repositoryID int64
+}
+
+func (p *queuePriorityPreflight) Error() string { return p.cause.Error() }
+func (p *queuePriorityPreflight) Unwrap() error { return p.cause }
+
+func (e *Engine) earlierQueuedReviewIntentWithWitness(ctx context.Context, tx *sql.Tx, o Operation, c Configuration, revision int64, empty map[queuePriorityKey]bool, witness *independentClaimWitness) (*Operation, error) {
 	position := slices.Index(c.Queue, o.PullNumber)
 	if !validChannel(o.Channel) || o.State != "queued" || position < 1 || c.Paused || revision < o.ConfigurationRevision {
 		return nil, nil
@@ -82,9 +96,21 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 		}
 		valid, err := e.hostedPriorityBinding(ctx, tx, earlier)
 		if err != nil {
-			// A refused earlier pull does not prove the later request is independent.
-			// Preserve this project's priority fence; callers isolate unrelated projects.
-			return nil, err
+			var local *pullSchedulingStateError
+			if !errors.As(err, &local) || local.project != earlier.ProjectID || local.pull != earlier.PullNumber ||
+				!independentClaimPair(c, revision, earlier, o) {
+				return nil, err
+			}
+			var repoID int64
+			if readErr := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, o.ProjectID).Scan(&repoID); readErr != nil {
+				return nil, readErr
+			}
+			if witness != nil && witness.matches(e.sampleExecutionTime(), repoID, c, revision, earlier, o) {
+				continue
+			}
+			// This still fences all non-supervisor callers. The supervisor
+			// may perform a separate bounded, trusted observation outside SQL.
+			return nil, &queuePriorityPreflight{err, earlier, c, revision, repoID}
 		}
 		if valid {
 			return &earlier, nil

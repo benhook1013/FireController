@@ -282,3 +282,39 @@ func TestAutomaticSameAuthorizerRevisionContinuity(t *testing.T) {
 		}
 	}
 }
+
+func TestAutomaticSameRevisionRetainsCanonicalAuthorizedIntent(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		t.Run(channel, func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			if channel == "hosted" {
+				schedulingEnable(t, f, 0, true)
+				schedulingGenerate(t, f, true)
+			} else {
+				schedulingCLIEnable(t, f, 0, true)
+				schedulingCLIGenerate(t, f, true)
+			}
+			r := schedulingLatest(t, f)
+			before := snapshotTable(t, f, "events")
+			if err := continuityGuard(t, f, r); err != nil {
+				t.Fatalf("current genuine scheduling event no longer proves the exact intent: %v", err)
+			}
+			if after := snapshotTable(t, f, "events"); after != before {
+				t.Fatal("authorization unexpectedly changed retained event history")
+			}
+		})
+	}
+}
+
+func TestSchedulingBasisRequiresExactEventForClaimedCurrentRevision(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	// The fixture has no scheduling history. Model an unsupported claimed
+	// revision solely as a validator input; don't modify retained state or
+	// invoke provider admission or an operation start.
+	claimed := schedulingRecord{Scheduling: Scheduling{ProjectID: attemptProject, Revision: 1, AutomaticHosted: true}}
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, _, err := schedulingBasisRevisions(ctx, tx, claimed)
+		return err
+	})
+	attemptCode(t, err, "storage_unavailable")
+}

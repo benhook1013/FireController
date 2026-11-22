@@ -76,6 +76,13 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 		if !continuous {
 			return automaticDenied()
 		}
+	} else {
+		// A same-revision retry still requires the exact canonical event
+		// behind its enabled control. Use the same basis validation as
+		// a scheduling edit; a retained projection alone is not proof.
+		if _, _, err := schedulingBasisRevisions(ctx, tx, s); err != nil {
+			return err
+		}
 	}
 	_, err = e.store.ProjectAutomationScope(ctx, tx, r.ProjectID, actor, worker, credential)
 	var failure *core.Error
