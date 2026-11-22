@@ -101,6 +101,26 @@ def validate_generation_lease(selector, phase_gid=None):
     return path
 
 
+def _publish_new(path, content, mode, group):
+    fd, temporary_name = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchown(stream.fileno(), os.geteuid(), group)
+            os.fchmod(stream.fileno(), mode)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def ensure_generation_lease(selector, phase_lock):
     """Provision the stable lease once; an existing inode is never replaced."""
     path = lease_path(selector)
@@ -111,30 +131,12 @@ def ensure_generation_lease(selector, phase_lock):
         if fence_path.exists() or fence_path.is_symlink():
             raise GenerationError("fenced helper installation is missing its stable lease; refusing to recreate it")
     try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), LEASE_MODE)
+        _publish_new(path, b"", LEASE_MODE, phase.st_gid)
     except FileExistsError:
-        validate_generation_lease(selector, phase.st_gid)
-        return path
+        pass
     except OSError as error:
         raise GenerationError("could not provision helper generation lease: " + str(error)) from error
-    try:
-        os.fchown(fd, os.geteuid(), phase.st_gid)
-        os.fchmod(fd, LEASE_MODE)
-        os.fsync(fd)
-        info = os.fstat(fd)
-        _validate_lease_info(info, path, phase.st_gid)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except BaseException:
-        os.close(fd)
-        # Do not unlink or replace a possibly observed lease inode. A partial
-        # provisioning failure is deliberately an operator reconciliation case.
-        raise
-    os.close(fd)
-    return path
+    return validate_generation_lease(selector, phase.st_gid)
 
 
 def _acquire_generation_lease(selector, exclusive, phase_gid=None):
@@ -203,30 +205,9 @@ def write_manager_fence(selector, phase_lock):
     _check_selector_directory(path)
     phase = _phase_lock_info(phase_lock)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o440)
+        _publish_new(path, MANAGER_FENCE_CONTENT, 0o440, phase.st_gid)
     except FileExistsError:
-        if not manager_fenced(selector, phase_lock):
-            raise GenerationError("helper manager fence disappeared during creation")
-        return
-    except OSError as error:
-        raise GenerationError("could not create helper manager fence: " + str(error)) from error
-    try:
-        os.fchown(fd, os.geteuid(), phase.st_gid)
-        os.fchmod(fd, 0o440)
-        with os.fdopen(fd, "wb") as stream:
-            fd = -1
-            stream.write(MANAGER_FENCE_CONTENT)
-            stream.flush()
-            os.fsync(stream.fileno())
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except BaseException:
-        if fd >= 0:
-            os.close(fd)
-        raise
+        pass
     if not manager_fenced(selector, phase_lock):
         raise GenerationError("helper manager fence was not retained")
 

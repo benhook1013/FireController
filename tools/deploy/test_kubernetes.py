@@ -3,6 +3,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import subprocess
 import tempfile
 from unittest import mock
@@ -150,6 +151,7 @@ class RemoteMCPForwardingTests(unittest.TestCase):
                 self.assert_mode(command, mode)
                 self.assertEqual(command[-3:], ["--kubectl", "k3s", "kubectl"])
                 self.assertEqual(run.call_args.kwargs["pass_fds"], (10, 11, 12))
+                self.assertEqual(run.call_args.kwargs["env"]["FC_ROLLOUT_CUSTODY_FDS"], "10,11,12")
 
 
 class DrainDeadlineTests(unittest.TestCase):
@@ -202,7 +204,7 @@ class RecoveryWindowTests(unittest.TestCase):
 class RolloutSequenceTests(unittest.TestCase):
     def exercise(self, forced=False, preflight_failure=False, replace_failure=False, memory=None,
                  remote_mode=None, controller_args=None, observed_args=None, invalid_args=False,
-                 retention_mode=None):
+                 retention_mode=None, lease_environment=None, artifact_fds=(), replacement_fds=()):
         image = "ghcr.io/example/controller@sha256:" + "a" * 64
         revision = "b" * 40
         original = {"metadata": {"resourceVersion": "7"}, "spec": {
@@ -230,6 +232,8 @@ class RolloutSequenceTests(unittest.TestCase):
         def run(command, **kwargs):
             nonlocal current
             args = command[command.index("-n") + 2:]
+            expected_fds = replacement_fds if args[0] == "replace" else artifact_fds
+            self.assertEqual(kwargs.get("pass_fds", ()), expected_fds)
             actions.append(args)
             if args[:2] == ["get", "deployment"]:
                 return subprocess.CompletedProcess(command, 0, json.dumps(current))
@@ -274,7 +278,11 @@ class RolloutSequenceTests(unittest.TestCase):
             if retention_mode is not None:
                 argv.extend(["--retention-mode", retention_mode])
             output = io.StringIO()
-            with mock.patch("sys.argv", argv), mock.patch.object(deployment.subprocess, "run", side_effect=run), mock.patch.object(deployment.urllib.request, "build_opener", return_value=Opener()), contextlib.redirect_stdout(output):
+            with (mock.patch("sys.argv", argv),
+                  mock.patch.dict(os.environ, lease_environment or {}, clear=True),
+                  mock.patch.object(deployment.subprocess, "run", side_effect=run),
+                  mock.patch.object(deployment.urllib.request, "build_opener", return_value=Opener()),
+                  contextlib.redirect_stdout(output)):
                 if invalid_args:
                     with self.assertRaises(ValueError): deployment.main()
                 elif preflight_failure or replace_failure or observed_args is not None:
@@ -324,6 +332,42 @@ class RolloutSequenceTests(unittest.TestCase):
     def test_uncertain_replacement_does_not_reopen_old_admission(self):
         _, http = self.exercise(replace_failure=True)
         self.assertNotIn(("DELETE", "deployment-drain"), http)
+
+    @unittest.skipUnless(os.name == "posix", "inherited POSIX leases")
+    def test_only_replace_inherits_rollout_custody_and_merges_artifact_lease(self):
+        with contextlib.ExitStack() as stack:
+            fds = tuple(stack.enter_context(tempfile.TemporaryFile()).fileno() for _ in range(4))
+            custody, separate = fds[:3], fds[3]
+            for artifact, replacement in ((None, custody), (separate, custody + (separate,)),
+                                          (custody[1], custody)):
+                with self.subTest(artifact=artifact):
+                    environment = {"FC_ROLLOUT_CUSTODY_FDS": ",".join(map(str, custody))}
+                    if artifact is not None:
+                        environment["FC_ARTIFACT_LEASE_FD"] = str(artifact)
+                    self.exercise(lease_environment=environment, replacement_fds=replacement,
+                                  artifact_fds=() if artifact is None else (artifact,))
+
+    @unittest.skipUnless(os.name == "posix", "inherited POSIX leases")
+    def test_invalid_rollout_custody_refuses_before_credentials_or_external_actions(self):
+        with tempfile.TemporaryFile() as first, tempfile.TemporaryFile() as second:
+            reader, writer = os.pipe()
+            self.addCleanup(os.close, reader)
+            self.addCleanup(os.close, writer)
+            with tempfile.TemporaryFile() as file:
+                closed = file.fileno()
+            prefix = f"{first.fileno()},{second.fileno()},"
+            for raw in ("", "3,4", "3,4,5,6", prefix + " 5", prefix + "2", prefix + "9999999999",
+                        prefix + str(first.fileno()), prefix + str(reader), prefix + str(closed)):
+                with (self.subTest(raw=raw),
+                      mock.patch.dict(os.environ, {"FC_ROLLOUT_CUSTODY_FDS": raw}, clear=True),
+                      mock.patch.object(Path, "read_text") as read,
+                      mock.patch.object(deployment.subprocess, "run") as run,
+                      mock.patch.object(deployment.urllib.request, "build_opener") as opener):
+                    with self.assertRaisesRegex(ValueError, "rollout custody"):
+                        deployment.main()
+                    read.assert_not_called()
+                    run.assert_not_called()
+                    opener.assert_not_called()
 
 
 if __name__ == "__main__":

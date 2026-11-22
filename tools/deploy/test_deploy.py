@@ -68,7 +68,7 @@ class DropIns(unittest.TestCase):
         return binary
 
     def _install(self, reload=True):
-        with patch.object(h, "_helper_unit_inactive"):
+        with patch.object(h, "_verify_helper_unit"):
             return h.install_helpers(self.fcd, NEW, self.new_sha, self.releases, self.dropins, reload,
                                      self.selector, self.launcher, self.phase_lock)
 
@@ -193,13 +193,15 @@ class DropIns(unittest.TestCase):
     def test_first_conversion_refuses_active_legacy_unit_before_candidate_activation(self):
         checked = []
 
-        def active_on_batch(unit):
+        def active_on_batch(unit, expected_argv, require_inactive):
+            self.assertTrue(require_inactive)
+            self.assertEqual(expected_argv[0], "/usr/bin/python3")
             checked.append(unit)
             if unit == h.HELPER_UNITS["offsite-batch"]:
                 raise h.DeployError("active legacy unit")
             return None
 
-        with patch.object(h, "_helper_unit_inactive", side_effect=active_on_batch):
+        with patch.object(h, "_verify_helper_unit", side_effect=active_on_batch):
             with patch.object(h.subprocess, "run"):
                 with self.assertRaisesRegex(h.DeployError, "active legacy unit"):
                     h.install_helpers(self.fcd, NEW, self.new_sha, self.releases, self.dropins, True,
@@ -219,21 +221,42 @@ class DropIns(unittest.TestCase):
         self.assertTrue(g.manager_fenced(self.selector, self.phase_lock))
         self.assertEqual(self._record()["current"], {"source": OLD, "sha256": self.old_sha})
 
-    def test_effective_systemd_state_is_complete_and_contains_no_secret_fields(self):
-        state = "LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\n"
+    def test_effective_systemd_unit_must_use_verified_wrapper(self):
+        argv = ["/usr/bin/python3", "/tmp/launcher.py", "launch"]
+        state = ("LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n"
+                 "NeedDaemonReload=no\nExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 "
+                 "/tmp/launcher.py launch ; ignore_errors=no ; pid=0 }\n")
         with patch.object(h.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, state)) as run:
-            h._helper_unit_inactive("firecontroller-backup-health.service")
+            h._verify_helper_unit("firecontroller-backup-health.service", argv, True)
         command = run.call_args.args[0]
         self.assertEqual(command[:3], ["systemctl", "show", "firecontroller-backup-health.service"])
         self.assertEqual({item.split("=", 1)[1] for item in command if item.startswith("--property=")},
-                         {"LoadState", "ActiveState", "SubState", "MainPID"})
-        with patch.object(h.subprocess, "run", return_value=subprocess.CompletedProcess(
-                [], 0, state.replace("ActiveState=inactive", "ActiveState=active"))):
-            with self.assertRaises(h.DeployError):
-                h._helper_unit_inactive("firecontroller-backup-health.service")
+                         {"LoadState", "ActiveState", "SubState", "MainPID", "ControlPID", "NeedDaemonReload", "ExecStart"})
+        for previous, invalid in (("ActiveState=inactive", "ActiveState=active"),
+                                  ("NeedDaemonReload=no", "NeedDaemonReload=yes"),
+                                  ("/tmp/launcher.py launch", "/tmp/legacy.py run")):
+            with patch.object(h.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, state.replace(previous, invalid))):
+                with self.assertRaises(h.DeployError):
+                    h._verify_helper_unit("firecontroller-backup-health.service", argv, True)
         with patch.object(h.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ActiveState=inactive\n")):
             with self.assertRaises(h.DeployError):
-                h._helper_unit_inactive("firecontroller-backup-health.service")
+                h._verify_helper_unit("firecontroller-backup-health.service", argv, True)
+
+    def test_manager_fence_is_never_visible_before_its_contents_are_ready(self):
+        with patch.object(g.os, "fsync", side_effect=OSError("simulated interrupted write")):
+            with self.assertRaises(OSError):
+                g.write_manager_fence(self.selector, self.phase_lock)
+        self.assertFalse(g.manager_fence_path(self.selector).exists())
+        g.write_manager_fence(self.selector, self.phase_lock)
+        self.assertTrue(g.manager_fenced(self.selector, self.phase_lock))
+
+    def test_generation_lease_is_never_visible_before_its_modes_are_ready(self):
+        with patch.object(g.os, "fsync", side_effect=OSError("simulated interrupted write")):
+            with self.assertRaises(g.GenerationError):
+                g.ensure_generation_lease(self.selector, self.phase_lock)
+        self.assertFalse(g.lease_path(self.selector).exists())
+        self.assertEqual(g.ensure_generation_lease(self.selector, self.phase_lock).stat().st_mode & 0o777, 0o640)
 
     def test_fresh_role_launches_use_one_exact_record_and_preserve_other_arguments(self):
         with patch.object(h.subprocess, "run"):
@@ -521,8 +544,15 @@ g.launch("batch", pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv
         old_image = "localhost/firecontroller@sha256:" + "b" * 64
         new_image = "localhost/firecontroller@sha256:" + "d" * 64
         h._begin_helper_rollout_locked(self.selector, self.releases, OLD, old_image, NEW, new["sha256"], new_image)
+        with patch.object(h, "verify") as verify:
+            with self.assertRaisesRegex(h.DeployError, "replacement may still arrive"):
+                h._reconcile_pending_helpers_locked(self.selector, self.releases, OLD, old_image,
+                                                   SimpleNamespace(confirm_prior_outcome=False))
+            verify.assert_not_called()
+        self.assertEqual(self._record()["pending"]["candidate"], new)
         with patch.object(h, "verify") as verify, patch.object(h, "log"):
-            self.assertFalse(h._reconcile_pending_helpers_locked(self.selector, self.releases, OLD, old_image, None))
+            self.assertFalse(h._reconcile_pending_helpers_locked(self.selector, self.releases, OLD, old_image,
+                                                                SimpleNamespace(confirm_prior_outcome=True)))
             verify.assert_called_once_with(OLD, old_image)
         self.assertIsNone(self._record()["pending"])
         self.assertEqual(self._record()["current"], old)

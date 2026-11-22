@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import time
 import urllib.error
@@ -25,11 +26,31 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 
-def artifact_lease_options():
+def rollout_custody_fds():
+    """Validate the deployment, generation and backup locks inherited from the host."""
+    raw = os.environ.get("FC_ROLLOUT_CUSTODY_FDS")
+    if raw is None:
+        return ()
+    if os.name != "posix" or not re.fullmatch(r"[0-9]{1,10}(?:,[0-9]{1,10}){2}", raw):
+        raise ValueError("invalid inherited rollout custody descriptors")
+    fds = tuple(int(part) for part in raw.split(","))
+    if min(fds) < 3 or len(set(fds)) != 3:
+        raise ValueError("invalid inherited rollout custody descriptors")
+    for fd in fds:
+        try:
+            mode = os.fstat(fd).st_mode
+        except (OSError, OverflowError):
+            raise ValueError("unavailable inherited rollout custody descriptor") from None
+        if not stat.S_ISREG(mode):
+            raise ValueError("inherited rollout custody descriptor is not a regular file")
+    return fds
+
+
+def artifact_lease_options(custody_fds=()):
     """Preserve an optional local managed-runner lease; never infer remote custody."""
     raw = os.environ.get("FC_ARTIFACT_LEASE_FD")
     if raw is None:
-        return {}
+        return {"pass_fds": custody_fds} if custody_fds else {}
     if os.name != "posix" or not re.fullmatch(r"[0-9]{1,10}", raw):
         raise ValueError("invalid inherited artifact lease")
     fd = int(raw)
@@ -39,7 +60,7 @@ def artifact_lease_options():
         os.fstat(fd)
     except (OSError, OverflowError):
         raise ValueError("unavailable inherited artifact lease") from None
-    return {"pass_fds": (fd,)}
+    return {"pass_fds": tuple(dict.fromkeys((*custody_fds, fd)))}
 
 
 def wait_for_drain(read_status, timeout, sleep=time.sleep, clock=time.monotonic):
@@ -134,6 +155,7 @@ def remote_mcp_args(current, mode, origin):
 
 def main():
     artifact_lease_options()  # Refuse invalid enrollment before any rollout action.
+    custody_fds = rollout_custody_fds()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--image", required=True, help="Registry image with immutable sha256 digest")
     p.add_argument("--source-revision", required=True, help="Full source commit recorded by the publication run")
@@ -256,7 +278,9 @@ def main():
         annotations["firecontroller.dev/rollout-id"] = uuid.uuid4().hex
         annotations.pop("firecontroller.dev/binary-sha256", None)  # Old locally built binary provenance cannot describe this image.
         replacing = True  # A replace with a lost outcome must not resume old admission.
-        result = subprocess.run(k + ["replace", "-f", "-"], input=json.dumps(deployment), text=True, capture_output=True, timeout=30, **artifact_lease_options())
+        # An in-flight replace must retain custody if this driver exits unexpectedly.
+        result = subprocess.run(k + ["replace", "-f", "-"], input=json.dumps(deployment), text=True,
+                                capture_output=True, timeout=30, **artifact_lease_options(custody_fds))
         if result.returncode:
             raise RuntimeError("replacement refused; inspect this deployment before cancelling drain or retrying")
         command(["rollout", "status", "deployment/" + args.deployment, "--timeout=120s"], timeout=130)

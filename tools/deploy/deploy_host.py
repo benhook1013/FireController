@@ -88,9 +88,9 @@ def flock_wait(path, timeout, sleep=time.sleep, clock=time.monotonic):
             sleep(5)
 
 
-def _helper_unit_inactive(unit):
-    """Require a complete, secret-free effective systemd state response."""
-    properties = ("LoadState", "ActiveState", "SubState", "MainPID")
+def _verify_helper_unit(unit, expected_argv, require_inactive):
+    """Check the command systemd actually loaded, without logging its arguments."""
+    properties = ("LoadState", "ActiveState", "SubState", "MainPID", "ControlPID", "NeedDaemonReload", "ExecStart")
     try:
         result = subprocess.run(
             ["systemctl", "show", unit, "--no-pager"]
@@ -109,8 +109,13 @@ def _helper_unit_inactive(unit):
             values[key] = value
     if set(values) != set(properties):
         raise DeployError("systemd returned incomplete effective state for " + unit)
-    if (values["LoadState"] != "loaded" or values["ActiveState"] != "inactive"
-            or values["SubState"] != "dead" or values["MainPID"] != "0"):
+    expected = "{ path=" + expected_argv[0] + " ; argv[]=" + " ".join(expected_argv) + " ; ignore_errors=no ; "
+    command = values["ExecStart"]
+    if (values["LoadState"] != "loaded" or values["NeedDaemonReload"] != "no"
+            or not command.startswith(expected) or command.count("{ path=") != 1 or not command.endswith(" }")):
+        raise DeployError("effective systemd launch does not match the verified wrapper for " + unit)
+    if require_inactive and (values["ActiveState"] != "inactive" or values["SubState"] != "dead"
+                             or values["MainPID"] != "0" or values["ControlPID"] != "0"):
         raise DeployError("first helper conversion requires " + unit + " to be inactive; retry after it exits")
 
 
@@ -363,30 +368,14 @@ def _install_helpers_locked(fcd, source, fcd_sha, releases=HELPER_RELEASES, drop
 
     if reload:
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=60)
+        for name, role in roles.items():
+            argv = helper_generation.wrapper_argv(role, parsed[name]["argv"], launcher, selector, releases)
+            _verify_helper_unit(HELPER_UNITS[name], argv, require_inactive=not fenced)
         # On first conversion, legacy processes launched before daemon-reload
         # never held the new generation lease. Do not activate any candidate
         # until both effective units are confirmed stopped. Their state output
         # is restricted to non-secret systemd properties.
         if not fenced:
-            converted = {}
-            for name, role in roles.items():
-                path = Path(dropins[name])
-                try:
-                    converted[name] = helper_generation.classify_dropin(
-                        path.read_text(), role, launcher, selector, releases)
-                except (OSError, helper_generation.GenerationError) as error:
-                    raise DeployError("could not verify reconciled " + name + " wrapper: " + str(error)) from error
-            if any(item["state"] != "wrapper" for item in converted.values()):
-                raise DeployError("both helper roles must use the new launch path before fencing")
-            state_errors = []
-            for name in roles:
-                try:
-                    _helper_unit_inactive(HELPER_UNITS[name])
-                except DeployError as error:
-                    state_errors.append(str(error))
-            if state_errors:
-                raise DeployError("first helper conversion could not prove both units inactive: "
-                                  + "; ".join(state_errors))
             try:
                 helper_generation.write_manager_fence(selector, phase_lock)
             except (OSError, helper_generation.GenerationError) as error:
@@ -445,6 +434,8 @@ def _reconcile_pending_helpers_locked(selector, releases, observed_source, obser
     pending = record["pending"]
     candidate = pending["candidate"]
     if (observed_source, observed_image) == (record["current"]["source"], pending["old_image"]):
+        if not args.confirm_prior_outcome:
+            raise DeployError("the prior image is visible, but a pending replacement may still arrive; confirm its outcome before resuming")
         verify(observed_source, observed_image)
         helper_generation.write_record(selector, record["current"], record["previous"])
         log("helper_rollout_reconciled", source=observed_source, image=observed_image)
@@ -554,6 +545,8 @@ def main(argv=None):
     p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with the image")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"])
     p.add_argument("--remote-mcp-mode", choices=["enable", "disable"], help="explicit MCP opt-in; enable only after staging the exact proxy location; omit to preserve current args")
+    p.add_argument("--confirm-prior-outcome", action="store_true",
+                   help="confirm the pending replacement ended and the recorded prior image is authoritative")
     a = p.parse_args(argv)
     if not SHA.fullmatch(a.source) or not HEX64.fullmatch(a.fcd_sha256) or not re.fullmatch(r"localhost/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", a.image):
         p.error("source, fcd hash or image reference is malformed")
@@ -601,8 +594,9 @@ def main(argv=None):
                                     a.source, a.fcd_sha256, a.image)
         try:
             lock_descriptors = tuple(lock.fileno() for lock in (deploy_lock, helper_lock, backup_lock))
+            rollout_env = {**os.environ, "FC_ROLLOUT_CUSTODY_FDS": ",".join(map(str, lock_descriptors))}
             rollout = subprocess.run(rollout_cmd, capture_output=True, text=True,
-                                     timeout=a.drain_seconds + 600, pass_fds=lock_descriptors)
+                                     timeout=a.drain_seconds + 600, pass_fds=lock_descriptors, env=rollout_env)
         except (OSError, subprocess.SubprocessError) as error:
             log("rollout_failed_reconciliation_required", state="unknown", helper_state="held",
                 error=str(error)[:300], rollback_image=old_image, rollback_snapshot=str(snap))
