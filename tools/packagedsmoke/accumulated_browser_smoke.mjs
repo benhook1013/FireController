@@ -45,7 +45,18 @@ try {
  await page.getByLabel('Project credential',{exact:true}).fill(token); await page.getByRole('button',{name:'Connect to project',exact:true}).click();
  await expect(page.getByRole('heading',{name:'Packaged smoke',exact:true})).toBeVisible();
  phase='delivery accumulated'; await expect(page.locator('.delivery-job-list > li')).toHaveCount(50);
- const first = await (await firstDelivery).json();
+  const firstResponse = await firstDelivery, first = await firstResponse.json();
+  const cardFields = ['id','title','worker_id','worker_name','status','revision','updated_at','progress'].sort();
+  if (new URL(firstResponse.url()).searchParams.get('view') !== 'cards' || first.jobs.items.some(job =>
+      JSON.stringify(Object.keys(job).sort()) !== JSON.stringify(cardFields) ||
+      Object.keys(job.progress).length !== 6 || job.progress.summary !== '' || job.progress.next !== '' || job.progress.blocker !== '' ||
+      job.progress.summary_truncated || job.progress.next_truncated || job.progress.blocker_truncated)) {
+   throw new Error('Delivery did not select the exact lean cards projection');
+  }
+  await expect(page.locator('.delivery-job-list > li .delivery-job-link')).toHaveCount(50);
+  await expect(page.locator('.delivery-job-list > li .delivery-job-footer')).toHaveCount(50);
+  await expect(page.locator('.delivery-job-list > li .delivery-checkpoint-label')).toHaveCount(0);
+  await expect(page.getByText('Private brief',{exact:false})).toHaveCount(0);
  await page.getByRole('button',{name:'Load more work',exact:true}).click(); await expect(page.locator('.delivery-job-list > li')).toHaveCount(55);
  const deliveryReads = () => requests.filter(request => request.path === prefix+'/delivery').length;
  const priorDeliveryReads = deliveryReads();
@@ -55,7 +66,8 @@ try {
  const lastBody = await response.body(), last = JSON.parse(lastBody);
  await expect(page.getByRole('button',{name:'Load more work',exact:true})).toHaveCount(0);
  await expect(page.locator('.delivery-job-list > li')).toHaveCount(55);
- if (new URL(response.url()).searchParams.get('collection') !== 'workers' || deliveryReads() !== priorDeliveryReads+1 ||
+  if (requests.filter(request => request.path === prefix+'/delivery').some(request => new URLSearchParams(request.query).get('view') !== 'cards') ||
+      new URL(response.url()).searchParams.get('collection') !== 'workers' || deliveryReads() !== priorDeliveryReads+1 ||
      last.workers.items.length !== 5 || last.jobs.items.length !== 0 || last.jobs.has_more || first.jobs.items.length !== 50) {
   throw new Error('Delivery continuation transferred an unrequested collection');
  }

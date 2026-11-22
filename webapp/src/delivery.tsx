@@ -49,7 +49,7 @@ export function deliveryQuery(session: Session, key: readonly string[], workerCu
   const jobs = { job_limit: 50, ...(jobCursor ? { job_cursor: jobCursor } : {}) };
   const options = workerCursor && !jobCursor ? { ...workers, collection: 'workers' as const }
     : jobCursor && !workerCursor ? { ...jobs, collection: 'jobs' as const } : { ...workers, ...jobs };
-  return { queryKey: [...key, 'delivery', workerCursor, jobCursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.delivery(options, signalFor(session, signal)), staleTime: Infinity };
+  return { queryKey: [...key, 'delivery', workerCursor, jobCursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.delivery({ ...options, view: 'cards' }, signalFor(session, signal)), staleTime: Infinity };
 }
 export function deliveryReviewQuery(session: Session, key: readonly string[]) {
   return reviewQueueQuery(session, key, 'recent');

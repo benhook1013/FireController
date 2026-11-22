@@ -15,6 +15,52 @@ async function client() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('bounded stored Delivery API', () => {
+  it('keeps the default request and full response shape while cards explicitly omits unused context', async () => {
+    const api = await client(), full = snapshot();
+    full.jobs.items[0].summary = { job_id: 'job_one', job_revision: 2, revision: 1, title: 'Audience title', body: 'Audience body' };
+    const { summary: _summary, brief_preview: _brief, brief_preview_truncated: _flag, checklist: _checklist, ...card } = full.jobs.items[0];
+    const cards = { ...full, jobs: { ...full.jobs, items: [card] } };
+    const fetch = vi.fn().mockResolvedValueOnce(json(full)).mockResolvedValueOnce(json(cards)).mockResolvedValueOnce(json(cards)).mockResolvedValueOnce(json(full));
+    vi.stubGlobal('fetch', fetch);
+    await expect(api.delivery()).resolves.toEqual(full);
+    expect(String(fetch.mock.calls[0][0])).toBe('https://service.example/api/v1/projects/project_one/delivery');
+    await expect(api.delivery({ view: 'cards' })).resolves.toEqual(cards);
+    expect(String(fetch.mock.calls[1][0])).toBe('https://service.example/api/v1/projects/project_one/delivery?view=cards');
+    // Neither silently accept a lean default response nor an expanded cards response.
+    await expect(api.delivery()).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(api.delivery({ view: 'cards' })).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(fetch).toHaveBeenCalledTimes(4); api.close();
+  });
+
+  it('validates every cards field and refuses unused context, foreign workers and inconsistent skipped pages', async () => {
+    const api = await client(), full = snapshot();
+    const { brief_preview: _brief, brief_preview_truncated: _flag, checklist: _checklist, ...card } = full.jobs.items[0];
+    const cards = { ...full, jobs: { items: [card], has_more: false } };
+    const variants = [
+      ...Object.keys(card).map(field => { const copy: Record<string, unknown> = { ...card }; delete copy[field]; return { ...cards, jobs: { items: [copy], has_more: false } }; }),
+      ...[{ brief_preview: '' }, { brief_preview_truncated: false }, { checklist: null }, { summary: null }, { brief: 'private' }, { status: 'completed' }, { worker_name: '' }, { revision: 0 }, { updated_at: 'invalid' }, { progress: { ...progress, summary: '🔥'.repeat(61) } }, { progress: { ...progress, next_truncated: null } }, { progress: { ...progress, evidence: [] } }].map(change => ({ ...cards, jobs: { items: [{ ...card, ...change }], has_more: false } })),
+      { ...cards, workers: { items: [{ ...full.workers.items[0], project_id: 'foreign_project' }], has_more: false } },
+      { ...cards, jobs: { items: [card, card], has_more: false } },
+      { ...cards, jobs: { items: [card], has_more: true } },
+    ];
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    for (const value of variants) {
+      fetch.mockResolvedValueOnce(json(value));
+      await expect(api.delivery({ view: 'cards' })).rejects.toMatchObject({ code: 'invalid_response' });
+    }
+    fetch.mockResolvedValueOnce(json({ ...cards, workers: { items: [], has_more: false } }));
+    await expect(api.delivery({ view: 'cards', collection: 'jobs', job_limit: 1, job_cursor: 'jobs_next' })).resolves.toEqual({ ...cards, workers: { items: [], has_more: false } });
+    expect(new URL(String(fetch.mock.calls.at(-1)![0])).search).toBe('?view=cards&collection=jobs&job_limit=1&job_cursor=jobs_next');
+    fetch.mockResolvedValueOnce(json(cards));
+    await expect(api.delivery({ view: 'cards', collection: 'workers' })).rejects.toMatchObject({ code: 'invalid_response' });
+    const workers = { ...cards, jobs: { items: [], has_more: false } };
+    fetch.mockResolvedValueOnce(json(workers));
+    await expect(api.delivery({ view: 'cards', collection: 'workers', worker_cursor: 'workers_next' })).resolves.toEqual(workers);
+    const calls = fetch.mock.calls.length;
+    for (const view of ['', 'full', 'Cards', null, ['cards']]) await expect(api.delivery({ view } as never)).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetch).toHaveBeenCalledTimes(calls); api.close();
+  });
+
   it('accepts configured worker display order independently of opaque ID order', async () => {
     const api = await client(), value=snapshot();
     value.workers.items=[{...value.workers.items[0],id:'worker_z',name:'Pinned'},value.workers.items[0]];

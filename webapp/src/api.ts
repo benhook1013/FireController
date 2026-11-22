@@ -200,16 +200,21 @@ function validDelivery(value: unknown, project: string, options: DeliveryOptions
     seenWorkers.add(worker.id);
   }
   const ranks: Record<string, number> = { active: 0, blocked: 1, parked: 2 };
+  const cardFields = ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'updated_at', 'progress'];
+  const cards = options.view === 'cards';
+  const required = cards ? cardFields : [...cardFields, 'brief_preview', 'brief_preview_truncated', 'checklist'];
   let previousRank = -1, previousJob = '';
   for (const job of value.jobs.items) {
-    if (!record(job) || !keys(job, ['id', 'title', 'worker_id', 'status', 'revision', 'worker_name', 'brief_preview', 'brief_preview_truncated', 'updated_at', 'progress', 'checklist'], ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name))) return false;
+    if (!record(job) || !keys(job, required, cards ? [] : ['summary']) || !id(job.id) || !contentText(job.title, 240) || job.worker_id !== '' && !id(job.worker_id) || typeof job.status !== 'string' || !Object.hasOwn(ranks, job.status) || !positive(job.revision) || (job.worker_id === '' ? job.worker_name !== '' : !displayName(job.worker_name)) || !assessmentTime(job.updated_at)) return false;
     if (job.summary !== undefined && (!validJobPublicSummary(job.summary, job.id) || job.summary.job_revision > Number(job.revision))) return false;
     const rank = ranks[job.status];
     if (rank < previousRank || rank === previousRank && job.id <= previousJob) return false;
     previousRank = rank; previousJob = job.id;
-    if (!contentText(job.brief_preview, 240, true) || typeof job.brief_preview_truncated !== 'boolean' || job.brief_preview_truncated && !job.brief_preview || !assessmentTime(job.updated_at)) return false;
-    const checklist = job.checklist;
-    if (checklist !== null && (!record(checklist) || !keys(checklist, ['revision', 'job_revision', 'total', 'done', 'created_at']) || !positive(checklist.revision) || !positive(checklist.job_revision) || Number(checklist.job_revision) > Number(job.revision) || !nonnegative(checklist.total) || Number(checklist.total) > 100 || !nonnegative(checklist.done) || Number(checklist.done) > Number(checklist.total) || !assessmentTime(checklist.created_at))) return false;
+    if (!cards) {
+      if (!contentText(job.brief_preview, 240, true) || typeof job.brief_preview_truncated !== 'boolean' || job.brief_preview_truncated && !job.brief_preview) return false;
+      const checklist = job.checklist;
+      if (checklist !== null && (!record(checklist) || !keys(checklist, ['revision', 'job_revision', 'total', 'done', 'created_at']) || !positive(checklist.revision) || !positive(checklist.job_revision) || Number(checklist.job_revision) > Number(job.revision) || !nonnegative(checklist.total) || Number(checklist.total) > 100 || !nonnegative(checklist.done) || Number(checklist.done) > Number(checklist.total) || !assessmentTime(checklist.created_at))) return false;
+    }
     const progress = job.progress;
     if (!record(progress) || !keys(progress, ['summary', 'next', 'blocker', 'summary_truncated', 'next_truncated', 'blocker_truncated'])) return false;
     for (const field of ['summary', 'next', 'blocker'] as const) {
@@ -995,6 +1000,10 @@ export class Api {
   }
   async delivery(options: DeliveryOptions = {}, signal?: AbortSignal): Promise<DeliverySnapshot> {
     const query = new URLSearchParams();
+    if (options.view !== undefined) {
+      if (options.view !== 'cards') throw new ApiError('invalid_request', 'The Delivery view is invalid.');
+      query.set('view', options.view);
+    }
     if (options.collection !== undefined) {
       const { collection, job_cursor, job_limit, worker_cursor, worker_limit } = options;
       if (collection !== 'workers' && collection !== 'jobs' ||

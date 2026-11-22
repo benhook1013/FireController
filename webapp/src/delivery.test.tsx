@@ -71,6 +71,20 @@ describe('bounded Delivery board', () => {
     expect(html).not.toContain('PRIVATE_STANDING_INSTRUCTIONS');expect(html).toContain('/jobs/job_active');
   });
 
+  it('renders a cards-only fixture with progress, edit age, focus and off-page owner fallback', () => {
+    const current = job('job_active', 'active');
+    const { brief_preview: _brief, brief_preview_truncated: _flag, checklist: _checklist, ...card } = current;
+    card.progress = { summary: '**Checked** the contract', next: 'Run the fixture', blocker: 'Awaiting proof', summary_truncated: false, next_truncated: true, blocker_truncated: false };
+    const html = markup(<DeliveryLanes value={{ workers: { items: [worker], has_more: true, cursor: 'workers_next' }, jobs: { items: [card, { ...card, id: 'job_outside', worker_id: 'outside_owner', worker_name: 'Outside builder' }], has_more: false } }} home={home} />);
+    expect(html).toContain('<strong>Checked</strong> the contract');
+    expect(html).toContain('Next:</strong>'); expect(html).toContain('Blocker:</strong>');
+    expect(html).toContain('Preview truncated'); expect(html).toContain('Edited');
+    expect(html).toContain('Primary focus'); expect(html).toContain('Outside builder');
+    expect(html).toContain('Owner outside this worker page');
+    expect(html).toContain(`href="${home}/jobs/job_active"`);
+    expect(html).not.toContain('Checklist');
+  });
+
   it('keeps empty jobs compact and renders only supplied current fields without adding fallback brief text', () => {
     const current = {...job('job_empty','parked'),brief_preview:'LONG_STANDING_INSTRUCTIONS',brief_preview_truncated:true};
     const value = {workers:{items:[worker],has_more:false},jobs:{items:[current],has_more:false}};
@@ -208,10 +222,22 @@ describe('bounded Delivery board', () => {
     const request = new AbortController();
     await options.queryFn({ signal: request.signal });
     expect(read).toHaveBeenCalledTimes(1);
-    expect(read.mock.calls[0][0]).toEqual({ worker_limit: 20, job_limit: 50, worker_cursor: 'workers_two', job_cursor: 'jobs_three' });
+    expect(read.mock.calls[0][0]).toEqual({ view: 'cards', worker_limit: 20, job_limit: 50, worker_cursor: 'workers_two', job_cursor: 'jobs_three' });
     expect(options.queryKey).toEqual([...key, 'delivery', 'workers_two', 'jobs_three']);
     session.controller.abort();
     expect(read.mock.calls[0][1].aborted).toBe(true);
+  });
+  it('selects cards for the first read and either single-collection continuation', async () => {
+    const read = vi.fn().mockResolvedValue(board);
+    const session = { controller: new AbortController(), api: { delivery: read } } as unknown as Session;
+    for (const [workers, jobs] of [['', ''], ['workers_next', ''], ['', 'jobs_next']]) {
+      await deliveryQuery(session, key, workers, jobs).queryFn({ signal: new AbortController().signal });
+    }
+    expect(read.mock.calls.map(call => call[0])).toEqual([
+      { view: 'cards', worker_limit: 20, job_limit: 50 },
+      { view: 'cards', collection: 'workers', worker_limit: 20, worker_cursor: 'workers_next' },
+      { view: 'cards', collection: 'jobs', job_limit: 50, job_cursor: 'jobs_next' },
+    ]);
   });
 });
 

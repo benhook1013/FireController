@@ -92,6 +92,140 @@ func TestDeliveryReadHasNoProviderLookup(t *testing.T) {
 	}
 }
 
+func TestDeliveryCardsProjectsOnlyWireFieldsAndPreservesDefault(t *testing.T) {
+	a, project, token, worker, jobPath := progressFixture(t)
+	progressOK(t, a.call("PUT", jobPath+"/checklist", token, "cards-plan", progressReplace(1, 0, []progressItem{{ID: "done", Text: "PRIVATE checklist text", Done: true}})), http.StatusOK)
+	current := readWorking(t, a, jobPath, token)
+	progressOK(t, a.call("PATCH", jobPath, token, "cards-progress", map[string]any{
+		"expected_revision": current.Revision, "worker_id": worker, "brief": strings.Repeat("PRIVATE standing brief ", 20),
+		"progress": map[string]any{"summary": strings.Repeat("雪", 100), "next": "Run focused proof", "blocker": "Awaiting evidence", "evidence": []string{"PRIVATE evidence"}},
+	}), http.StatusOK)
+	current = readWorking(t, a, jobPath, token)
+	progressOK(t, a.callWorker("PUT", jobPath+"/summary", token, worker, "cards-summary", summaryBody(current.Revision, 0, "PRIVATE audience title", "PRIVATE audience body")), http.StatusOK)
+	base := "/api/v1/projects/" + project + "/delivery"
+	type rawDelivery struct {
+		Workers json.RawMessage `json:"workers"`
+		Jobs    struct {
+			Items   []map[string]json.RawMessage `json:"items"`
+			Cursor  string                       `json:"cursor"`
+			HasMore bool                         `json:"has_more"`
+		} `json:"jobs"`
+	}
+	read := func(query string) rawDelivery {
+		t.Helper()
+		r := a.call(http.MethodGet, base+query, token, "", nil)
+		progressOK(t, r, http.StatusOK)
+		var value rawDelivery
+		decodeResponse(t, r, &value)
+		return value
+	}
+	before, lookups := contextState(t, a), a.lookups
+	full, cards := read(""), read("?view=cards")
+	if len(full.Jobs.Items) != 1 || len(cards.Jobs.Items) != 1 || !reflect.DeepEqual(full.Workers, cards.Workers) || cards.Jobs.HasMore || cards.Jobs.Cursor != "" {
+		t.Fatal("cards changed workers, job selection or page envelope")
+	}
+	job := full.Jobs.Items[0]
+	for _, field := range []string{"brief_preview", "brief_preview_truncated", "checklist", "summary"} {
+		if job[field] == nil || cards.Jobs.Items[0][field] != nil {
+			t.Fatalf("default/cards projection mismatch for %s", field)
+		}
+		delete(job, field)
+	}
+	if len(job) != 8 || !reflect.DeepEqual(job, cards.Jobs.Items[0]) {
+		t.Fatal("cards changed retained fields or expanded beyond the exact card shape")
+	}
+	var progress struct {
+		Summary          string `json:"summary"`
+		Next             string `json:"next"`
+		Blocker          string `json:"blocker"`
+		SummaryTruncated bool   `json:"summary_truncated"`
+	}
+	if err := json.Unmarshal(job["progress"], &progress); err != nil || progress.Summary != strings.Repeat("雪", 80) || !progress.SummaryTruncated || progress.Next != "Run focused proof" || progress.Blocker != "Awaiting evidence" {
+		t.Fatal("cards lost bounded UTF-8 progress", err)
+	}
+	// Collection selection composes with the projection, including empty arrays.
+	for _, collection := range []string{"workers", "jobs"} {
+		value := read("?view=cards&collection=" + collection)
+		if collection == "workers" && (value.Jobs.Items == nil || len(value.Jobs.Items) != 0 || value.Jobs.HasMore || value.Jobs.Cursor != "") || collection == "jobs" && !reflect.DeepEqual(value.Jobs, cards.Jobs) {
+			t.Fatal("cards changed collection selection")
+		}
+	}
+	if !reflect.DeepEqual(before, contextState(t, a)) || lookups != a.lookups {
+		t.Fatal("cards read mutated durable state or contacted a provider")
+	}
+	// A wire projection must not bypass validation of the omitted stored facts.
+	if _, err := a.store.DB().Exec(`UPDATE job_checklists SET items_json='broken' WHERE project_id=? AND job_id=?`, project, current.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"", "?view=cards"} {
+		progressOK(t, a.call(http.MethodGet, base+query, token, "", nil), http.StatusInternalServerError)
+	}
+}
+
+func TestDeliveryCardsSelectorsCursorsAndScope(t *testing.T) {
+	a := setupAPI(t)
+	project := a.createProject("delivery-cards", "synthetic/delivery-cards")
+	token := a.grant(project, "delivery-cards-client", "read", "write")
+	for i := 0; i < 3; i++ {
+		worker := a.createWorker(project, fmt.Sprintf("Cards worker %d", i))
+		progressOK(t, a.call(http.MethodPost, "/api/v1/projects/"+project+"/jobs", token, fmt.Sprintf("cards-job-%d", i), map[string]any{"title": fmt.Sprintf("Cards job %d", i), "worker_id": worker}), http.StatusCreated)
+	}
+	base := "/api/v1/projects/" + project + "/delivery"
+	read := func(query string) deliveryValue {
+		t.Helper()
+		r := a.call(http.MethodGet, base+query, token, "", nil)
+		progressOK(t, r, http.StatusOK)
+		var value deliveryValue
+		decodeResponse(t, r, &value)
+		return value
+	}
+	full, cards := read("?worker_limit=1&job_limit=1"), read("?view=cards&worker_limit=1&job_limit=1")
+	if !full.Workers.HasMore || !full.Jobs.HasMore || full.Workers.Cursor == "" || full.Jobs.Cursor == "" || full.Workers.Cursor != cards.Workers.Cursor || full.Jobs.Cursor != cards.Jobs.Cursor {
+		t.Fatal("view changed cursor identity or boundedness")
+	}
+	for _, view := range []string{"", "view=cards&"} {
+		next := read("?" + view + "worker_limit=1&job_limit=1&worker_cursor=" + url.QueryEscape(cards.Workers.Cursor) + "&job_cursor=" + url.QueryEscape(cards.Jobs.Cursor))
+		if len(next.Workers.Items) != 1 || len(next.Jobs.Items) != 1 || next.Workers.Items[0].ID == full.Workers.Items[0].ID || next.Jobs.Items[0].ID == full.Jobs.Items[0].ID {
+			t.Fatal("cursor did not continue across views")
+		}
+		// The first worker is outside this slice, but its job retains its owner name.
+		fallback := read("?" + view + "worker_limit=1&worker_cursor=" + url.QueryEscape(cards.Workers.Cursor))
+		foundOwner := false
+		for _, job := range fallback.Jobs.Items {
+			if job.WorkerID == full.Workers.Items[0].ID {
+				foundOwner = true
+				if job.WorkerName != full.Workers.Items[0].Name {
+					t.Fatal("cards lost off-page worker identity")
+				}
+			}
+		}
+		if !foundOwner {
+			t.Fatal("off-page owner fixture job disappeared")
+		}
+	}
+	for _, query := range []string{"view=", "view=full", "view=Cards", "view=cards&view=cards", "view=cards&view=", "view=%zz", "view=cards&unknown=1", "view=cards&job_limit=0", "view=cards&collection=jobs&worker_limit=1", "view=cards&collection=workers&job_cursor=foreign", "view=cards&job_cursor=foreign"} {
+		progressOK(t, a.call(http.MethodGet, base+"?"+query, token, "", nil), http.StatusBadRequest)
+	}
+	otherPrincipal := a.grant(project, "cards-other-principal", "read")
+	otherProject := a.createProject("delivery-cards-other", "synthetic/delivery-cards-other")
+	otherToken := a.grant(otherProject, "cards-other-project", "read")
+	for _, cursor := range []struct{ key, value string }{{"worker_cursor", cards.Workers.Cursor}, {"job_cursor", cards.Jobs.Cursor}} {
+		query := "?view=cards&" + cursor.key + "=" + url.QueryEscape(cursor.value)
+		progressOK(t, a.call(http.MethodGet, base+query, otherPrincipal, "", nil), http.StatusBadRequest)
+		progressOK(t, a.call(http.MethodGet, "/api/v1/projects/"+otherProject+"/delivery"+query, otherToken, "", nil), http.StatusBadRequest)
+	}
+	for _, query := range []string{"", "?view=cards"} {
+		progressOK(t, a.call(http.MethodGet, base+query, otherToken, "", nil), http.StatusForbidden)
+	}
+	empty := a.call(http.MethodGet, "/api/v1/projects/"+otherProject+"/delivery?view=cards", otherToken, "", nil)
+	progressOK(t, empty, http.StatusOK)
+	var emptyPage deliveryValue
+	decodeResponse(t, empty, &emptyPage)
+	if emptyPage.Workers.Items == nil || emptyPage.Jobs.Items == nil || len(emptyPage.Workers.Items) != 0 || len(emptyPage.Jobs.Items) != 0 || emptyPage.Workers.HasMore || emptyPage.Jobs.HasMore {
+		t.Fatal("empty cards collections must remain bounded arrays")
+	}
+}
+
 func TestDeliveryQueryCursorFilterBinding(t *testing.T) {
 	a := setupAPI(t)
 	project := a.createProject("delivery-cursor", "synthetic/delivery-cursor")
@@ -224,6 +358,13 @@ func TestDeliveryPreservesAPIAcceptedControlCharactersInNamesAndTitles(t *testin
 				if len(board.Workers.Items) != 1 || board.Workers.Items[0].ID != workerReceipt.ID || board.Workers.Items[0].Name != name || len(board.Jobs.Items) != 1 || board.Jobs.Items[0].ID != jobReceipt.ID || board.Jobs.Items[0].Title != title || board.Jobs.Items[0].WorkerName != name || board.Jobs.Items[0].WorkerID != workerReceipt.ID || board.Jobs.Items[0].Revision != revision {
 					t.Fatal("Delivery changed API-admitted text or identity")
 				}
+				cards := a.call(http.MethodGet, base+"/delivery?view=cards", token, "", nil)
+				progressOK(t, cards, http.StatusOK)
+				var cardBoard deliveryValue
+				decodeResponse(t, cards, &cardBoard)
+				if !reflect.DeepEqual(board, cardBoard) {
+					t.Fatal("cards changed API-admitted names, titles or identity")
+				}
 				jobDetail := a.call(http.MethodGet, base+"/jobs/"+jobReceipt.ID, token, "", nil)
 				progressOK(t, jobDetail, http.StatusOK)
 				var job jobValue
@@ -312,6 +453,13 @@ func TestDeliveryStillRejectsMalformedStoredNamesAndTitles(t *testing.T) {
 				paths := []string{base + "/delivery"}
 				if field == "name" {
 					paths = append(paths, base+"/delivery?worker_limit=1&worker_cursor="+url.QueryEscape(page.Workers.Cursor))
+				}
+				for _, path := range append([]string(nil), paths...) {
+					separator := "?"
+					if strings.Contains(path, "?") {
+						separator = "&"
+					}
+					paths = append(paths, path+separator+"view=cards")
 				}
 				for _, path := range paths {
 					r := a.call(http.MethodGet, path, token, "", nil)

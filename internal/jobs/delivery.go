@@ -46,18 +46,22 @@ type deliveryChecklist struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+type deliveryJobCard struct {
+	ID         string           `json:"id"`
+	Title      string           `json:"title"`
+	WorkerID   string           `json:"worker_id"`
+	WorkerName string           `json:"worker_name"`
+	Status     string           `json:"status"`
+	Revision   int64            `json:"revision"`
+	UpdatedAt  string           `json:"updated_at"`
+	Progress   deliveryProgress `json:"progress"`
+}
+
 type deliveryJob struct {
+	deliveryJobCard
 	Summary               *Summary           `json:"summary,omitempty"`
-	ID                    string             `json:"id"`
-	Title                 string             `json:"title"`
-	WorkerID              string             `json:"worker_id"`
-	WorkerName            string             `json:"worker_name"`
-	Status                string             `json:"status"`
-	Revision              int64              `json:"revision"`
 	BriefPreview          string             `json:"brief_preview"`
 	BriefPreviewTruncated bool               `json:"brief_preview_truncated"`
-	UpdatedAt             string             `json:"updated_at"`
-	Progress              deliveryProgress   `json:"progress"`
 	Checklist             *deliveryChecklist `json:"checklist"`
 }
 
@@ -94,9 +98,14 @@ func delivery(store *core.Store) http.HandlerFunc {
 			core.WriteError(w, err)
 			return
 		}
-		query, err := core.QueryKeys(r, "invalid_query", "worker_limit", "job_limit", "worker_cursor", "job_cursor", "collection")
+		query, err := core.QueryKeys(r, "invalid_query", "worker_limit", "job_limit", "worker_cursor", "job_cursor", "collection", "view")
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		cards := query.Get("view") == "cards"
+		if query.Has("view") && !cards {
+			core.WriteError(w, core.Fail("invalid_query", "Use the cards view or omit the view selector.", http.StatusBadRequest))
 			return
 		}
 		collection := query.Get("collection")
@@ -149,6 +158,19 @@ func delivery(store *core.Store) http.HandlerFunc {
 		})
 		if err != nil {
 			core.WriteError(w, err)
+			return
+		}
+		if cards {
+			// Project only after the shared read and validation above. The opt-in
+			// wire shape does not weaken stored-state checks or change cursors.
+			jobs := deliveryPage[deliveryJobCard]{Cursor: result.Jobs.Cursor, HasMore: result.Jobs.HasMore, Items: make([]deliveryJobCard, 0, len(result.Jobs.Items))}
+			for _, job := range result.Jobs.Items {
+				jobs.Items = append(jobs.Items, job.deliveryJobCard)
+			}
+			core.WriteJSON(w, http.StatusOK, struct {
+				Workers deliveryPage[deliveryWorker]  `json:"workers"`
+				Jobs    deliveryPage[deliveryJobCard] `json:"jobs"`
+			}{result.Workers, jobs})
 			return
 		}
 		core.WriteJSON(w, http.StatusOK, result)
