@@ -87,6 +87,7 @@ func waitCapacityError(err error) bool {
 
 func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", operationWaitHeader)
 	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
@@ -168,6 +169,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
+	w.Header().Add("Vary", operationWaitHeader)
 	scope, err := e.store.Scope(r, "read")
 	if err != nil {
 		core.WriteError(w, err)
@@ -196,5 +198,6 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
+	e.queuedRunResponseHeader(w, r, scope, state)
 	core.WriteJSON(w, http.StatusOK, state)
 }

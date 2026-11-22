@@ -37,10 +37,13 @@ Only one of the two supervisor workers probes retained Draft waits. Its scheduli
 
 ## Reading state
 
-Operation and round-progress reads expose waiting state only when requested with `X-FC-Operation-Wait`; round-progress reads also require the `view=stages` query parameter. Version 1 preserves the original Hosted shape; version 2
-also understands CLI baselines. Version 3 adds retained provider allowance
-estimates. A full-capacity estimate is not the next retry time or a guarantee
-that a review can start. Older clients continue receiving their existing shapes. The current bound clients request version 3 and preserve validated `wait.cli_allowance` for a queued CLI baseline, held-operation `allowance` facts, and the compact held Hosted `retry_not_before` deadline. Legacy responses without these optional facts remain readable; absence does not imply zero allowance or a provider reset.
+Operation and round-progress reads expose waiting state only when requested with `X-FC-Operation-Wait`. Round-progress reads also require the `view=stages` query parameter. Version 1 preserves the original Hosted shape and version 2 also understands CLI baselines. Version 3 adds retained provider allowance estimates. Version 5 retains version 3 and adds optional `queue_ahead_pull_number` to a current Hosted wait in the staged round-progress read. It identifies an eligible earlier accepted request in the same project while preserving the recorded wait and deadline.
+
+The current bound clients request version 3 and preserve validated `wait.cli_allowance` for a queued CLI baseline, held-operation `allowance` facts, and the compact held Hosted `retry_not_before` deadline. Legacy responses without these optional facts remain readable. A full-capacity estimate describes allowance and provides no retry time or dispatch guarantee.
+
+Queued operation and selected-child reads can return `X-FC-Review-Queued` with the current reason for waiting. The reason can report an operation or project pause, a draft, shared CLI quota, an earlier queued intent, cooldown, a reserved slot, or ordinary scheduling. CLI clients negotiating versions 2–5 can receive `queue_order`; older clients receive `awaiting_scheduler` in that case. The diagnostic is an authorized, bounded local read of the exact response revision. If the read is unavailable or the revision has changed, the original response remains available without the diagnostic.
+
+For a reserved slot, `X-FC-Review-Reservation` can identify the operation, PR, channel and state of a proved holder in the same project. A different project's reservation produces only `other_project`. Incomplete or inconsistent holder attribution produces only `reservation_unproven`. The headers describe the current snapshot and do not change grants, queue order, timers or reservations.
 
 The public control endpoint is
 `POST /api/v1/projects/{project_id}/reviews/operations/{operation_id}/control`.
@@ -60,7 +63,7 @@ Request submission can separately fail with `review_inflight`. It refuses a new-
 
 After an unknown outcome, recover with the same authenticated principal, project, worker, exact request body, operation ID and idempotency key. Do not invent a new key or assume that the action failed.
 
-Held-operation `allowance` facts and the compact held Hosted `retry_not_before` field require `X-FC-Operation-Wait: 3`, including terminal replies to request submission. Missing, older or unsupported versions omit these fields; engine-level retained facts and exact-key recovery remain unchanged.
+Held-operation `allowance` facts and the compact held Hosted `retry_not_before` field require `X-FC-Operation-Wait` version 3 or 5, including terminal replies to request submission. Missing, older or unsupported versions omit these fields; engine-level retained facts and exact-key recovery remain unchanged.
 
 Reads distinguish missing or malformed required waiting dependencies from operational lookup failures. Required dependency damage remains `storage_unavailable`; cancellation, deadlines and transient storage errors retain their original classification. An absent optional held allowance observation remains absent rather than becoming a broken wait.
 
