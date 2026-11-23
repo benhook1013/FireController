@@ -208,7 +208,8 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		return nil, invalid()
 	}
 	target := fmt.Sprintf("%d/%s", pull, channel)
-	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.rounds.configure", Target: target, Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+	var cancelled []string
+	result, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.rounds.configure", Target: target, Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		c, err := readRoundRecord(ctx, tx, scope.ProjectID, pull, channel)
 		if err != nil {
 			return nil, err
@@ -311,12 +312,63 @@ func (e *Engine) ConfigureRoundControl(ctx context.Context, scope core.Scope, ke
 		}
 		outcome := "granted"
 		if input.Action == "close" {
+			cancelled, err = e.cancelClosedRoundQueue(ctx, tx, scope, pull, channel)
+			if err != nil {
+				return nil, err
+			}
 			outcome = "closed"
 		} else if input.Action == "taper" {
 			outcome = "taper_updated"
 		}
 		return RoundControlReceipt{PullNumber: pull, Channel: channel, Revision: c.Revision, Epoch: c.Epoch, Outcome: outcome}, nil
 	})
+	if err == nil && len(cancelled) > 0 {
+		for _, id := range cancelled {
+			e.notifyOperation(id)
+		}
+		select {
+		case e.wake <- struct{}{}:
+		default:
+		}
+	}
+	return result, err
+}
+
+// Closing a round and withdrawing its undispatched requests share one writer
+// transaction. Requests with a current attempt retain their existing guards.
+func (e *Engine) cancelClosedRoundQueue(ctx context.Context, tx *sql.Tx, scope core.Scope, pull int64, channel string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM review_operations
+		WHERE project_id=? AND pull_number=? AND channel=? AND state='queued' AND attempt_id=''
+		ORDER BY created_at,id`, scope.ProjectID, pull, channel)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		o, err := readOperationBase(ctx, tx, scope.ProjectID, id)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := e.applyQueuedOperationControl(ctx, tx, scope, o, "cancel", "review_round_closed"); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
 }
 
 func checkRoundOpen(c RoundControl) error {
@@ -392,7 +444,12 @@ func roundOccupied(ctx context.Context, tx *sql.Tx, c roundRecord, excluding str
 }
 
 func roundOccupancyStages(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string) (execution, adjudication int64, err error) {
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_operation_bindings b JOIN review_operations o ON o.id=b.operation_id WHERE b.project_id=? AND b.pull_number=? AND b.channel=? AND b.epoch=? AND b.operation_id<>? AND o.state IN `+roundPendingStates, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, excluding).Scan(&execution)
+	return readRoundOccupancyStages(ctx, tx, c, excluding, false)
+}
+
+func readRoundOccupancyStages(ctx context.Context, tx *sql.Tx, c roundRecord, excluding string, excludeUndispatched bool) (execution, adjudication int64, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_round_operation_bindings b JOIN review_operations o ON o.id=b.operation_id WHERE b.project_id=? AND b.pull_number=? AND b.channel=? AND b.epoch=? AND b.operation_id<>?
+		AND (?=0 OR o.state<>'queued' OR o.attempt_id<>'') AND o.state IN `+roundPendingStates, c.ProjectID, c.PullNumber, c.Channel, c.Epoch, excluding, excludeUndispatched).Scan(&execution)
 	if err != nil {
 		return 0, 0, err
 	}

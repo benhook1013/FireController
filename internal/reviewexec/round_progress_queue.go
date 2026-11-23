@@ -3,6 +3,12 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strconv"
+
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 const reviewQueueDetailsHeader = "X-FC-Review-Queue-Details"
@@ -14,6 +20,65 @@ type QueuedReviewPosition struct {
 	Ahead   []int64 `json:"ahead,omitempty"`
 	Holding []int64 `json:"holding,omitempty"`
 	More    bool    `json:"more,omitempty"`
+}
+
+// HostedLaneHold identifies the same-project reservation that is still holding
+// the configured Hosted account's repository lane. It does not prove activity.
+type HostedLaneHold struct {
+	PullNumber int64                  `json:"pull_number"`
+	Attempt    reviews.AttemptSummary `json:"attempt"`
+}
+
+func (e *Engine) readHostedLaneHold(ctx context.Context, tx *sql.Tx, project, capabilityID string) (*HostedLaneHold, error) {
+	capability, ok := e.capabilities[capabilityID]
+	if !ok || !slices.Contains(capability.Channels, "hosted") {
+		return nil, nil
+	}
+	var hold HostedLaneHold
+	var repositoryID int64
+	var reason, anchorJSON, transitionedAt string
+	attempt := &hold.Attempt
+	// The Hosted account/repository uniqueness constraint bounds this lookup.
+	// Compare with the admitted head, which may differ from the current PR head.
+	err := tx.QueryRowContext(ctx, `SELECT r.pull_number,r.repository_id,a.id,o.channel,o.head_sha,a.state,
+		first.created_at,current.created_at,o.reason,a.external_id,
+		CASE WHEN length(CAST(a.anchor_json AS BLOB))<=4096 THEN a.anchor_json ELSE '' END
+	FROM projects p
+	JOIN review_execution_reservations r ON r.repository_id=p.github_repository_id
+	JOIN review_execution_attempts a ON a.id=r.attempt_id AND a.project_id=p.id AND a.provider=r.provider AND a.account=r.account
+	JOIN review_operations o ON o.id=a.operation_id AND o.project_id=a.project_id AND o.attempt_id=a.id
+		AND o.pull_number=r.pull_number AND o.channel=r.action_class AND o.state=a.state
+	JOIN review_execution_transitions first ON first.attempt_id=a.id AND first.revision=1 AND first.state='preparing'
+	JOIN review_execution_transitions current ON current.attempt_id=a.id AND current.revision=a.revision
+		AND current.state=a.state AND current.reason=o.reason AND current.external_id=a.external_id
+	WHERE p.id=? AND r.provider=? AND r.account=? AND r.action_class='hosted' AND r.execution_ended_at=''
+		AND o.capability_fingerprint=? AND a.state IN ('active','uncertain')`, project, capability.Provider, capability.Account, capability.Fingerprint).
+		Scan(&hold.PullNumber, &repositoryID, &attempt.SourceAttemptID, &attempt.Channel, &attempt.HeadSHA, &attempt.State,
+			&attempt.StartedAt, &transitionedAt, &reason, &attempt.TriggerID, &anchorJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var anchor Anchor
+	started, startOK := hostedObservationTime(attempt.StartedAt)
+	transitioned, transitionOK := hostedObservationTime(transitionedAt)
+	if json.Unmarshal([]byte(anchorJSON), &anchor) != nil || !validEvidenceAnchor(anchor) ||
+		anchor.RepositoryID != repositoryID || anchor.PullNumber != hold.PullNumber || anchor.CandidateSHA != attempt.HeadSHA ||
+		!hostedObservationID(attempt.SourceAttemptID, "review_attempt_") || !startOK || !transitionOK || transitioned.Before(started) {
+		return nil, nil
+	}
+	if attempt.TriggerID != "" || attempt.State == "active" || reason == "hosted_finished_inventory_unproven" {
+		trigger, err := strconv.ParseInt(attempt.TriggerID, 10, 64)
+		if err != nil || trigger <= 0 || strconv.FormatInt(trigger, 10) != attempt.TriggerID {
+			return nil, nil
+		}
+	}
+	if reviews.ValidAttemptReason(attempt.State, reason) {
+		attempt.Reason = reason
+	}
+	return &hold, nil
 }
 
 // This is optional local diagnostic evidence. If a binding cannot be verified,

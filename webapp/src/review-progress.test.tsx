@@ -30,7 +30,7 @@ describe('current round progress', () => {
     expect(String(fetch.mock.calls[0][0])).toContain('/reviews/rounds/progress?pull_numbers=31');
     expect(fetch.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
     expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Operation-Wait')).toBe('5');
-    expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Review-Queue-Details')).toBe('v1');
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).get('X-FC-Review-Queue-Details')).toBe('v2');
   });
   it('refuses invalid selectors before any network request', async () => {
     const api = await connected(); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
@@ -52,6 +52,21 @@ describe('current round progress', () => {
     const badChannels = [{...current,used:6},{...current,pending:-1},{...current,pending:33},{...current,epoch:4},{...current,taper:0},{...current,configured:false},{...current,origin_key:'PRIVATE'}, {...absent,maximum:8}];
     const bad = [ {...result,project_id:'project_other'}, {...result,evaluated_at:'not-time'}, {...result,items:[]}, {...result,items:[{...result.items[0],pull_number:32}]}, {...result,items:[{pull_number:31,channels:[absent,current]}]}, ...badChannels.map(channel=>({...result,items:[{pull_number:31,channels:[channel,absent]}]})) ];
     for (const value of bad) { vi.stubGlobal('fetch', vi.fn(async()=>json(value))); await expect(api.reviewProgress([31])).rejects.toMatchObject({code:'invalid_response'}); }
+  });
+  it('accepts one private Hosted lane holder outside the requested PRs', async () => {
+    const api = await connected();
+    const attempt = { source_attempt_id: `review_attempt_${'a'.repeat(32)}`, channel: 'hosted', head_sha: 'b'.repeat(40),
+      state: 'uncertain', reason: 'hosted_finished_inventory_unproven', started_at: result.evaluated_at,
+      finished_at: '', duration_seconds: null, source_run_id: '', trigger_id: '42', provider_review_id: '' };
+    const hold = { pull_number: 87, attempt };
+    const response = { ...result, hosted_lane_hold: hold };
+    vi.stubGlobal('fetch', vi.fn(async () => json(response)));
+    expect(await api.reviewProgress([31])).toEqual(response);
+    for (const invalid of [{ ...hold, pull_number: 0 }, { ...hold, attempt: { ...attempt, channel: 'cli' } },
+      { ...hold, attempt: { ...attempt, state: 'failed' } }, { ...hold, private_identity: 'private' }]) {
+      vi.stubGlobal('fetch', vi.fn(async () => json({ ...result, hosted_lane_hold: invalid })));
+      await expect(api.reviewProgress([31])).rejects.toMatchObject({ code: 'invalid_response' });
+    }
   });
   it('retains the ordinary deadline and cancellation without a second request', async () => {
     const api = await connected(); vi.useFakeTimers();

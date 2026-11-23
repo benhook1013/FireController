@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { signalFor, useWorkspace } from './workspace';
 import { roundProgressState, roundProgressAllowance, roundProgressStopReason, type ReviewRoundProgress } from './review-progress';
@@ -13,7 +13,12 @@ export function useReviewProgress(pulls: number[]) {
     enabled: selected.length > 0, staleTime: Infinity });
   useEffect(() => { if (query.error) fail(query.error); }, [query.error, fail]);
   const retained = useRetainedRead(JSON.stringify(key), query.data, selected.length > 0);
-  return { ...query, data: retained };
+  const data = useMemo(() => {
+    if (!retained?.hosted_lane_hold) return retained;
+    const hold = retained.hosted_lane_hold;
+    return { ...retained, items: retained.items.map(item => ({ ...item, hostedLaneHold: hold })) };
+  }, [retained]);
+  return { ...query, data };
 }
 export function ReviewProgressView({ value, queued = false }: { value?: ReviewRoundProgress; queued?: boolean }) {
   if (!value?.configured) return null;

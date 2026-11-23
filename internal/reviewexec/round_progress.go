@@ -52,9 +52,10 @@ type RoundProgressItem struct {
 }
 
 type RoundProgress struct {
-	ProjectID   string              `json:"project_id"`
-	EvaluatedAt string              `json:"evaluated_at"`
-	Items       []RoundProgressItem `json:"items"`
+	HostedLaneHold *HostedLaneHold     `json:"hosted_lane_hold,omitempty"`
+	ProjectID      string              `json:"project_id"`
+	EvaluatedAt    string              `json:"evaluated_at"`
+	Items          []RoundProgressItem `json:"items"`
 }
 
 func validRoundProgressNumbers(numbers []int64) bool {
@@ -84,7 +85,7 @@ func (e *Engine) ReadRoundProgressStages(ctx context.Context, scope core.Scope, 
 }
 
 type roundProgressView struct {
-	stages, queuePriority, queueDetails, activity, sourceRetry, sourceRetryTiming, fixes, incomingRoutes bool
+	stages, queuePriority, queueDetails, hostedLaneHold, activity, sourceRetry, sourceRetryTiming, fixes, incomingRoutes bool
 }
 
 func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, numbers []int64, view roundProgressView) (RoundProgress, error) {
@@ -98,6 +99,13 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 		var queueRevision int64
 		if view.queueDetails {
 			queueConfig, queueRevision, _ = readConfiguration(ctx, tx, scope.ProjectID)
+		}
+		if view.hostedLaneHold && queueRevision > 0 {
+			var err error
+			out.HostedLaneHold, err = e.readHostedLaneHold(ctx, tx, scope.ProjectID, queueConfig.CapabilityID)
+			if err != nil {
+				return err
+			}
 		}
 		var incoming map[int64]*int64
 		if view.incomingRoutes {
@@ -116,7 +124,8 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				}
 				var execution, adjudication int64
 				if control.Configured {
-					execution, adjudication, err = roundOccupancyStages(ctx, tx, control, "")
+					// Older releases could leave undispatched requests on closed lanes.
+					execution, adjudication, err = readRoundOccupancyStages(ctx, tx, control, "", control.Closed)
 					if err != nil {
 						return err
 					}
@@ -129,9 +138,11 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				}
 				if view.stages {
 					progress.PendingExecution, progress.PendingAdjudication = &execution, &adjudication
-					progress.Wait, err = e.readChannelWait(ctx, tx, scope.ProjectID, number, channel, view.queuePriority)
-					if err != nil {
-						return err
+					if !control.Closed {
+						progress.Wait, err = e.readChannelWait(ctx, tx, scope.ProjectID, number, channel, view.queuePriority)
+						if err != nil {
+							return err
+						}
 					}
 					if progress.Wait == nil && progress.Pending == 0 {
 						progress.CancelledWait, err = readChannelCancelledWait(ctx, tx, scope.ProjectID, number, channel)
@@ -153,7 +164,7 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 						return err
 					}
 				}
-				if view.sourceRetry {
+				if view.sourceRetry && !control.Closed {
 					progress.SourceRetry, err = readChannelSourceRetry(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
 						return err

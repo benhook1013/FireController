@@ -230,7 +230,7 @@ it('shows closed native rounds instead of historical Held while preserving unfin
   expect(render({...closed,pending:1})).not.toContain('>Closed<');
   expect(render(closed,{...attempt,state:'active',finished_at:''})).toContain('>Review active<');
   expect(render(closed,{...attempt,state:'active',finished_at:''})).not.toContain('>Closed<');
-  expect(render({...closed,pending:1,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2099-10-30T12:30:00Z',paused:true}})).toContain('>Paused<');
+  expect(render({...closed,pending:1,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2099-10-30T12:30:00Z',paused:true}})).not.toContain('>Paused<');
   expect(render({...closed,pending:1,wait:{baseline_attempt_id:`review_attempt_${'a'.repeat(32)}`,retry_not_before:'2099-10-30T12:30:00Z',paused:true}})).not.toContain('>Closed<');
   archive.items = [{...attempt,source:'native'}];
   const history = markup(false,[],true);

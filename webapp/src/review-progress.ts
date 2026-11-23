@@ -1,5 +1,6 @@
 import { sessionExpiry } from './browser-session';
 import { validOperationWait, type ReviewOperationWait, type ReviewQueueDetails } from './review-operation-wait';
+import type { ReviewAttemptSummary } from './types';
 
 interface ReviewActivityIdentity { attempt_id: string; head_sha: string; observed_at: string }
 export interface ReviewCancelledWait { baseline_attempt_id: string; head_sha: string; cancelled_at: string }
@@ -22,8 +23,9 @@ export interface ReviewRoundProgress {
   submission_evidence?: ReviewSubmissionEvidence;
   source_retry?: ReviewSourceRetry;
 }
-export interface ReviewProgressItem { pull_number: number; channels: ReviewRoundProgress[]; incoming_routes_pending?: number }
-export interface ReviewProgress { project_id: string; evaluated_at: string; items: ReviewProgressItem[] }
+export interface HostedLaneHold { pull_number: number; attempt: ReviewAttemptSummary }
+export interface ReviewProgressItem { pull_number: number; channels: ReviewRoundProgress[]; incoming_routes_pending?: number; hostedLaneHold?: HostedLaneHold }
+export interface ReviewProgress { project_id: string; evaluated_at: string; items: ReviewProgressItem[]; hosted_lane_hold?: HostedLaneHold }
 
 export function progressPulls(value: unknown): value is number[] {
   return Array.isArray(value) && value.length > 0 && value.length <= 100 &&
@@ -78,8 +80,14 @@ export function validRoundProgress(value: unknown, channel: string): value is Re
   return c.revision > 0 && c.epoch > 0 && c.epoch <= c.revision && (c.maximum_unbounded ? c.maximum === 0 : c.minimum <= c.maximum && c.used <= c.maximum) && c.taper >= 1 && c.taper <= 1000 && c.dry - c.used <= 1000 && c.pending <= 32 &&
     (!c.tapered || c.used >= c.minimum);
 }
-export function validReviewProgress(value: unknown, project: string, pulls: number[]): value is ReviewProgress {
-  if (!object(value) || !fields(value, ['project_id','evaluated_at','items']) || value.project_id !== project || !sessionExpiry(value.evaluated_at) || !Array.isArray(value.items) || value.items.length !== pulls.length) return false;
+export function validReviewProgress(value: unknown, project: string, pulls: number[], validAttempt: (attempt: unknown) => attempt is ReviewAttemptSummary): value is ReviewProgress {
+  if (!object(value) || !fields(value, ['project_id','evaluated_at','items', ...(Object.hasOwn(value, 'hosted_lane_hold') ? ['hosted_lane_hold'] : [])]) || value.project_id !== project || !sessionExpiry(value.evaluated_at) || !Array.isArray(value.items) || value.items.length !== pulls.length) return false;
+  if (Object.hasOwn(value, 'hosted_lane_hold')) {
+    const hold = value.hosted_lane_hold;
+    if (!object(hold) || !fields(hold, ['pull_number', 'attempt']) || !natural(hold.pull_number) || hold.pull_number < 1 || hold.pull_number > 2_147_483_647 ||
+        !validAttempt(hold.attempt) || hold.attempt.channel !== 'hosted' || !['active', 'uncertain'].includes(hold.attempt.state) ||
+        !/^review_attempt_[a-f0-9]{32}$/u.test(hold.attempt.source_attempt_id)) return false;
+  }
   return value.items.every((item, index) => object(item) && fields(item, ['pull_number','channels', ...(Object.hasOwn(item, 'incoming_routes_pending') ? ['incoming_routes_pending'] : [])]) && (!Object.hasOwn(item, 'incoming_routes_pending') || natural(item.incoming_routes_pending)) && item.pull_number === pulls[index] && Array.isArray(item.channels) && item.channels.length === 2 && validRoundProgress(item.channels[0], 'hosted') && validRoundProgress(item.channels[1], 'cli'));
 }
 export function roundProgressState(c: ReviewRoundProgress): string {

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReviewRunsView, reviewRunPillStatus } from './review-workspace';
 import { WorkspaceContext, type Session } from './workspace';
 import type { ReviewAttemptSummary, ReviewRunSummary } from './types';
-import type { ReviewProgressItem, ReviewRoundProgress } from './review-progress';
+import type { HostedLaneHold, ReviewProgressItem, ReviewRoundProgress } from './review-progress';
 
 const sizing = vi.hoisted(() => ({ capacity: 6 }));
 vi.mock('./review-pill-capacity', () => ({ useReviewPillCapacity: () => ({ ref: { current: null }, capacity: sizing.capacity, measured: true }) }));
@@ -16,10 +16,10 @@ const completed: ReviewRunSummary={id:'run',source:'native-executor',source_run_
 const attempt: ReviewAttemptSummary={source_attempt_id:`review_attempt_${'a'.repeat(32)}`,channel:'cli',head_sha:head,state:'active',started_at:stamp,finished_at:'',duration_seconds:0,source_run_id:'evidence',trigger_id:'',provider_review_id:''};
 const progress:ReviewRoundProgress={channel:'cli',configured:true,revision:1,epoch:1,closed:false,minimum:0,maximum:7,taper:2,used:1,dry:0,tapered:false,pending:0,pending_execution:0,pending_adjudication:0};
 afterEach(()=>{archive.items=[];sizing.capacity=6;});
-function markup(runs:ReviewRunSummary[], attempts:ReviewAttemptSummary[]=[], channelProgress?:ReviewRoundProgress, position?:{text:string;description?:string}){
+function markup(runs:ReviewRunSummary[], attempts:ReviewAttemptSummary[]=[], channelProgress?:ReviewRoundProgress, position?:{text:string;description?:string}, hostedLaneHold?:HostedLaneHold){
  archive.items=runs;
  const client=new QueryClient(); const session={api:{reviewRuns:vi.fn()},controller:new AbortController()} as unknown as Session;
- try{return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key:['fixture'],home:'/projects/project',ready:true,fail:()=>{},selectWorker:()=>{}}}><ReviewRunsView positions={position?{cli:position,hosted:position}:undefined} number={78} snapshot="snapshot" head={head} attempts={attempts} recentRuns={runs} expected={runs.length} channelTotals={{cli:runs.filter(x=>x.complete && x.channel==='cli').length,hosted:runs.filter(x=>x.complete && x.channel==='hosted').length,manual:0,subagent:0}} progress={channelProgress?{pull_number:78,channels:[channelProgress]} as ReviewProgressItem:undefined}/></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);}finally{client.clear();}
+ try{return renderToStaticMarkup(<MemoryRouter><QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key:['fixture'],home:'/projects/project',ready:true,fail:()=>{},selectWorker:()=>{}}}><ReviewRunsView positions={position?{cli:position,hosted:position}:undefined} number={78} snapshot="snapshot" head={head} attempts={attempts} recentRuns={runs} expected={runs.length} channelTotals={{cli:runs.filter(x=>x.complete && x.channel==='cli').length,hosted:runs.filter(x=>x.complete && x.channel==='hosted').length,manual:0,subagent:0}} progress={channelProgress?{pull_number:78,channels:[channelProgress],hostedLaneHold} as ReviewProgressItem:undefined}/></WorkspaceContext.Provider></QueryClientProvider></MemoryRouter>);}finally{client.clear();}
 }
 describe('three-line review state pills',()=>{
  it('shows counts, each captured result status, then age',()=>{
@@ -186,6 +186,14 @@ describe('terminal channel state stays in lane progress', () => {
   expect(html).not.toMatch(/>Closed<|>Cap reached</u);
   expect(html).toMatch(/review-pill-status">Finished<\/span><time/u);
  });
+ it.each(['hosted', 'cli'] as const)('hides the old %s countdown after closure', channel => {
+  const wait = { paused: false, baseline_attempt_id: attempt.source_attempt_id, retry_not_before: '2099-01-01T00:00:00Z' };
+  const html = markup([{...completed, channel}], [], {...progress, channel, closed:true, wait, pending:1, pending_execution:1});
+  expect(html).toContain('No reviews remaining');
+  expect(html).toContain('review-pill-status">Finished');
+  expect(html).not.toContain(`aria-label="${channel} current review state"`);
+  expect(html).not.toMatch(/Check in |Quota wait/u);
+ });
  it('preserves actionable pending adjudication despite closed rounds', () => {
   const html=markup([completed],[],{...progress,closed:true,pending:1,pending_adjudication:1});
   expect(html).not.toContain('aria-label="cli current review state"');
@@ -307,9 +315,33 @@ it('keeps hosted uncertain evidence matched to its trigger and replaces it with 
  const html=markup([],[uncertain],current);
  expect(html).toContain('review-pill-partial'); expect(html).toContain('Needs attention');
  expect(html).not.toContain('aria-label="hosted current review state"');
- expect(markup([],[{...uncertain,trigger_id:'43'}],current)).not.toContain('review-pill-partial');
+ const mismatched=markup([],[{...uncertain,trigger_id:'43'}],current);
+ expect(mismatched).toContain('review-pill-partial');
+ expect(mismatched).toContain('Start time unknown');
+ expect(mismatched).not.toContain('<time');
  const returned=markup([{...completed,channel:'hosted'}],[{...uncertain,source_run_id:completed.source_run_id}],current);
  expect(returned).not.toContain('review-pill-partial'); expect(returned).toContain('<strong>2/1/0</strong>');
+});
+
+it('shows an older Hosted capacity holder and identifies it from another waiting row', () => {
+ const holder: ReviewAttemptSummary = {...attempt,channel:'hosted',state:'uncertain',head_sha:'b'.repeat(40),
+   source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};
+ const current = {...progress,channel:'hosted' as const,used:0};
+ const newer: ReviewAttemptSummary = {...holder,source_attempt_id:`review_attempt_${'c'.repeat(32)}`,state:'completed',head_sha:head,
+   reason:undefined,finished_at:'2026-11-15T06:00:00Z'};
+ const blocked = markup([], [newer], current, undefined, {pull_number:78,attempt:holder});
+ expect(blocked.match(/review-pill-status">Needs attention/g)).toHaveLength(1);
+ expect(blocked).toContain('The finished review could not be verified');
+ expect(blocked).toContain('This attempt still holds the Hosted lane.');
+ expect(blocked).toContain('Review head bbbbbbbb is older');
+ expect(blocked).toContain('0 runs');
+ expect(blocked).not.toContain('>Running</span>');
+ const waiting = markup([], [], current, undefined, {pull_number:87,attempt:holder});
+ expect(waiting).toContain('Waiting on #87');
+ expect(waiting).toContain('CodeRabbit finished #87, but its results could not be verified.');
+ expect(waiting).not.toContain('review-pill-status">Needs attention');
+ expect(markup([], [], {...current,closed:true}, undefined, {pull_number:87,attempt:holder})).not.toContain('Waiting on #87');
+ expect(markup([], [newer], current)).not.toContain('holds the Hosted lane');
 });
 
 it('shows proven finished Hosted capture without inventing a start or treating trigger-only attempts as reviews',()=>{

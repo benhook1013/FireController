@@ -430,42 +430,10 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		if err != nil {
 			return nil, err
 		}
-		if o.Revision != input.ExpectedRevision || o.Revision == math.MaxInt64 {
+		if o.Revision != input.ExpectedRevision {
 			return nil, conflict()
 		}
-		if o.State != "queued" || o.AttemptID != "" {
-			return nil, core.Fail("review_operation_started", "Only an undispatched queued review can be paused, resumed or cancelled; provider work is unchanged.", 409)
-		}
-		paused := input.Action == "pause"
-		state := "queued"
-		if input.Action == "cancel" {
-			state = "cancelled"
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO review_operation_waits(operation_id,paused) VALUES(?,?) ON CONFLICT(operation_id) DO UPDATE SET paused=excluded.paused`, id, paused); err != nil {
-			return nil, err
-		}
-		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
-		if err != nil {
-			return nil, err
-		}
-		reason := ""
-		if state == "queued" && (o.Reason == cliDraftWait || o.Reason == sourceRetryReason) {
-			reason = o.Reason
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE id=?`, state, reason, at, id); err != nil {
-			return nil, err
-		}
-		if err := core.AppendEvent(ctx, tx, scope, "review.operation_updated", id, o.Revision+1, map[string]string{"action": input.Action}); err != nil {
-			return nil, err
-		}
-		receipt := OperationControlReceipt{ID: id, State: state, Revision: o.Revision + 1, Paused: paused}
-		if o.Wait != nil {
-			receipt.RetryNotBefore = o.Wait.RetryNotBefore
-			if o.Channel == "hosted" {
-				receipt.RetryNotBefore = o.Wait.hostedRetryNotBefore()
-			}
-		}
-		return receipt, nil
+		return e.applyQueuedOperationControl(ctx, tx, scope, o, input.Action, "")
 	})
 	if err == nil {
 		e.notifyOperation(id)
@@ -475,6 +443,51 @@ func (e *Engine) ControlOperation(ctx context.Context, scope core.Scope, key, id
 		}
 	}
 	return result, err
+}
+
+func (e *Engine) applyQueuedOperationControl(ctx context.Context, tx *sql.Tx, scope core.Scope, o Operation, action, reason string) (OperationControlReceipt, error) {
+	if o.ProjectID != scope.ProjectID || o.Revision == math.MaxInt64 {
+		return OperationControlReceipt{}, conflict()
+	}
+	if o.State != "queued" || o.AttemptID != "" {
+		return OperationControlReceipt{}, core.Fail("review_operation_started", "Only an undispatched queued review can be paused, resumed or cancelled; provider work is unchanged.", 409)
+	}
+	paused := action == "pause"
+	state := "queued"
+	if action == "cancel" {
+		state = "cancelled"
+	} else if o.Reason == cliDraftWait || o.Reason == sourceRetryReason {
+		reason = o.Reason
+	}
+	// Reset the pending pause without erasing historical cooldown and retry proof.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_operation_waits(operation_id,paused) VALUES(?,?) ON CONFLICT(operation_id) DO UPDATE SET paused=excluded.paused`, o.ID, paused); err != nil {
+		return OperationControlReceipt{}, err
+	}
+	at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
+	if err != nil {
+		return OperationControlReceipt{}, err
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,updated_at=? WHERE project_id=? AND id=? AND revision=? AND state='queued' AND attempt_id=''`, state, reason, at, scope.ProjectID, o.ID, o.Revision)
+	if err != nil {
+		return OperationControlReceipt{}, err
+	}
+	if changed, err := updated.RowsAffected(); err != nil || changed != 1 {
+		if err == nil {
+			err = conflict()
+		}
+		return OperationControlReceipt{}, err
+	}
+	if err := core.AppendEvent(ctx, tx, scope, "review.operation_updated", o.ID, o.Revision+1, map[string]string{"action": action}); err != nil {
+		return OperationControlReceipt{}, err
+	}
+	receipt := OperationControlReceipt{ID: o.ID, State: state, Revision: o.Revision + 1, Paused: paused}
+	if o.Wait != nil {
+		receipt.RetryNotBefore = o.Wait.RetryNotBefore
+		if o.Channel == "hosted" {
+			receipt.RetryNotBefore = o.Wait.hostedRetryNotBefore()
+		}
+	}
+	return receipt, nil
 }
 
 func (e *Engine) controlOperationHTTP(w http.ResponseWriter, r *http.Request) {

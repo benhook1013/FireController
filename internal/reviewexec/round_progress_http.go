@@ -69,10 +69,13 @@ func (e *Engine) readRoundProgressHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	stages := query.Get("view") == "stages"
-	queueDetails := stages && r.Header.Get(reviewQueueDetailsHeader) == "v1"
+	queueDetailsVersion := r.Header.Get(reviewQueueDetailsHeader)
+	hostedLaneHold := stages && queueDetailsVersion == "v2"
+	queueDetails := stages && (queueDetailsVersion == "v1" || hostedLaneHold)
 	progress, err := e.readRoundProgress(r.Context(), scope, numbers, roundProgressView{
 		stages: stages, queuePriority: !queueDetails && r.Header.Get(operationWaitHeader) == "5", queueDetails: queueDetails,
-		activity: query.Get("include_activity_evidence") == "true", sourceRetry: query.Get("include_source_retry") == "true",
+		hostedLaneHold: hostedLaneHold,
+		activity:       query.Get("include_activity_evidence") == "true", sourceRetry: query.Get("include_source_retry") == "true",
 		sourceRetryTiming: query.Get("include_source_retry_timing") == "true",
 		fixes:             stages && (r.Header.Get(reviewFixStatusHeader) == "v1" || r.Header.Get(reviewFixStatusHeader) == "v2"),
 		incomingRoutes:    stages && r.Header.Get(reviewFixStatusHeader) == "v2",

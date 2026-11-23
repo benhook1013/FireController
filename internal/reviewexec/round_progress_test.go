@@ -99,7 +99,7 @@ func TestRoundProgressStoredFactsAndCompactHTTPWithoutCapabilities(t *testing.T)
 	}
 }
 
-func TestRoundProgressClosedCurrentEpochCountsAllLiveStates(t *testing.T) {
+func TestRoundProgressClosedCurrentEpochCountsStartedWork(t *testing.T) {
 	for _, state := range []string{"queued", "preparing", "posting", "active", "uncertain"} {
 		t.Run(state, func(t *testing.T) {
 			f := roundFixture(t)
@@ -132,12 +132,16 @@ func TestRoundProgressClosedCurrentEpochCountsAllLiveStates(t *testing.T) {
 			if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-live", 2, channel, RoundControlRequest{ExpectedRevision: &revision, Action: "close"}); err != nil {
 				t.Fatal(err)
 			}
+			var pending int64 = 1
+			if state == "queued" {
+				pending = 0
+			}
 			before := roundTables(t, f) + policyState(t, f)
 			result := readProgress(t, f, 2)
 			for _, actual := range result.Items[0].Channels {
 				if actual.Channel == channel {
-					if !actual.Closed || actual.Pending != 1 || actual.Epoch != 1 || actual.Revision != 2 || actual.Used != 0 {
-						t.Fatal("closure hid live capacity or counted consumed credit", actual)
+					if !actual.Closed || actual.Pending != pending || actual.Epoch != 1 || actual.Revision != 2 || actual.Used != 0 {
+						t.Fatal("closure did not distinguish queued work from started work", actual)
 					}
 				} else if actual.Configured || actual.Pending != 0 {
 					t.Fatal("pending work crossed channels", actual)

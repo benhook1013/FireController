@@ -30,7 +30,7 @@ import { githubThreadContext } from './review-source-readiness';
 import './review-queue.css';
 import './review-history.css';
 import { useReviewProgress, ReviewProgressView } from './review-progress-view';
-import type { ReviewActivityEvidence, ReviewProgressItem, ReviewRoundProgress, ReviewSourceRetry } from './review-progress';
+import { roundProgressStopReason, type HostedLaneHold, type ReviewActivityEvidence, type ReviewProgressItem, type ReviewRoundProgress, type ReviewSourceRetry } from './review-progress';
 import { currentReviewFronts, parentBaseMovedDescription, reviewQueueBadges, reviewChannelPosition, type ReviewChannelPosition, type ReviewFronts, type ReviewQueueBadge } from './review-fronts';
 import { useReviewFronts } from './review-fronts-view';
 import { useReviewQueueFrame } from './review-frame-view';
@@ -498,15 +498,15 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   const status = reviewRunPillStatus(run);
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} status={status === 'Needs adjudication' ? 'Adjudicating' : status} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0 && run.current_accepted === 0 && run.current_pending_fixes === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{start ? <RelativeTime value={start.value} label={start.label} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
 }
-function RunningReviewPill({ evidence, attemptID, channel, attention, submittedAt }: { evidence?: ReviewActivityEvidence; attemptID: string; channel: ReviewChannel; attention?: string; submittedAt?: string }) {
+function RunningReviewPill({ evidence, attemptID, channel, attention, submittedAt, awaitingStart }: { evidence?: ReviewActivityEvidence; attemptID: string; channel: ReviewChannel; attention?: string; submittedAt?: string; awaitingStart?: boolean }) {
   const cli = evidence?.kind === 'cli_process_spawned';
   const date = evidence ? (evidence.kind === 'cli_process_spawned' ? evidence.process_started_at : evidence.observed_at) : submittedAt;
   const estimated = !evidence && !!submittedAt;
   const timing = !date ? 'Start time unknown' : estimated ? `Estimated start (request submission acknowledged) ${time(date)}` : cli ? `CLI started ${time(date)}` : `Assumed start (CodeRabbit activity seen) ${time(date)}`;
-  const description = `${channel === 'cli' ? 'CLI' : 'Hosted'} ${attention ? 'partial review. ' + attention : 'review running.'} Counts pending. ${timing}.`;
+  const description = `${channel === 'cli' ? 'CLI' : 'Hosted'} ${attention ? 'review needs attention. ' + attention : awaitingStart ? 'review requested. Waiting for a start signal.' : 'review running.'} Counts pending. ${timing}.`;
   const instanceID = useId();
   const detailID = `review-attention-${attemptID}-${instanceID}`;
-  return <><ReviewRoundPillDisplay found="?" accepted="?" routed="?" className={attention ? "review-pill-partial" : "review-pill-running"} status={attention ? "Needs attention" : "Running"} title={description} label={description} wrap={content => attention ? <button {...content} type="button" popoverTarget={detailID} /> : <span {...content} role="img" />}>
+  return <><ReviewRoundPillDisplay found="?" accepted="?" routed="?" className={attention ? "review-pill-partial" : awaitingStart ? undefined : "review-pill-running"} status={attention ? "Needs attention" : awaitingStart ? "Requested" : "Running"} title={description} label={description} wrap={content => attention ? <button {...content} type="button" popoverTarget={detailID} /> : <span {...content} role="img" />}>
     {date ? estimated ? <span className="review-pill-age">~ <RelativeTime value={date} label="Estimated start (request submission acknowledged)" /></span> : <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
   </ReviewRoundPillDisplay>{attention && <div id={detailID} popover="auto" className="review-attention-detail"><p>{description}</p><button type="button" popoverTarget={detailID} popoverTargetAction="hide">Close</button></div>}</>;
 }
@@ -528,14 +528,17 @@ const laneAttemptLabels: Partial<Record<string, { text?: string; tone?: 'active'
   'Attempt cancelled': { text: 'Cancelled' },
 };
 
-function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, total, positionHint, parentBaseMoved, parentPullNumber, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal, previewPending, announcePreviewLoading }: {
-  channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[];
+function ReviewLane({ number, channel, title, runs, attempts, snapshot, head, loading, failed, highlights, historical = false, progress, hostedLaneHold, total, positionHint, parentBaseMoved, parentPullNumber, readingAnchor, updateFailed, notice, capacity = 6, laneRef, recentRuns, recentSnapshot, currentTotal, previewPending, announcePreviewLoading }: {
+  number: number; channel: ReviewChannel; title: string; runs: ReviewRunSummary[]; attempts: ReviewAttemptSummary[];
   snapshot: string; head: string; loading: boolean; failed: boolean; highlights: Map<string, string>;
   historical?: boolean; compact?: boolean; progress?: ReviewRoundProgress; total: number; positionHint?: ReviewChannelPosition; parentBaseMoved?: boolean; parentPullNumber?: number;
+  hostedLaneHold?: HostedLaneHold;
   readingAnchor?: string; updateFailed?: boolean; notice?: ReactNode; capacity?: number; laneRef?: RefObject<HTMLElement | null>;
   recentRuns: ReviewRunSummary[]; recentSnapshot: string; currentTotal: number; previewPending?: boolean; announcePreviewLoading?: boolean;
 }) {
-  const attempt = [...attempts].reverse().find(item => item.channel === channel);
+  const hostedHold = channel === 'hosted' && !historical ? hostedLaneHold : undefined;
+  const holder = hostedHold?.pull_number === number ? hostedHold.attempt : undefined;
+  const attempt = holder ?? [...attempts].reverse().find(item => item.channel === channel);
   const activeAttempt = attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state);
   const returned = !activeAttempt && attempt?.source_run_id ? recentRuns.find(run => run.source === 'native-executor' &&
     run.source_run_id === attempt.source_run_id && run.channel === channel && run.head_sha === attempt.head_sha &&
@@ -548,18 +551,23 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   // This capture-stage reason proves a finished Hosted response was observed.
   // A posted trigger alone does not prove a review ran. Never substitute the
   // attempt journal/preparation time when no provider-start signal survives.
-  const finishedUncaptured = !historical && !returned && !progress?.activity_evidence && attempt?.channel === 'hosted' &&
+  const finishedUncaptured = !historical && !returned && attempt?.channel === 'hosted' &&
     attempt.state === 'uncertain' && attempt.reason === 'hosted_finished_inventory_unproven' && /^[1-9]\d*$/.test(attempt.trigger_id);
   const submission = progress?.submission_evidence;
   const submittedAt = finishedUncaptured && submission && validSubmissionEvidence(submission) &&
     submission.attempt_id === attempt?.source_attempt_id && submission.head_sha === attempt.head_sha && submission.trigger_id === attempt.trigger_id
     ? submission.submitted_at : undefined;
-  const attemptPill = !!running || finishedUncaptured;
+  const attemptPill = !!holder || !!running || finishedUncaptured;
+  const attention = status?.kind === 'attention' ? [
+    status.cause,
+    holder ? 'This attempt still holds the Hosted lane.' : status.description,
+    holder && holder.head_sha !== head ? `Review head ${holder.head_sha.slice(0, 8)} is older than the displayed head.` : undefined,
+  ].filter(Boolean).join(' ') : undefined;
   // Terminal round controls already appear in the lane progress summary.
   // Keep actionable waits and unfinished work, not a duplicate unknown-count pill.
   const terminalStatus = status?.text === 'Closed' || status?.text === 'Cap reached';
   const candidateBadge = (returned && status?.activity) || attemptPill || terminalStatus ? undefined : status;
-  const waiting = historical || (progress?.source_retry && !progress.wait?.paused) ? undefined : progress?.wait;
+  const waiting = historical || progress?.closed || (progress?.source_retry && !progress.wait?.paused) ? undefined : progress?.wait;
   const waitingForParent = parentBaseMoved && !historical && !activeAttempt && !waiting && !terminalStatus &&
     (!candidateBadge || ['Queued', 'Up next', 'Queue position', 'Source unverified'].includes(candidateBadge.text));
   const partials = channel === 'cli' ? recentRuns.filter(partialCLIResult).reverse() : [];
@@ -578,11 +586,15 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
   const resultStatus = candidateBadge?.text === 'Needs adjudication' || candidateBadge?.text === 'Fixes pending';
   const badge = waitingForParent ? { text: 'Waiting for parent', description: parentBaseMovedDescription(parentPullNumber) }
     : resultStatus ? undefined : candidateBadge;
+  const waitingOnHosted = hostedHold && !holder && !waiting && !resultStatus && progress?.configured && !roundProgressStopReason(progress) &&
+    (!badge || ['Queued', 'Up next', 'Queue position', 'Source unverified'].includes(badge.text));
   const label = badge && laneAttemptLabels[badge.text];
   const queueDetails = !historical && badge?.text === 'Queued' ? reviewQueueDescription(progress?.queue) : undefined;
-  const currentStatus = !attemptPill && (waiting || badge) && <span className="review-lane-current-state" aria-label={`${channel} current review state`}>
+  const currentStatus = !attemptPill && (waiting || badge || waitingOnHosted) && <span className="review-lane-current-state" aria-label={`${channel} current review state`}>
     {waiting && <ReviewOperationWaitBadge wait={waiting} channel={channel} queue={progress?.queue} />}
-    {badge && <span data-lane-label-tone={label?.tone}>
+    {waitingOnHosted ? <ReviewLaneDetailsBadge channel={channel} text={`Waiting on #${hostedHold.pull_number}`}><span>{hostedHold.attempt.reason === 'hosted_finished_inventory_unproven'
+      ? `CodeRabbit finished #${hostedHold.pull_number}, but its results could not be verified. That attempt still holds the Hosted lane.`
+      : `The Hosted attempt on #${hostedHold.pull_number} still holds the lane.`}</span></ReviewLaneDetailsBadge> : badge && <span data-lane-label-tone={label?.tone}>
       {queueDetails
         ? <ReviewLaneDetailsBadge channel={channel} text={label?.text ?? badge.text}><span>{queueDetails}</span></ReviewLaneDetailsBadge>
         : <ReviewAttemptBadge channel={channel} status={{ ...badge, text: label?.text ?? badge.text }} />}
@@ -601,7 +613,7 @@ function ReviewLane({ channel, title, runs, attempts, snapshot, head, loading, f
     {visiblePills.length > 0 || attemptPill || placeholders > 0 ? <div className="review-round-pills review-recent-rounds">
       <ReviewRoundPlaceholders count={placeholders} />
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
-      {attemptPill && attempt && <RunningReviewPill key={attempt.source_attempt_id} attemptID={attempt.source_attempt_id} evidence={running} submittedAt={submittedAt} channel={channel} attention={status?.kind === 'attention' ? [status.cause, status.description].filter(Boolean).join('. ') : undefined} />}
+      {attemptPill && attempt && <RunningReviewPill key={attempt.source_attempt_id} attemptID={attempt.source_attempt_id} evidence={running} submittedAt={submittedAt} channel={channel} attention={attention} awaitingStart={!!holder && !running && !attention} />}
     </div> : loading ? <ReviewRoundsSkeleton count={total} /> : null}
     {(failed || !loading && !completed.length && returned?.outcome !== 'completed' && total > 0 && !notice) && <p className="review-lane-empty">Round history could not be loaded.</p>}
     {notice}
@@ -626,7 +638,7 @@ function ChannelReviewLane({ number, summaryPreview = false, inRange = true, ...
   const notice = archive.previewLimited
     ? <p className="notice">Recent-round preview is limited. <ReviewHistoryLink number={number} snapshot={archive.snapshot} /></p>
     : undefined;
-  return <ReviewLane {...props} laneRef={ref} capacity={capacity} total={archive.expected} snapshot={archive.snapshot}
+  return <ReviewLane {...props} number={number} laneRef={ref} capacity={capacity} total={archive.expected} snapshot={archive.snapshot}
     runs={runs} loading={needsArchive && archive.loading} failed={!!archive.error && runs.length === 0}
     updateFailed={!!archive.error && runs.length > 0} notice={notice} highlights={highlights}
     recentSnapshot={props.snapshot} currentTotal={props.total}
@@ -652,7 +664,7 @@ function useReviewPreviewInRange(deferred: boolean) {
 
 export function ReviewRunsView({ number, snapshot, head, parentBaseMoved, parentPullNumber, attempts, recentRuns = [], detail = false, compact = false, historical = false, progress, channelTotals, positions = {}, readingPrefix, summaryPreview }: { summaryPreview?: 'eager' | 'nearby'; historical?: boolean; readingPrefix?: string; number: number; snapshot: string; head: string; parentBaseMoved?: boolean; parentPullNumber?: number; attempts: ReviewAttemptSummary[]; recentRuns?: ReviewRunSummary[]; expected: number; detail?: boolean; compact?: boolean; progress?: ReviewProgressItem; channelTotals: ReviewRunCounts; positions?: Partial<Record<ReviewChannel, ReviewChannelPosition>> }) {
   const { ref, inRange } = useReviewPreviewInRange(summaryPreview === 'nearby');
-  const lane = (channel: ReviewChannel, title: string) => <ChannelReviewLane key={channel} summaryPreview={!!summaryPreview} inRange={inRange} readingAnchor={readingPrefix ? `${readingPrefix}-${channel}` : undefined} number={number} channel={channel} title={title} attempts={attempts} recentRuns={recentRuns} snapshot={snapshot} head={head} compact={compact} historical={historical} parentBaseMoved={parentBaseMoved} parentPullNumber={parentPullNumber} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} positionHint={positions[channel]} />;
+  const lane = (channel: ReviewChannel, title: string) => <ChannelReviewLane key={channel} summaryPreview={!!summaryPreview} inRange={inRange} readingAnchor={readingPrefix ? `${readingPrefix}-${channel}` : undefined} number={number} channel={channel} title={title} attempts={attempts} recentRuns={recentRuns} snapshot={snapshot} head={head} compact={compact} historical={historical} parentBaseMoved={parentBaseMoved} parentPullNumber={parentPullNumber} total={channelTotals[channel]} progress={progress?.channels.find(item => item.channel === channel)} hostedLaneHold={progress?.hostedLaneHold} positionHint={positions[channel]} />;
   const otherChannels = ([['manual', 'Manual reviews'], ['subagent', 'Subagent Reviews']] as const).filter(([channel]) => channelTotals[channel] > 0 || attempts.some(attempt => attempt.channel === channel));
   return <section ref={ref} className={compact ? 'review-history delivery-head-history' : detail ? 'panel review-history' : 'review-history'} aria-label={`PR #${number} recent review rounds`}>{detail && <div className="section-heading"><h3>Review rounds</h3><span className="small-label">Shown rounds · oldest to newest per channel</span></div>}<div className="review-lanes">{lane('hosted', 'Hosted CodeRabbit')}{lane('cli', 'CLI CodeRabbit')}{!compact && otherChannels.map(([channel, title]) => lane(channel, title))}</div></section>;
 }

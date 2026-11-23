@@ -91,9 +91,14 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
     return { ...(activity?.evidence ? { activity } : {}), text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
   }
   if (progress?.retained_adjudication_pending && !(attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state))) return { text: 'Needs adjudication', description: 'Retained partial findings need decisions. No completed review round is claimed.' };
-  if (progress?.wait && (!progress.source_retry || progress.wait.paused)) return undefined; // Render the actual retained wait badge.
+  if (progress?.wait && !progress.closed && (!progress.source_retry || progress.wait.paused)) return undefined; // Render the actual retained wait badge.
   if (attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state)) {
     return activeAttemptStatus(attempt, progress);
+  }
+  if (progress?.configured && progress.closed) {
+    if ((progress.pending_adjudication ?? 0) > 0) return { text: 'Needs adjudication' };
+    if (progress.fixes_pending) return reviewFixesPending;
+    return { text: 'Closed' };
   }
   if (progress?.source_retry && !progress.wait?.paused) return { text: 'Queued' };
   const githubHold = stopped && isGitHubPreparationHold(attempt.reason);
@@ -109,7 +114,6 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   // Older servers expose only a combined pending count. It cannot prove a
   // retry, a running provider, or that the previous failure was resolved.
   if ((progress?.pending ?? 0) > 0) return { text: 'Pending', description: `Pending work is recorded, but its stage is unavailable.${settled ? '' : ` ${diagnostic}`}` };
-  if (progress?.configured && progress.closed) return { text: 'Closed' };
   const cancelled = progress?.cancelled_wait;
   if (attempt?.state === 'held' && progress?.channel === attempt.channel && progress.pending_execution === 0 && progress.pending_adjudication === 0 && validCancelledWait(cancelled) && cancelled.baseline_attempt_id === attempt.source_attempt_id && cancelled.head_sha === attempt.head_sha && attempt.reason === (attempt.channel === 'hosted' ? 'hosted_allowance_cooldown' : 'allowance_exhausted') && !attempt.source_run_id && !attempt.trigger_id && !attempt.provider_review_id && attempt.finished_at && Number.isFinite(Date.parse(attempt.finished_at)) && Date.parse(attempt.finished_at) <= Date.parse(cancelled.cancelled_at)) {
     return undefined; // The request is gone; its unused baseline stays in history.

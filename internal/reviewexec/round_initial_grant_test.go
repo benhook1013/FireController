@@ -52,6 +52,14 @@ func TestRoundInitialGrantRefusesUnboundExecution(t *testing.T) {
 				before, operation := roundTables(t, f), roundOperation(t, f, receipt.ID)
 				minimum, maximum := int64(0), int64(1000)
 				_, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.writer, false), "first-grant", 2, channel, RoundControlRequest{ExpectedRevision: &revision, Action: "grant", Minimum: &minimum, Maximum: &maximum})
+				if closed && state == "queued" {
+					if err != nil || operation.State != "cancelled" || operation.Reason != "review_round_closed" || !reflect.DeepEqual(operation, roundOperation(t, f, receipt.ID)) ||
+						attemptCount(t, f.store, `SELECT count(*) FROM review_round_operation_bindings WHERE operation_id=?`, receipt.ID) != 0 {
+						t.Fatal("closed unbound queue blocked a later grant or gained a grant binding", operation, err)
+					}
+					roundSnapshotValid(t, f)
+					return
+				}
 				attemptCode(t, err, "review_round_inflight")
 				if roundTables(t, f) != before || !reflect.DeepEqual(operation, roundOperation(t, f, receipt.ID)) || operation.State != state {
 					t.Fatal("refused grant changed history, binding, receipt or accepted work")

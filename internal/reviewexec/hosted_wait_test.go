@@ -270,6 +270,10 @@ func TestCooldownDueRechecksCurrentAuthority(t *testing.T) {
 			}
 			f.e.schedulingNow = func() time.Time { return in.Observation.RetryNotBefore }
 			next, err := f.e.StartAttempt(t.Context(), attemptProject, a.OperationID)
+			if scenario == "closed allocation" {
+				attemptCode(t, err, "review_conflict")
+				err = nil
+			}
 			if err != nil || next.ID != "" {
 				t.Fatal("changed authority started", next, err)
 			}
@@ -277,11 +281,12 @@ func TestCooldownDueRechecksCurrentAuthority(t *testing.T) {
 			if err := f.store.DB().QueryRow(`SELECT state,reason FROM review_operations WHERE id=?`, a.OperationID).Scan(&state, &reason); err != nil {
 				t.Fatal(err)
 			}
-			if state != "held" || reason == "" {
+			if scenario == "closed allocation" {
+				if state != "cancelled" || reason != "review_round_closed" {
+					t.Fatal("closed allocation did not cancel the undispatched request", state, reason)
+				}
+			} else if state != "held" || reason == "" {
 				t.Fatal("missing explicit hold", state, reason)
-			}
-			if scenario == "closed allocation" && reason != "review_round_closed" {
-				t.Fatal("closed bound allocation held for another reason", reason)
 			}
 			if attemptCount(t, f.store, `SELECT count(*) FROM review_execution_attempts WHERE operation_id=?`, a.OperationID) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`) != 0 {
 				t.Fatal("authority refusal allocated retry")

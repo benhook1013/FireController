@@ -1177,7 +1177,7 @@ export class Api {
     if (!progressPulls(pulls)) throw new ApiError('invalid_request', 'Select between one and one hundred distinct pull request numbers.');
     const selected = [...pulls];
     const value = await this.finiteGet(withQuery(this.projectRoute('reviews/rounds/progress'), new URLSearchParams({ pull_numbers: selected.join(','), view: 'stages', include_activity_evidence: 'true', include_source_retry: 'true' })), signal, undefined, 128 * 1024, assessmentJSON, true);
-    if (!validReviewProgress(value, this.projectId, selected)) throw new ApiError('invalid_response', 'The service returned invalid current round limits.');
+    if (!validReviewProgress(value, this.projectId, selected, validReviewAttempt)) throw new ApiError('invalid_response', 'The service returned invalid current round limits.');
     return value;
   }
   async reviewFronts(signal?: AbortSignal): Promise<ReviewFronts> {
@@ -1417,7 +1417,7 @@ export class Api {
     const headers = this.readHeaders(path, instanceId, worker);
     if (operationWait) {
       headers.set('X-FC-Operation-Wait', '5');
-      headers.set('X-FC-Review-Queue-Details', 'v1');
+      headers.set('X-FC-Review-Queue-Details', 'v2');
     }
     const response = await fetch(urlFor(path), { method: 'GET', headers, redirect: 'error', credentials: this.browserSessionID ? 'same-origin' : 'omit', cache: 'no-store', signal });
     if (!response.ok) throw await readFailure(response, signal);
