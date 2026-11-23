@@ -133,7 +133,7 @@ func readConfiguration(ctx context.Context, tx *sql.Tx, project string) (Configu
 	revision, revisionOK := rawRevision.(int64)
 	body, bodyOK := rawBody.(string)
 	if !revisionOK || revision < 1 || !bodyOK || len(body) > 8192 || strictjson.Decode([]byte(body), &c) != nil || validateConfigurationShape(c) != nil {
-		return c, 0, newStoredUnavailable(storedConfigurationHistory, "Stored review configuration is unavailable.")
+		return c, 0, &automaticProjectStateError{newStoredUnavailable(storedConfigurationHistory, "Stored review configuration is unavailable.")}
 	}
 	return c, revision, nil
 }
@@ -163,6 +163,9 @@ const (
 
 // enqueueRequestTx preserves ordinary admission inside a selection child transaction.
 func (e *Engine) enqueueRequestTx(ctx context.Context, tx *sql.Tx, scope core.Scope, r Request) (Receipt, error) {
+	if err := requirePullScheduling(ctx, tx, scope.ProjectID, r.PullNumber); err != nil {
+		return Receipt{}, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
 		return Receipt{}, err

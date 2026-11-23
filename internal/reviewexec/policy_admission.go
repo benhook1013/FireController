@@ -53,6 +53,12 @@ func (e *Engine) currentExecutionContext(ctx context.Context, tx *sql.Tx, operat
 // delay its retry without discarding it; all other authority checks still apply.
 func (e *Engine) executionContext(ctx context.Context, tx *sql.Tx, operation Operation, retainCooldown bool) (ExecutionContext, error) {
 	result := ExecutionContext{Operation: operation}
+	if err := requirePullScheduling(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
+		return ExecutionContext{}, err
+	}
+	if err := e.requireAutomaticOperation(ctx, tx, operation); err != nil {
+		return ExecutionContext{}, err
+	}
 	if err := requireSourceObligationsClear(ctx, tx, operation.ProjectID, operation.PullNumber); err != nil {
 		return ExecutionContext{}, err
 	}

@@ -83,7 +83,7 @@ func channelProgress(ctx context.Context, tx *sql.Tx, project string, repository
 		return ComparisonState{}, err
 	}
 	if dirty {
-		return ComparisonState{}, adjudicationStorageError()
+		return ComparisonState{}, &automaticProjectStateError{adjudicationStorageError()}
 	}
 	c, err := readRoundControl(ctx, tx, project, number, channel)
 	if err != nil {

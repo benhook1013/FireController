@@ -90,10 +90,16 @@ func mutationFingerprint(scope Scope, m Mutation) (string, error) {
 	if !validIdempotencyKey(m.Key) || m.Operation == "" || m.Target == "" {
 		return "", Fail("validation_failed", "A bounded Idempotency-Key, operation and target are required.", 400)
 	}
+	return MutationRequestFingerprint(m.Request, scope.WorkerID)
+}
+
+// MutationRequestFingerprint identifies a normalized request and worker in a
+// retained receipt. It supplies no instance, project or principal authority.
+func MutationRequestFingerprint(request any, worker string) (string, error) {
 	data, err := json.Marshal(struct {
 		Request any
 		Worker  string
-	}{m.Request, scope.WorkerID})
+	}{request, worker})
 	if err != nil {
 		return "", Fail("validation_failed", "The mutation request cannot be encoded.", 400)
 	}

@@ -60,6 +60,14 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 		if op.ID != id || op.State != "queued" || op.Revision != revision {
 			return nil
 		}
+		if err := e.requireAutomaticOperation(ctx, tx, op); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "automation_authorization_changed" {
+				cause = "automation_authorization_changed"
+				return nil
+			}
+			return err
+		}
 		latest, latestRevision, err := readConfiguration(ctx, tx, op.ProjectID)
 		if err != nil {
 			return err
@@ -81,6 +89,14 @@ func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, 
 			return nil
 		case latest.Paused:
 			cause = "project_paused"
+			return nil
+		}
+		scheduling, err := readPullScheduling(ctx, tx, op.ProjectID, op.PullNumber)
+		if err != nil {
+			return err
+		}
+		if scheduling.Paused {
+			cause = "pull_scheduling_paused"
 			return nil
 		}
 		if op.Reason == cliDraftWait {

@@ -25,11 +25,11 @@ func readRetargetRecord(row rowScanner, original m.Obligation) (m.Retarget, stri
 		return result, targets, err
 	}
 	if !retainedInteger(revisionValue, &result.Revision) || !retainedInteger(targetValue, &result.TargetPullNumber) || !retainedText(targetsValue, &targets) || !retainedText(reasonValue, &result.Reason) || !retainedText(actorValue, &result.ActorID) || !retainedText(workerValue, &result.WorkerID) || !retainedText(changedValue, &result.ChangedAt) || original.Kind != "route" || result.Revision < 2 || !identifier.MatchString(result.ActorID) || !identifier.MatchString(result.WorkerID) || !validTime(result.ChangedAt) {
-		return result, targets, unavailable()
+		return result, targets, projectStateUnavailable()
 	}
 	previous := result.Revision - 1
 	if _, err := m.NormalizeRetarget(m.RetargetRequest{ExpectedRevision: &previous, TargetPullNumber: &result.TargetPullNumber, Reason: result.Reason}); err != nil || string(encode(m.RouteAffectedPullNumbers(original, result.TargetPullNumber))) != targets {
-		return result, targets, unavailable()
+		return result, targets, projectStateUnavailable()
 	}
 	return result, targets, nil
 }
@@ -37,7 +37,7 @@ func readRetargetRecord(row rowScanner, original m.Obligation) (m.Retarget, stri
 func readRetargetState(ctx context.Context, q Query, detail *m.Detail, version string) (int64, error) {
 	if version == "1" {
 		if !slices.Equal(detail.AffectedPullNumbers, detail.Original.AffectedPullNumbers) {
-			return 0, unavailable()
+			return 0, projectStateUnavailable()
 		}
 		return 1, nil
 	}
@@ -50,25 +50,25 @@ func readRetargetState(ctx context.Context, q Query, detail *m.Detail, version s
 		return 0, err
 	}
 	if !retainedInteger(countValue, &count) || !retainedInteger(firstValue, &first) || !retainedInteger(lastValue, &last) {
-		return 0, unavailable()
+		return 0, projectStateUnavailable()
 	}
 	if count == 0 {
 		if !slices.Equal(detail.AffectedPullNumbers, detail.Original.AffectedPullNumbers) {
-			return 0, unavailable()
+			return 0, projectStateUnavailable()
 		}
 		return 1, nil
 	}
 	if first != 2 || count != last-1 {
-		return 0, unavailable()
+		return 0, projectStateUnavailable()
 	}
 	latest, targets, err := readRetargetRecord(q.QueryRowContext(ctx, `SELECT `+retargetColumns+` FROM review_adoption_retargets WHERE obligation_id=? ORDER BY revision DESC LIMIT 1`, detail.ID), detail.Original)
 	if err != nil {
-		return 0, err
+		return 0, retainedSourceReadError(err)
 	}
 	created, _ := time.Parse(time.RFC3339Nano, detail.CreatedAt)
 	changed, _ := time.Parse(time.RFC3339Nano, latest.ChangedAt)
 	if latest.Revision != last || targets != string(encode(detail.AffectedPullNumbers)) || changed.Before(created) {
-		return 0, unavailable()
+		return 0, projectStateUnavailable()
 	}
 	detail.Retarget = &latest
 	return latest.Revision, nil

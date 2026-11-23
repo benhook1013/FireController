@@ -373,3 +373,36 @@ func TestConfigurationHistoryIsolationIsTypedAndBounded(t *testing.T) {
 		t.Fatal("diagnostic throttle did not expire")
 	}
 }
+
+// Automatic-planning damage and queued configuration-history damage belong to
+// different local isolation boundaries even when their public error is equal.
+func TestConfigurationHistoryAndAutomaticFailureMarkersStayDistinct(t *testing.T) {
+	e := &Engine{}
+	op := Operation{ID: "review_operation_candidate", ProjectID: "project"}
+	for _, tc := range []struct {
+		name      string
+		err       error
+		automatic bool
+		history   bool
+	}{
+		{"automatic", automaticProjectStateFailure("storage_unavailable", "Retained state unavailable.", 500), true, false},
+		{"history", newStoredUnavailable(storedConfigurationHistory, "Retained state unavailable."), false, true},
+		{"admission", newStoredUnavailable(storedReviewAdmission, "Retained state unavailable."), false, false},
+		{"operational", core.Fail("storage_unavailable", "Retained state unavailable.", 500), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, err := range []error{tc.err, fmt.Errorf("wrapped: %w", tc.err)} {
+				if automaticProjectRefused(err) != tc.automatic || isStoredUnavailable(err, storedConfigurationHistory) != tc.history {
+					t.Fatal("local failure boundaries overlapped", err)
+				}
+				if !tc.history && e.skipUnavailableConfiguration(t.Context(), op, err) {
+					t.Fatal("unrelated failure became queued configuration damage", err)
+				}
+				var failure *core.Error
+				if !errors.As(err, &failure) || failure.Code != "storage_unavailable" || failure.Status != 500 {
+					t.Fatal("public failure contract changed", err)
+				}
+			}
+		})
+	}
+}

@@ -93,18 +93,21 @@ func readOperationWait(ctx context.Context, q EvidenceQuery, o Operation) (*Oper
 	}
 	var result OperationWait
 	var baseline sql.NullString
-	var paused int64
-	err = q.QueryRowContext(ctx, `SELECT baseline_attempt_id,retry_not_before,paused FROM review_operation_waits WHERE operation_id=?`, o.ID).Scan(&baseline, &result.RetryNotBefore, &paused)
+	var rawPaused any
+	err = q.QueryRowContext(ctx, `SELECT baseline_attempt_id,retry_not_before,paused FROM review_operation_waits WHERE operation_id=?`, o.ID).Scan(&baseline, &result.RetryNotBefore, &rawPaused)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	result.BaselineAttemptID, result.Paused = baseline.String, paused == 1
-	if paused != 0 && paused != 1 || baseline.Valid != (result.RetryNotBefore != "") || baseline.Valid && (!hostedObservationID(baseline.String, "review_attempt_") || !validChannel(o.Channel)) {
+	// Inspect the native value before database/sql can coerce it or turn
+	// malformed retained data into a generic conversion error.
+	paused, integer := rawPaused.(int64)
+	if !integer || paused != 0 && paused != 1 || baseline.Valid != (result.RetryNotBefore != "") || baseline.Valid && (!hostedObservationID(baseline.String, "review_attempt_") || !validChannel(o.Channel)) {
 		return nil, waitUnavailable()
 	}
+	result.BaselineAttemptID, result.Paused = baseline.String, paused == 1
 	if baseline.Valid {
 		if _, ok := hostedObservationTime(result.RetryNotBefore); !ok {
 			return nil, waitUnavailable()

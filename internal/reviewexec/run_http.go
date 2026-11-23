@@ -168,6 +168,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terminal {
+			e.queuedRunResponseHeader(w, r, scope, state)
 			core.WriteJSON(w, http.StatusOK, runStateForResponse(state, r.Header.Get(operationWaitHeader)))
 			return
 		}
