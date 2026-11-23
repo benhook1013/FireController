@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,7 @@ import (
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
-func runHTTPCall(t *testing.T, f *attemptFixture, handler http.Handler, method, path, body, key, wait string) *httptest.ResponseRecorder {
+func runHTTPCall(t *testing.T, f *attemptFixture, handler http.Handler, method, path, body, key, wait string, waitVersion ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Authorization", "Bearer "+f.writer)
@@ -25,9 +27,78 @@ func runHTTPCall(t *testing.T, f *attemptFixture, handler http.Handler, method, 
 	if wait != "" {
 		r.Header.Set("Prefer", wait)
 	}
+	if len(waitVersion) > 0 {
+		r.Header.Set(operationWaitHeader, waitVersion[0])
+	}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 	return w
+}
+
+func TestRunHTTPWaitNegotiationVary(t *testing.T) {
+	f := selectionFixture(t)
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/selections"
+	versions := []string{"", "1", "2", "3", "4", "5", "unsupported"}
+	assertVary := func(t *testing.T, w *httptest.ResponseRecorder) {
+		t.Helper()
+		vary := strings.Split(strings.Join(w.Header().Values("Vary"), ","), ",")
+		for _, header := range []string{"Prefer", operationWaitHeader} {
+			if !slices.ContainsFunc(vary, func(field string) bool {
+				return strings.EqualFold(strings.TrimSpace(field), header)
+			}) {
+				t.Errorf("missing Vary: %s in %v", header, w.Header())
+			}
+		}
+	}
+	var original []byte
+	for _, version := range versions {
+		t.Run("POST/"+version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "POST", path, `{"channel":"cli"}`, "negotiated-run", "wait=0", version)
+			if w.Code != http.StatusAccepted {
+				t.Fatal("selection not accepted", w.Code, w.Body.String())
+			}
+			assertVary(t, w)
+			if original == nil {
+				original = append([]byte(nil), w.Body.Bytes()...)
+			} else if !bytes.Equal(original, w.Body.Bytes()) {
+				t.Fatal("negotiation changed original receipt")
+			}
+		})
+	}
+	var receipt Receipt
+	if err := json.Unmarshal(original, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	// Select the later independent PR while the front PR is a draft, then
+	// accept a front-PR intent before reading the original selected child.
+	selectionNext(t, f, &refreshTestReader{pull: func(_ context.Context, _ string, n int64) (reviewprovider.Pull, error) {
+		draft := n == 2
+		return reviewprovider.Pull{Number: n, RepositoryID: 801, State: "open", IsDraft: &draft, HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), BaseRef: "main", ChangedFiles: 1}, nil
+	}})
+	f.enqueue(t, attemptProject, "front-run-intent", "cli", 2, 1)
+	before := selectionCounts(t, f)
+	for _, version := range versions {
+		t.Run("GET/"+version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "GET", path+"/"+receipt.ID, "", "", "wait=0", version)
+			var state RunState
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.PullNumber != 4 || state.Operation.State != "queued" {
+				t.Fatal("original selected child unavailable", w.Code, w.Body.String())
+			}
+			assertVary(t, w)
+			want := "awaiting_scheduler"
+			if version == "2" || version == "3" || version == "4" || version == "5" {
+				want = "queue_order"
+			}
+			if got := w.Header().Get(queuedDiagnosticHeader); got != want {
+				t.Fatalf("diagnostic=%q, want %q", got, want)
+			}
+		})
+	}
+	if selectionCounts(t, f) != before {
+		t.Fatal("negotiated reads changed durable state")
+	}
 }
 
 func TestRunHTTPStrictOptionalAssertionsAndOriginalReceipt(t *testing.T) {
@@ -138,5 +209,150 @@ func TestRunHTTPWaitSharesBudgetAcrossSelectionAndExecution(t *testing.T) {
 	var n int
 	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_operations`).Scan(&n); err != nil || n != 1 {
 		t.Fatal("wait/replay created another action", n, err)
+	}
+}
+
+// Exercise a real socket deadline: an optional hint must not turn a valid
+// retained response into EOF when the read pool is occupied.
+func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T) {
+	f := selectionFixture(t)
+	scope := f.scope(t, attemptProject, f.writer, false)
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Model the remaining budget after required selection and operation reads.
+		if err := operationResponseDeadlineAt(w, time.Now().Add(750*time.Millisecond)); err != nil {
+			t.Error(err)
+			return
+		}
+		e := f.e
+		e.queuedRunResponseHeader(w, r, scope, RunState{Operation: &Operation{ID: "review_operation_test", State: "queued", Channel: "cli", Revision: 1}})
+		w.Write([]byte("retained response"))
+	}))
+	defer func() {
+		// Release the held connection before waiting for the handler to exit.
+		conn.Close()
+		server.Close()
+	}()
+	// Bound dial, response headers and body reads without shortening the handler's budget.
+	client := *server.Client()
+	client.Timeout = 2 * time.Second
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal("optional diagnostic lost response", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "retained response" {
+		t.Fatal(string(body), err)
+	}
+	if response.Header.Get(queuedDiagnosticHeader) != "" {
+		t.Fatal("unavailable diagnostic must be omitted")
+	}
+}
+
+func TestRunHTTPProjectsSelectedCLIWait(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "selected-cli-wait", "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	a := f.start(t, attemptProject, Receipt{ID: selectionRead(t, f, receipt.ID).OperationID})
+	anchor := attemptAnchor(attemptProject, 2)
+	in := CLIAllowanceObservation{Anchor: anchor, ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 86400000, RollingWindowMS: 86400000, ChangedFiles: 2}
+	if err := f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.ScheduleCLICooldown(t.Context(), attemptProject, a.ID, a.Revision); err != nil {
+		t.Fatal(err)
+	}
+	original := cliWaitRead(t, f, a.OperationID).Wait
+	if original == nil || original.CLIAllowance == nil || original.RetryNotBefore == "" || original.BaselineAttemptID == "" {
+		t.Fatal("fixture did not retain a CLI quota wait", original)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	read := "/api/v1/projects/" + attemptProject + "/reviews/selections/" + receipt.ID
+	before := selectionCounts(t, f)
+	for _, tc := range []struct {
+		version                           string
+		hasWait, hasBaseline, hasEstimate bool
+	}{
+		{"", false, false, false},
+		{"1", true, false, false},
+		{"2", true, true, false},
+		{"3", true, true, true},
+		{"5", true, true, true},
+		{"unsupported", false, false, false},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "GET", read, "", "", "wait=0", tc.version)
+			var state RunState
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.ID != a.OperationID {
+				t.Fatal("selected CLI operation unavailable", w.Code, w.Body.String())
+			}
+			wait := state.Operation.Wait
+			if (wait != nil) != tc.hasWait {
+				t.Fatal("incorrect wait projection", w.Body.String())
+			}
+			if wait == nil {
+				return
+			}
+			if (wait.BaselineAttemptID != "") != tc.hasBaseline || (wait.RetryNotBefore != "") != tc.hasBaseline || (wait.CLIAllowance != nil) != tc.hasEstimate {
+				t.Fatal("incorrect wait detail projection", w.Body.String())
+			}
+			if tc.hasBaseline && (wait.BaselineAttemptID != original.BaselineAttemptID || wait.RetryNotBefore != original.RetryNotBefore) {
+				t.Fatal("projection changed retained wait identity", wait)
+			}
+			if tc.hasEstimate && (wait.CLIAllowance.ObservedAt != original.CLIAllowance.ObservedAt || wait.CLIAllowance.FullCapacityInMS == nil || *wait.CLIAllowance.FullCapacityInMS != in.FullCapacityInMS) {
+				t.Fatal("projection changed retained allowance", wait.CLIAllowance)
+			}
+		})
+	}
+	if encoded(original) != encoded(cliWaitRead(t, f, a.OperationID).Wait) || selectionCounts(t, f) != before {
+		t.Fatal("response projection changed retained state")
+	}
+}
+
+func TestRunHTTPProjectsHeldSelectionSubmission(t *testing.T) {
+	f := selectionFixture(t)
+	const key = "held-selection-post"
+	receipt, _ := selectionEnqueue(t, f, key, "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	a := f.start(t, attemptProject, Receipt{ID: selectionRead(t, f, receipt.ID).OperationID})
+	in := CLIAllowanceObservation{Anchor: attemptAnchor(attemptProject, 2), ObservedAt: stamp(), Remaining: 0, Limit: 3, FullCapacityInMS: 0, RollingWindowMS: 86400000, ChangedFiles: 2}
+	if err := f.e.RecordCLIExhaustion(t.Context(), attemptProject, a.ID, a.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Advance(t.Context(), attemptProject, a.ID, a.Revision, "held", "allowance_exhausted", ""); err != nil {
+		t.Fatal(err)
+	}
+	original := cliWaitRead(t, f, a.OperationID)
+	if original.Allowance == nil || original.Allowance.FullCapacityInMS == nil || *original.Allowance.FullCapacityInMS != 0 {
+		t.Fatal("fixture did not retain a held allowance", original)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/selections"
+	before := selectionCounts(t, f)
+	for _, version := range []string{"", "1", "2", "3", "4", "5", "unsupported"} {
+		t.Run(version, func(t *testing.T) {
+			w := runHTTPCall(t, f, mux, "POST", path, `{"channel":"cli"}`, key, "wait=1", version)
+			var state RunState
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &state) != nil || state.Selection.ID != receipt.ID || state.Operation == nil || state.Operation.ID != a.OperationID || state.Operation.State != "held" {
+				t.Fatal("original held selection unavailable", w.Code, w.Body.String())
+			}
+			if version == "3" || version == "5" {
+				if encoded(state.Operation.Allowance) != encoded(original.Allowance) {
+					t.Fatal("negotiated held allowance changed", w.Body.String())
+				}
+			} else if state.Operation.Allowance != nil || strings.Contains(w.Body.String(), `"allowance":`) {
+				t.Fatal("held allowance escaped version negotiation", w.Body.String())
+			}
+		})
+	}
+	if encoded(original) != encoded(cliWaitRead(t, f, a.OperationID)) || selectionCounts(t, f) != before {
+		t.Fatal("response projection changed retained state or created new work")
 	}
 }
