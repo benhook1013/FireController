@@ -695,7 +695,8 @@ func TestCLIAccountRetryDeadlineFutureHistory(t *testing.T) {
 				t.Error("pending used expired or unrelated account history", pending, err)
 			}
 			scope := f.scope(t, otherAttemptProject, f.other, false)
-			if got := f.e.queuedDiagnostic(t.Context(), scope, other.ID, other.Revision) == "cli_quota_wait"; got != (live && !invalid) {
+			cause, _ := f.e.queuedDiagnosticDetails(t.Context(), scope, other.ID, other.Revision)
+			if got := cause == "cli_quota_wait"; got != (live && !invalid) {
 				t.Error("shared quota diagnostic differs from live validated deadline", got)
 			}
 			for _, table := range tables {

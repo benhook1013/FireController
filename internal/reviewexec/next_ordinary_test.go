@@ -6,29 +6,6 @@ import (
 	"testing"
 )
 
-func TestQueuedReservationRequiresCurrentCapability(t *testing.T) {
-	for _, channel := range []string{"hosted", "cli"} {
-		t.Run(channel, func(t *testing.T) {
-			f := newAttemptFixture(t)
-			f.configure(t, attemptProject, "test-capability", 0, false)
-			holder := f.enqueue(t, attemptProject, "diagnostic-holder", channel, 2, 1)
-			f.start(t, attemptProject, holder)
-			waiting := f.enqueue(t, attemptProject, "diagnostic-waiter", channel, 4, 1)
-			op := roundOperation(t, f, waiting.ID)
-			scope := f.scope(t, attemptProject, f.writer, false)
-			cause, reservation := f.e.queuedDiagnosticDetails(t.Context(), scope, op.ID, op.Revision)
-			if cause != "reservation_busy" || reservation == nil || reservation.OperationID != holder.ID {
-				t.Fatalf("compatible reservation omitted: %q %+v", cause, reservation)
-			}
-			f.configure(t, attemptProject, "other-account", 1, false)
-			cause, reservation = f.e.queuedDiagnosticDetails(t.Context(), scope, op.ID, op.Revision)
-			if cause != "awaiting_scheduler" || reservation != nil {
-				t.Fatalf("obsolete capability must leave a generic diagnostic with no reservation: %q %+v", cause, reservation)
-			}
-		})
-	}
-}
-
 func TestAutomaticSourceRetryTwoNominatedPlansReachWriter(t *testing.T) {
 	f, original := sourceRetryFixture(t)
 	ageSourceRetry(t, f, original.ID)

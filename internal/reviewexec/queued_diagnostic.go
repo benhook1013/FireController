@@ -49,11 +49,6 @@ func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, sc
 		}
 	}
 }
-func (e *Engine) queuedDiagnostic(ctx context.Context, scope core.Scope, id string, revision int64) string {
-	cause, _ := e.queuedDiagnosticDetails(ctx, scope, id, revision)
-	return cause
-}
-
 func (e *Engine) queuedDiagnosticDetails(ctx context.Context, scope core.Scope, id string, revision int64) (string, *queuedReservation) {
 	cause := ""
 	var reservation *queuedReservation

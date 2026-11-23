@@ -64,7 +64,7 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 	var ids []string
 	for rows.Next() {
 		var id string
-		if err = rows.Scan(&id); err != nil {
+		if err = rows.Scan(operationValue(&id)); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
