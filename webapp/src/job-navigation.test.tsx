@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { JobDetail, Jobs } from './App';
 import { jobFilterSearch, readJobFilters } from './job-navigation';
+import type { JobSummary } from './types';
 import { WorkspaceContext, type Session } from './workspace';
 
 const parse = (query: string) => readJobFilters(new URLSearchParams(query));
@@ -28,13 +29,15 @@ describe('validated job navigation context', () => {
   });
 });
 
-function markup(query: string, detail = false) {
+const job: JobSummary = { id: 'job_one', title: 'Focused job', status: 'completed', worker_id: 'worker_one', revision: 1, progress_summary: '', blocker: '', progress_truncated: false, blocker_truncated: false };
+
+function markup(query: string, detail = false, items = [job]) {
   const client = new QueryClient();
   const key = ['fc', 'connection_nav'];
   const filters = parse(query);
   client.setQueryData([...key, 'workers', ''], { items: [], has_more: true, cursor: 'next_workers' });
   client.setQueryData([...key, 'workers', 'next_workers'], { items: [{ id: 'worker_one', name: 'Real cached worker label', project_id: 'project_nav' }], has_more: false });
-  client.setQueryData([...key, 'jobs', filters.status, filters.workerID, ''], { items: [{ id: 'job_one', title: 'Focused job', status: 'completed', worker_id: 'worker_one', revision: 1 }], has_more: false });
+  client.setQueryData([...key, 'jobs', filters.status, filters.workerID, ''], { items, has_more: false });
   const session = { worker: { id: 'inbox_other', name: 'Inbox actor' } } as Session;
   try {
     return renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/projects/project_nav/jobs${detail ? '/job_one' : ''}?${query}`]}><WorkspaceContext.Provider value={{ session, key, home: '/projects/project_nav', selectWorker: () => {}, fail: () => {}, ready: false }}>{detail ? <JobDetail /> : <Jobs />}</WorkspaceContext.Provider></MemoryRouter></QueryClientProvider>);
@@ -49,6 +52,19 @@ describe('job list and return links', () => {
     expect(html.match(/href="\/projects\/project_nav\/jobs\/job_one\?status=completed&amp;worker_id=worker_one"/g)).toHaveLength(2);
     expect(html).not.toContain('untrusted.test');
     expect(html).not.toContain('inbox_other');
+  });
+  it.each([
+    { status: 'parked', label: 'Parked reason' },
+    { status: 'blocked', label: 'Blocker' },
+  ] as const)('labels the $status preview from the job status and retains escaping and truncation', ({ status, label }) => {
+    const html = markup('status=all', false, [{ ...job, status, blocker: 'Waiting for <input>', blocker_truncated: true }]);
+    expect(html).toContain(`<p class="full-text"><strong>${label}</strong> Waiting for &lt;input&gt;<span aria-label="${label} preview truncated">…</span></p>`);
+    expect(html).not.toContain('<input>');
+  });
+  it('omits an empty parked reason from the list', () => {
+    const html = markup('status=parked', false, [{ ...job, status: 'parked' }]);
+    expect(html).toContain('Focused job');
+    expect(html).not.toMatch(/Parked reason|Blocker|class="full-text"/u);
   });
   it('returns to the exact validated list context, or the default list for direct entry', () => {
     expect(markup('status=all&worker_id=worker_one&return_url=https://untrusted.test', true)).toContain('href="/projects/project_nav/jobs?status=all&amp;worker_id=worker_one"');

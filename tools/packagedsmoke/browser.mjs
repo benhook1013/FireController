@@ -180,7 +180,8 @@ try {
   deliveryFixture.jobs.inspectorParked = (await seedDelivery('POST', '/jobs', {title:'Inspector parked work', brief:'Fixture brief.', worker_id:config.other_worker}, 201)).id;
   deliveryFixture.jobs.unassigned = (await seedDelivery('POST', '/jobs', {title:'Unassigned parked work', brief:'Fixture brief.', worker_id:''}, 201)).id;
   await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorBlocked, {expected_revision:1, status:'blocked'});
-  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorParked, {expected_revision:1, status:'parked'});
+  const parkedReason = 'Deferred until the next fixture window.';
+  await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorParked, {expected_revision:1, status:'parked', progress:{blocker:parkedReason}});
   await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.unassigned, {expected_revision:1, status:'parked'});
   await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorActive, {expected_revision:1, progress:{summary:'Earlier progress only.', next:'Earlier next step.'}});
   await seedDelivery('PATCH', '/jobs/' + deliveryFixture.jobs.inspectorActive, {expected_revision:2, progress:{summary:'Latest progress is visible.', next:'Continue from the latest progress.'}});
@@ -455,6 +456,9 @@ try {
   checkpoint = 'unassigned-job';
   const inspectorStatuses = await inspectorLane.locator('.delivery-job-state .badge').allTextContents();
   need(inspectorStatuses.join('|') === 'Active|Blocked|Parked');
+  const parkedCardReason = inspectorLane.locator('.delivery-checkpoint-field').filter({hasText:parkedReason});
+  await expect(parkedCardReason.getByText('Parked reason:', {exact:true})).toBeVisible();
+  await expect(parkedCardReason).not.toHaveClass(/delivery-blocker/);
   checkpoint = 'status-order';
   checkpoint = 'latest-checkpoint-done';
   const latestDone = inspectorLane.locator('.delivery-checkpoint p').filter({hasText:'Latest progress is visible.'});
@@ -748,6 +752,15 @@ try {
   await page.getByLabel('Job status', {exact:true}).waitFor();
   await expect(page.getByLabel('Job status', {exact:true})).toHaveValue('open');
   await expect(page.getByLabel('Job worker', {exact:true})).toHaveValue('');
+  const parkedJob = page.getByRole('link', {name:'Inspector parked work', exact:true});
+  const parkedJobRow = page.locator('.job-list li').filter({has:parkedJob});
+  await expect(parkedJobRow.getByText('Parked reason', {exact:true})).toBeVisible();
+  await expect(parkedJobRow).toContainText(parkedReason);
+  await parkedJob.click();
+  const parkedProgress = page.getByRole('region', {name:'Job progress'});
+  await expect(parkedProgress.getByText('Parked reason:', {exact:true})).toBeVisible();
+  await expect(parkedProgress).toContainText(parkedReason);
+  await page.getByRole('link', {name:'Back to jobs'}).click();
   need(await page.locator('.sidebar').count() === 0);
   const completedJob = await write('POST', '/jobs', {title:'Completed job sentinel', brief:'Synthetic completed job', worker_id:config.worker}, 201);
   await write('PATCH', '/jobs/' + completedJob.id, {expected_revision:1, status:'completed'});

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { Api } from './api';
-import { JobDetail, jobProgressHistoryQuery } from './App';
+import { JobDetail, JobProgressContent, jobProgressHistoryQuery } from './App';
 import { contextualNotesQuery } from './contextual-notes';
 import { WorkspaceContext, type Session } from './workspace';
 import type { Job, JobProgressEntry, NoteSummary } from './types';
@@ -63,9 +63,14 @@ describe('unified default job context',()=>{
     for(const value of cases) {vi.stubGlobal('fetch',vi.fn().mockResolvedValue(json(value)));await expect(api.job(job.id)).rejects.toMatchObject({code:'invalid_response'});}
     api.close();
   });
-  it('renders the supplied current context without installing eager checkpoint/update/checklist or note reads',()=>{
+  it.each([
+    {status:'blocked',blocker:progress.blocker,label:'Blocker:',rendered:progress.blocker},
+    {status:'parked',blocker:'Waiting for **input** <literal>.',label:'Parked reason:',rendered:'Waiting for <strong>input</strong> &lt;literal&gt;.'},
+    {status:'parked',blocker:'',label:'',rendered:''},
+  ] as const)('renders the current $status context with reason "$label" and no eager history or note reads',({status,blocker,label,rendered})=>{
     const client=new QueryClient();const key=['fc','connection_one','instance_one',project.id,'inbox_actor'];
-    client.setQueryData([...key,'job',job.id],job);
+    const current: Job={...job,status,progress:{...progress,blocker}};
+    client.setQueryData([...key,'job',job.id],current);
     client.setQueryData([...key,'job-summary',job.id],{job_id:job.id,job_revision:4,revision:0,title:'',body:''});
     client.setQueryData([...key,'job-workstream',job.id],{job_id:job.id,workstream_id:'',workstream_title:'',revision:0});
     const notesKey=[...key,'notes',{job_id:job.id,status:'pending',limit:5},''];
@@ -75,7 +80,11 @@ describe('unified default job context',()=>{
     const router=createMemoryRouter([{path:'/projects/project_one/jobs/:jobId',element:<JobDetail/>}],{initialEntries:['/projects/project_one/jobs/job_one']});
     try {
       const html=renderToStaticMarkup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{session,key,home:'/projects/project_one',selectWorker:()=>{},fail:()=>{},ready:false}}><RouterProvider router={router}/></WorkspaceContext.Provider></QueryClientProvider>);
-      expect(html).toContain('<h3>Progress</h3>');expect(html).toContain('Completed <strong>proof</strong>');expect(html).toContain('Awaiting input.');expect(html).toContain('**literal reference**');
+      expect(html).toContain('<h3>Progress</h3>');expect(html).toContain('Completed <strong>proof</strong>');expect(html).toContain('**literal reference**');
+      expect([...html.matchAll(/<strong>(Blocker:|Parked reason:)<\/strong>/gu)].map(match=>match[1])).toEqual(label?[label]:[]);
+      if (rendered) expect(html).toContain(rendered);
+      expect(html).not.toContain('<literal>');
+      if (!label) expect(html).not.toContain('>None</p>');
       expect(html).toContain('Remaining <strong>step</strong>');expect(html).toContain('1/2 completed');expect(html).toContain('Exact attached reminder');expect(html).not.toContain('role="alert"');
       expect(html).toContain('Show progress history');expect(html).toContain('Show full checklist and history');
       expect(html).not.toMatch(/Latest checkpoint|Narrative updates|inbox_actor|worker_other/u);
@@ -94,6 +103,11 @@ describe('unified default job context',()=>{
 });
 
 describe('explicit unified progress history',()=>{
+  it('retains the blocker label when rendering progress without a job status',()=>{
+    const html=renderToStaticMarkup(<JobProgressContent progress={entry.progress}/>);
+    expect(html).toContain('<strong>Blocker:</strong>');expect(html).toContain(entry.progress.blocker);
+    expect(html).not.toContain('Parked reason');
+  });
   it('retains exact ordered content through the bound history route and refuses malformed identities/order',async()=>{
     const api=await connected();const page={items:[entry],cursor:'older',has_more:true};const fetch=vi.fn().mockResolvedValue(json(page));vi.stubGlobal('fetch',fetch);
     expect(await api.jobProgressHistory(job.id,{limit:1,cursor:'selected'})).toEqual(page);

@@ -85,16 +85,27 @@ describe('bounded Delivery board', () => {
     expect(html).not.toContain('Checklist');
   });
 
-  it('keeps empty jobs compact and renders only supplied current fields without adding fallback brief text', () => {
+  it('omits an empty parked reason without adding fallback brief text', () => {
     const current = {...job('job_empty','parked'),brief_preview:'LONG_STANDING_INSTRUCTIONS',brief_preview_truncated:true};
     const value = {workers:{items:[worker],has_more:false},jobs:{items:[current],has_more:false}};
     const empty = markup(<DeliveryLanes value={value} home={home}/>);
     expect(empty).toContain('job_empty'); expect(empty).toContain('Parked'); expect(empty).toContain('/jobs/job_empty');
     expect(empty).not.toContain('LONG_STANDING_INSTRUCTIONS'); expect(empty).not.toContain('delivery-checkpoint-label');
-    current.progress.blocker='Waiting for your instruction to resume.';
-    const blocked = markup(<DeliveryLanes value={value} home={home}/>);
-    expect(blocked).toContain('Blocker:</strong>'); expect(blocked).toContain(current.progress.blocker);
-    expect(blocked).not.toContain('Progress:</strong>'); expect(blocked).not.toContain('Next:</strong>');
+  });
+
+  it.each([
+    { status: 'parked', label: 'Parked reason', fieldClass: 'delivery-checkpoint-field' },
+    { status: 'blocked', label: 'Blocker', fieldClass: 'delivery-checkpoint-field delivery-blocker' },
+  ] as const)('renders the $status reason with its own label and styling', ({ status, label, fieldClass }) => {
+    const current = job('job_waiting', status);
+    current.progress.blocker = 'Waiting for **input** <literal>.';
+    current.progress.blocker_truncated = true;
+    const html = markup(<DeliveryLanes value={{ ...board, jobs: { items: [current], has_more: false } }} home={home} />);
+    expect(html).toContain(`<div class="${fieldClass}"><strong class="delivery-checkpoint-label">${label}:</strong>`);
+    expect(html).toContain('Waiting for <strong>input</strong> &lt;literal&gt;.');
+    expect(html).toContain('</div><span class="delivery-preview-truncated" aria-label="Preview truncated">…</span>');
+    expect(html).not.toContain('<literal>');
+    expect(html).not.toMatch(/(?:Progress|Next):<\/strong>/u);
   });
 
   it('keeps empty workers, real owners outside the worker page, and genuinely unassigned jobs distinct', () => {
