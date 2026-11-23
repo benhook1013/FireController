@@ -950,7 +950,7 @@ try {
     if (channel) channel.source_retry = {attempt_id:sourceAttempt.source_attempt_id,observed_at:sourceObserved,retry_not_before:sourceDeadline,sequence:1};
     const queued = payload.items.find(item => item.pull_number === 32)?.channels.find(item => item.channel === 'hosted');
     if (queued) {
-      need(route.request().headers()['x-fc-review-queue-details'] === 'v1');
+      need(route.request().headers()['x-fc-review-queue-details'] === 'v2');
       Object.assign(queued, {configured:true,revision:1,epoch:1,maximum:3,taper:2,pending:1,pending_execution:1,pending_adjudication:0,
         queue:{holding:[29],ahead:[30,31]}});
     }
