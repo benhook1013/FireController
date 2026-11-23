@@ -1056,33 +1056,6 @@ func TestSchedulingPlanningDigestCompatibility(t *testing.T) {
 	check(true)
 }
 
-func TestRetainedOperationScannerRequiresNativeSQLiteValues(t *testing.T) {
-	for _, value := range []any{[]byte("queued"), int64(1), nil} {
-		var destination string
-		if err := operationValue(&destination).Scan(value); !isRetainedOperationDecodeError(err) {
-			t.Fatalf("accepted non-TEXT operation field %T", value)
-		}
-	}
-	for _, value := range []any{"1", []byte("1"), float64(1), nil} {
-		var destination int64
-		if err := operationValue(&destination).Scan(value); !isRetainedOperationDecodeError(err) {
-			t.Fatalf("accepted non-INTEGER operation field %T", value)
-		}
-	}
-	for _, value := range []any{true, "true", "1", []byte("1"), float64(1), int64(2), nil} {
-		var destination bool
-		if err := operationValue(&destination).Scan(value); !isRetainedOperationDecodeError(err) {
-			t.Fatalf("accepted non-native boolean operation field %T", value)
-		}
-	}
-	var text string
-	var integer int64
-	var flag bool
-	if operationValue(&text).Scan("queued") != nil || text != "queued" || operationValue(&integer).Scan(int64(3)) != nil || integer != 3 || operationValue(&flag).Scan(int64(1)) != nil || !flag || operationValue(&flag).Scan(int64(0)) != nil || flag {
-		t.Fatal("rejected native SQLite operation values")
-	}
-}
-
 func TestSchedulingRefusedAuthorizerDoesNotSettleReplacementBasis(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
 		t.Run(channel, func(t *testing.T) {

@@ -3,18 +3,19 @@ package reviewexec
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
+
+	"crypto/sha256"
+	"fmt"
+	"github.com/benhook1013/FireController/internal/core"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
@@ -241,6 +242,15 @@ func TestHostedCooldownQueuePriorityProjection(t *testing.T) {
 		if strings.Contains(versionWaitRead(t, f, path, version).Body.String(), "queue_ahead_pull_number") {
 			t.Fatal("queue hint escaped negotiation", version)
 		}
+	}
+	for _, version := range []string{"", "4", "unsupported"} {
+		if got := read(version).Items[0].Channels[0].Wait; got != nil {
+			t.Fatal("unsupported version exposed wait data", version, got)
+		}
+	}
+	plain := versionWaitRead(t, f, roundProgressPath(attemptProject)+"?pull_numbers=4,2", "5")
+	if strings.Contains(plain.Body.String(), `"wait"`) || strings.Contains(plain.Body.String(), "queue_ahead_pull_number") {
+		t.Fatal("ordinary round progress exposed staged wait data")
 	}
 	if after := snapshotTable(t, f, "review_operations") + snapshotTable(t, f, "review_operation_waits") + snapshotTable(t, f, "review_execution_attempts") + snapshotTable(t, f, "receipts") + snapshotTable(t, f, "events"); before != after {
 		t.Fatal("presentation read changed retained work")
