@@ -92,8 +92,15 @@ func TestPullMetadataPairRefusalsAndNoAutomaticFallback(t *testing.T) {
 			defer close(release) // Release the fixture even if HTTP/1 body cancellation is not detected server-side.
 			g := testGitHub(server, "synthetic")
 			g.quota = NewGitHubQuota()
-			ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			if mode == "deadline" {
+				// Exercise a real deadline on the stalled response only. The
+				// other cases need to test their response, independent of CI load.
+				var stop context.CancelFunc
+				ctx, stop = context.WithTimeout(ctx, time.Second)
+				defer stop()
+			}
 			if mode == "gate" {
 				g.readGate = func(context.Context) error { return &Error{Code: "provider_rate_limited", RetryAfterSeconds: 17} }
 			}

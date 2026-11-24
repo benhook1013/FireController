@@ -49,12 +49,13 @@ func TestEnrollmentReaddPreservesRetainedLegacyCoverage(t *testing.T) {
 				}
 				readd := enrollmentConfiguration(2, []int64{2, 4, 6}, []string{"cli", "hosted"})
 				before := enrollmentState(t, f)
-				_, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.writer, false), "readd-legacy-pair", readd)
+				_, err := f.e.Configure(t.Context(), evidenceReadScope(t, f, attemptProject, f.reader), "readd-legacy-pair", readd)
 				attemptCode(t, err, "forbidden")
 				if enrollmentState(t, f) != before {
-					t.Fatal("unauthorized re-enrollment changed configuration or round history")
+					t.Fatal("read-only re-enrollment changed configuration or round history")
 				}
-				receipt, err := f.e.Configure(t.Context(), scope, "readd-legacy-pair", readd)
+				writer := f.scope(t, attemptProject, f.writer, false)
+				receipt, err := f.e.Configure(t.Context(), writer, "readd-legacy-pair", readd)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -73,7 +74,7 @@ func TestEnrollmentReaddPreservesRetainedLegacyCoverage(t *testing.T) {
 					t.Fatal("re-enrollment rewrote legacy native evidence or awarded round credit")
 				}
 				before = enrollmentState(t, f)
-				replay, err := f.e.Configure(t.Context(), scope, "readd-legacy-pair", readd)
+				replay, err := f.e.Configure(t.Context(), writer, "readd-legacy-pair", readd)
 				if err != nil || !reflect.DeepEqual(receipt, replay) || enrollmentState(t, f) != before {
 					t.Fatal("re-enrollment replay changed retained allocations", err)
 				}
