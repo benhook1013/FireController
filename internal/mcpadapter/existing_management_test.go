@@ -53,7 +53,7 @@ func TestReviewManagementToolDescriptionsStateAuthority(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if !strings.Contains(d.description, "Requires project management or instance administration") || workerRequired && !strings.Contains(d.description, "valid project worker") {
+		if !strings.Contains(d.description, "Requires project write") || workerRequired && !strings.Contains(d.description, "valid project worker") {
 			t.Errorf("%s omits its required authority: %s", d.name, d.description)
 		}
 		delete(want, d.name)
