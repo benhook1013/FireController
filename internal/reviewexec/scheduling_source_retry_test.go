@@ -309,16 +309,32 @@ func TestAutomaticSourceRetryCoordinatorSafetyHolds(t *testing.T) {
 	}
 }
 
-func TestAutomaticSourceRetryTimestampPrecisionFence(t *testing.T) {
-	f, r := sourceRetryFixture(t)
-	at := time.Now().Add(-time.Minute).Truncate(time.Second)
-	admissionSQL(t, f, `UPDATE review_selections SET created_at=?,updated_at=? WHERE id=?`, at.Format(time.RFC3339Nano), at.Format(time.RFC3339Nano), r.ID)
-	later, _ := selectionEnqueue(t, f, "later-fractional-time", "hosted", nil)
-	// Exercise the time fallback independently of event acceptance order.
-	admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.selection_requested' AND resource_id=?`, later.ID)
-	admissionSQL(t, f, `UPDATE review_selections SET created_at=?,updated_at=? WHERE id=?`, at.Add(time.Millisecond).Format(time.RFC3339Nano), at.Add(time.Millisecond).Format(time.RFC3339Nano), later.ID)
-	if retrySourceDirect(t, f, r, time.Now()) {
-		t.Fatal("variable timestamp precision lost newer-intent fence")
+func TestAutomaticSourceRetryFencesEventlessSuccessorAfterClockRollback(t *testing.T) {
+	for _, channel := range []string{"hosted", "cli"} {
+		for _, kind := range []string{"selection", "operation"} {
+			t.Run(channel+"/"+kind, func(t *testing.T) {
+				f, r := sourceRetryFixture(t)
+				ageSourceRetry(t, f, r.ID)
+				at := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+				switch kind {
+				case "selection":
+					later, _ := selectionEnqueue(t, f, "eventless-later-selection", channel, nil)
+					admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.selection_requested' AND resource_id=?`, later.ID)
+					admissionSQL(t, f, `UPDATE review_selections SET created_at=?,updated_at=? WHERE id=?`, at, at, later.ID)
+					// Supported restore still recognizes this legacy explicit row.
+					if err := ValidateSelectionSnapshot(t.Context(), f.store.DB()); err != nil {
+						t.Fatalf("legacy selection rejected: %v", err)
+					}
+				case "operation":
+					later := f.enqueue(t, attemptProject, "eventless-later-operation", channel, 2, 1)
+					admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.requested' AND resource_id=?`, later.ID)
+					admissionSQL(t, f, `UPDATE review_operations SET created_at=?,updated_at=? WHERE id=?`, at, at, later.ID)
+				}
+				if worked := retrySourceDirect(t, f, r, time.Now()); worked != (channel != r.Channel) {
+					t.Fatalf("retry=%t for %s successor against %s source", worked, channel, r.Channel)
+				}
+			})
+		}
 	}
 }
 

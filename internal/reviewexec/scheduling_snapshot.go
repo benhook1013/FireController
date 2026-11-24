@@ -329,15 +329,16 @@ func validatePullSchedulingEvents(ctx context.Context, tx *sql.Tx, controls int)
 	var lastProject string
 	var lastPull int64
 	for rows.Next() {
-		var project, actor, eventActor string
+		var project, actor string
 		var pull, controlRevision, paused int64
-		var nativeRevision any
+		var nativeRevision, nativeEventActor any
 		var payload sql.NullString
-		if err := rows.Scan(&project, &pull, &controlRevision, &paused, &actor, &nativeRevision, &eventActor, &payload); err != nil {
+		if err := rows.Scan(&project, &pull, &controlRevision, &paused, &actor, &nativeRevision, &nativeEventActor, &payload); err != nil {
 			return err
 		}
 		revision, integer := nativeRevision.(int64)
-		if (project == lastProject && pull == lastPull) || !integer || revision != controlRevision || eventActor != actor || !validPullSchedulingPayload(payload, pull, paused == 1) {
+		eventActor, textActor := nativeEventActor.(string)
+		if (project == lastProject && pull == lastPull) || !integer || !textActor || revision != controlRevision || eventActor != actor || !validPullSchedulingPayload(payload, pull, paused == 1) {
 			return schedulingUnavailable()
 		}
 		count++

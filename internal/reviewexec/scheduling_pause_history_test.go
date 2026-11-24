@@ -3,7 +3,7 @@ package reviewexec
 import "testing"
 
 func TestSchedulingSnapshotRetainsPauseAuthority(t *testing.T) {
-	for _, corrupt := range []string{"", "unpaused-row", "missing-event", "duplicate-event", "malformed-event", "blob-event", "wrong-pull", "wrong-actor", "newer-event"} {
+	for _, corrupt := range []string{"", "unpaused-row", "missing-event", "duplicate-event", "malformed-event", "blob-event", "blob-actor", "wrong-pull", "wrong-actor", "newer-event"} {
 		t.Run(corrupt, func(t *testing.T) {
 			f := schedulingFixture(t)
 			schedulingPause(t, f, 2, 0, true)
@@ -18,6 +18,8 @@ func TestSchedulingSnapshotRetainsPauseAuthority(t *testing.T) {
 				admissionSQL(t, f, `UPDATE events SET payload_json='{}' WHERE event_type='review.pull_scheduling_updated'`)
 			case "blob-event":
 				admissionSQL(t, f, `UPDATE events SET payload_json=CAST(payload_json AS BLOB) WHERE event_type='review.pull_scheduling_updated'`)
+			case "blob-actor":
+				admissionSQL(t, f, `UPDATE events SET actor_id=CAST(actor_id AS BLOB) WHERE event_type='review.pull_scheduling_updated'`)
 			case "wrong-pull":
 				admissionSQL(t, f, `UPDATE events SET payload_json='{"pull_number":4,"paused":true}' WHERE event_type='review.pull_scheduling_updated'`)
 			case "wrong-actor":

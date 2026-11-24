@@ -130,11 +130,10 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 }
 
 type automaticBasisRead struct {
-	prefix    []byte
-	revision  int64
-	workspace bool
-	frame     frontFrame
-	hasFrame  bool
+	prefix       []byte
+	revision     int64
+	workspace    bool
+	dependencies automaticDependencyRead
 }
 
 // The channel semantic revision is independent of unrelated control edits.
@@ -161,10 +160,11 @@ func readAutomaticBasis(ctx context.Context, tx *sql.Tx, project, channel string
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='review_current_pulls' AND type='table')`).Scan(&out.workspace); err != nil {
 		return out, err
 	}
-	out.frame, out.hasFrame, err = readFrontFrame(ctx, tx, project, channel)
+	frame, found, err := readFrontFrame(ctx, tx, project, channel)
 	if err != nil {
 		return out, err
 	}
+	out.dependencies = newAutomaticDependencyRead(ctx, tx, project, channel, frame, found)
 	var prefix bytes.Buffer
 	appendRows := automaticBasisAppender(ctx, tx, &prefix, channel, out.revision)
 	for _, query := range []string{
@@ -307,7 +307,7 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 			return "", err
 		}
 	}
-	dependencies, err := automaticDependenciesWithFrame(ctx, tx, project, pull, channel, shared.frame, shared.hasFrame)
+	dependencies, err := shared.dependencies.forPull(pull)
 	if err != nil {
 		return "", err
 	}
@@ -328,19 +328,38 @@ func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project strin
 	if err != nil {
 		return nil, err
 	}
-	return automaticDependenciesWithFrame(ctx, tx, project, pull, channel, frame, found)
+	return newAutomaticDependencyRead(ctx, tx, project, channel, frame, found).forPull(pull)
 }
 
-func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, frame frontFrame, found bool) ([]any, error) {
-	out := []any{}
+// A dependency read owns one planning snapshot and one project's channel.
+// Keep traversal guards per descendant, but read each ancestor's immutable
+// transaction facts once. A writer replan always constructs a fresh read.
+type automaticDependencyRead struct {
+	byNumber map[int64]frontPull
+	facts    map[int64][]any
+	load     func(frontPull) ([]any, error)
+}
+
+func newAutomaticDependencyRead(ctx context.Context, tx *sql.Tx, project, channel string, frame frontFrame, found bool) automaticDependencyRead {
 	if !found {
-		return out, nil
+		return automaticDependencyRead{}
 	}
-	byNumber := make(map[int64]frontPull, len(frame.prefix))
+	read := automaticDependencyRead{
+		byNumber: make(map[int64]frontPull, len(frame.prefix)),
+		facts:    make(map[int64][]any),
+		load: func(p frontPull) ([]any, error) {
+			return loadAutomaticDependencyFacts(ctx, tx, project, channel, frame.repository, p)
+		},
+	}
 	for _, p := range frame.prefix {
-		byNumber[p.Number] = p
+		read.byNumber[p.Number] = p
 	}
-	current, found := byNumber[pull]
+	return read
+}
+
+func (r automaticDependencyRead) forPull(pull int64) ([]any, error) {
+	out := []any{}
+	current, found := r.byNumber[pull]
 	if !found {
 		return out, nil
 	}
@@ -350,35 +369,49 @@ func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project str
 			return nil, errors.Join(errAutomaticParentCycle, schedulingUnavailable())
 		}
 		seen[parent] = true
-		p, exists := byNumber[parent]
+		p, exists := r.byNumber[parent]
 		if !exists {
 			out = append(out, []any{parent, "source_prefix_incomplete"})
 			break
 		}
-		progress, err := channelProgress(ctx, tx, project, frame.repository, parent, channel)
-		if err != nil {
-			return nil, err
+		facts, loaded := r.facts[parent]
+		if !loaded {
+			var err error
+			facts, err = r.load(p)
+			if err != nil {
+				return nil, err
+			}
+			r.facts[parent] = facts
 		}
-		control, err := readRoundRecord(ctx, tx, project, parent, channel)
-		if err != nil {
-			return nil, err
-		}
-		obligations, err := sourceObligationCount(ctx, tx, project, parent)
-		if err != nil {
-			return nil, err
-		}
-		routes, err := pendingIncomingRoutes(ctx, tx, project, parent)
-		if err != nil {
-			return nil, err
-		}
-		var completed int64
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
-			return nil, err
-		}
-		out = append(out, []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes})
+		out = append(out, facts)
 		parent = p.ParentPullNumber
 	}
 	return out, nil
+}
+
+func loadAutomaticDependencyFacts(ctx context.Context, tx *sql.Tx, project, channel string, repository int64, p frontPull) ([]any, error) {
+	parent := p.Number
+	progress, err := channelProgress(ctx, tx, project, repository, parent, channel)
+	if err != nil {
+		return nil, err
+	}
+	control, err := readRoundRecord(ctx, tx, project, parent, channel)
+	if err != nil {
+		return nil, err
+	}
+	obligations, err := sourceObligationCount(ctx, tx, project, parent)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := pendingIncomingRoutes(ctx, tx, project, parent)
+	if err != nil {
+		return nil, err
+	}
+	var completed int64
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
+		return nil, err
+	}
+	return []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes}, nil
 }
 
 // Planning can move on to a distinct unattempted PR without treating an

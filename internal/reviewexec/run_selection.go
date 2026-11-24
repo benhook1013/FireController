@@ -235,7 +235,10 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 		return c, 0, "repository_changed", nil
 	}
 	var busy bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations o
+ WHERE o.project_id=? AND o.channel=? AND o.state IN ('queued','preparing','posting','active','uncertain')
+ AND NOT (o.channel='hosted' AND o.state='queued' AND EXISTS(SELECT 1 FROM review_pull_scheduling p
+   WHERE p.project_id=o.project_id AND p.pull_number=o.pull_number AND typeof(p.paused)='integer' AND p.paused=1)))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
 	}
 	if busy {
@@ -552,7 +555,8 @@ func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any,
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
 		  SELECT 1 FROM review_selections s JOIN review_operations o ON o.id=s.operation_id
 		  WHERE s.id=? AND s.project_id=? AND
-		    (o.project_id<>s.project_id OR o.actor_id<>s.actor_id OR o.worker_id<>s.worker_id OR
+		    (typeof(s.actor_id)<>'text' OR typeof(o.actor_id)<>'text' OR
+             o.project_id<>s.project_id OR o.actor_id<>s.actor_id OR o.worker_id<>s.worker_id OR
 		     o.channel<>s.channel OR o.configuration_revision<>s.configuration_revision OR
 		     o.policy_revision<>s.policy_revision OR o.capability_fingerprint<>s.capability_fingerprint OR
 		     (s.expected_pull_number<>0 AND o.pull_number<>s.expected_pull_number))

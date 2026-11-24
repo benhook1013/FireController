@@ -144,13 +144,14 @@ func schedulingBasisRevisions(ctx context.Context, tx *sql.Tx, s schedulingRecor
 	count := 0
 	for rows.Next() {
 		count++
-		var actor string
+		var nativeActor any
 		var payload sql.NullString
-		if err = rows.Scan(&actor, &payload); err != nil {
+		if err = rows.Scan(&nativeActor, &payload); err != nil {
 			return 0, 0, err
 		}
 		var event schedulingEvent
-		if count != 1 || actor != s.actor || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.Hosted == nil || *event.Hosted != s.AutomaticHosted || event.CLI == nil && s.AutomaticCLI || event.CLI != nil && *event.CLI != s.AutomaticCLI {
+		actor, textActor := nativeActor.(string)
+		if count != 1 || !textActor || actor != s.actor || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.Hosted == nil || *event.Hosted != s.AutomaticHosted || event.CLI == nil && s.AutomaticCLI || event.CLI != nil && *event.CLI != s.AutomaticCLI {
 			return 0, 0, schedulingUnavailable()
 		}
 		hosted, cli = s.Revision, s.Revision

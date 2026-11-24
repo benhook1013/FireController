@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"slices"
 	"strings"
 )
@@ -10,6 +11,20 @@ import (
 const preferredCLIRepository = "benhook1013/firemud"
 
 type pendingCandidateID struct{ project, operation string }
+
+// Only candidates on the installed account may consume the bounded priority
+// window. Each candidate still needs its exact current binding checked below.
+func (e *Engine) preferredCLIAccountFingerprints(capability Capability) string {
+	fingerprints := []string{}
+	for _, installed := range e.capabilities {
+		if installed.Provider == capability.Provider && installed.Account == capability.Account && installed.Fingerprint != "" {
+			fingerprints = append(fingerprints, installed.Fingerprint)
+		}
+	}
+	slices.Sort(fingerprints)
+	encoded, _ := json.Marshal(slices.Compact(fingerprints)) // []string cannot fail JSON encoding.
+	return string(encoded)
+}
 
 // Prefer the exact configured repository identity, never a mutable project name.
 // No running review is preempted and no wait deadline or operation is replaced.
@@ -28,7 +43,7 @@ func (e *Engine) preferredCLIQueued(ctx context.Context, tx *sql.Tx, o Operation
 	if strings.EqualFold(repository, preferredCLIRepository) {
 		return false, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT o.project_id,o.id FROM review_operations o JOIN projects p ON p.id=o.project_id WHERE o.channel='cli' AND o.state='queued' AND o.reason<>'cli_draft_wait' AND lower(p.repository)=? AND o.project_id<>? ORDER BY o.created_at,o.id LIMIT 101`, preferredCLIRepository, o.ProjectID)
+	rows, err := tx.QueryContext(ctx, `SELECT o.project_id,o.id FROM review_operations o JOIN projects p ON p.id=o.project_id WHERE o.channel='cli' AND o.state='queued' AND o.reason<>'cli_draft_wait' AND lower(p.repository)=? AND o.project_id<>? AND o.capability_fingerprint IN (SELECT value FROM json_each(?)) ORDER BY o.created_at,o.id LIMIT 101`, preferredCLIRepository, o.ProjectID, e.preferredCLIAccountFingerprints(capability))
 	if err != nil {
 		return false, err
 	}
@@ -103,10 +118,10 @@ candidates:
 // Match ordinary selection capacity: pending operations must be allowed to
 // drain when the preferred selection cannot create its child operation.
 func (e *Engine) preferredCLISelection(ctx context.Context, tx *sql.Tx, o Operation, capability Capability) (bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT s.project_id,s.id FROM review_selections s JOIN projects p ON p.id=s.project_id WHERE s.channel='cli' AND s.state IN('queued','selecting') AND lower(p.repository)=? AND s.project_id<>?
+	rows, err := tx.QueryContext(ctx, `SELECT s.project_id,s.id FROM review_selections s JOIN projects p ON p.id=s.project_id WHERE s.channel='cli' AND s.state IN('queued','selecting') AND lower(p.repository)=? AND s.project_id<>? AND s.capability_fingerprint IN (SELECT value FROM json_each(?))
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY s.created_at,s.id LIMIT 101`, preferredCLIRepository, o.ProjectID, requestGlobalCapacity, requestProjectCapacity)
+ ORDER BY s.created_at,s.id LIMIT 101`, preferredCLIRepository, o.ProjectID, e.preferredCLIAccountFingerprints(capability), requestGlobalCapacity, requestProjectCapacity)
 	if err != nil {
 		return false, err
 	}
