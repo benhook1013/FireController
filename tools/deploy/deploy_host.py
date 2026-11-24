@@ -546,6 +546,7 @@ def main(argv=None):
     p.add_argument("--fcd-sha256", required=True)
     p.add_argument("--assets", type=Path, help="browser asset binding JSON from deploy.py")
     p.add_argument("--drain-seconds", type=int, default=600)
+    p.add_argument("--recover-crashloop", action="store_true")
     p.add_argument("--lock-wait", type=int, default=1200, help="seconds to wait for a running backup")
     p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with the image")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"])
@@ -594,6 +595,8 @@ def main(argv=None):
             rollout_cmd.extend(["--retention-mode", a.retention_mode])
         if a.remote_mcp_mode is not None:
             rollout_cmd.extend(["--remote-mcp-mode", a.remote_mcp_mode])
+        if a.recover_crashloop:
+            rollout_cmd.append("--recover-crashloop")
         rollout_cmd.extend(["--kubectl", "k3s", "kubectl"])
         _begin_helper_rollout_locked(HELPER_SELECTOR, HELPER_RELEASES, old_source, old_image,
                                     a.source, a.fcd_sha256, a.image)

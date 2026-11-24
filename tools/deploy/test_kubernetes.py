@@ -15,6 +15,23 @@ deployment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deployment)
 
 
+class CrashLoopRecoveryTests(unittest.TestCase):
+    def test_only_confirmed_crashloop_with_unavailable_api_can_replace(self):
+        pod = {"metadata": {"ownerReferences": [{"kind": "ReplicaSet", "controller": True, "uid": "fixture-rs"}]},
+               "status": {"containerStatuses": [{"name": "controller", "ready": False, "restartCount": 3,
+                           "state": {"waiting": {"reason": "CrashLoopBackOff"}}, "lastState": {"terminated": {}}}]}}
+        unavailable = mock.Mock(side_effect=deployment.OperatorUnavailable("fixture 503"))
+        deployment.require_crashloop(unavailable, {}, [pod], "controller")
+        with self.assertRaisesRegex(RuntimeError, "responds"):
+            deployment.require_crashloop(mock.Mock(return_value={}), {}, [pod], "controller")
+        for deployment_state, pods in (({"status": {"readyReplicas": 1}}, [pod]), ({}, [pod, pod]), ({}, [])):
+            with self.assertRaisesRegex(RuntimeError, "exactly one unready"):
+                deployment.require_crashloop(unavailable, deployment_state, pods, "controller")
+        pod["status"]["containerStatuses"][0]["state"] = {"running": {}}
+        with self.assertRaisesRegex(RuntimeError, "CrashLoopBackOff"):
+            deployment.require_crashloop(unavailable, {}, [pod], "controller")
+
+
 class RetentionArgumentTests(unittest.TestCase):
     def test_explicit_dry_run_and_enable_preserve_unrelated_args(self):
         now = ["--data-dir", "/data", "--backup-phase-lease=/backup/phase.lock",

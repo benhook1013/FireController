@@ -65,6 +65,7 @@ def main(argv=None):
     p.add_argument("--host", default=HOST)
     p.add_argument("--dry-run", action="store_true", help="build and verify the image and package locally")
     p.add_argument("--drain-seconds", type=int, default=600)
+    p.add_argument("--recover-crashloop", action="store_true", help="replace a verified offline, crash-looping Controller")
     p.add_argument("--memory-limit", default="1536Mi", help="controller container memory limit, applied with every rollout")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"], help="explicitly set database retention mode on the live Controller; omit to preserve current mode")
     p.add_argument("--remote-mcp-mode", choices=["enable", "disable"], help="explicit MCP opt-in; enable only after staging the exact proxy location; omit to preserve current args")
@@ -156,6 +157,8 @@ def main(argv=None):
             host_cmd.extend(["--retention-mode", a.retention_mode])
         if a.remote_mcp_mode is not None:
             host_cmd.extend(["--remote-mcp-mode", a.remote_mcp_mode])
+        if a.recover_crashloop:
+            host_cmd.append("--recover-crashloop")
         return subprocess.run(ssh + [shlex.join(host_cmd)]).returncode
 
 

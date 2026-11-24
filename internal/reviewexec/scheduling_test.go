@@ -522,6 +522,51 @@ func TestSchedulingCancelledExactIntentLetsIndependentPeerProceed(t *testing.T) 
 		t.Fatal("same intent recreated")
 	}
 }
+
+func TestSchedulingRetainedAcceptedBasisDoesNotReinsertWithUnattemptedTail(t *testing.T) {
+	f := schedulingFixture(t)
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	selectionNext(t, f, &refreshTestReader{})
+	first := schedulingLatest(t, f)
+	_, err := f.e.ControlOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "cancel-before-replay", first.OperationID, OperationControl{ExpectedRevision: 1, Action: "cancel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model a retained acceptance reached again after the earlier run settled.
+	// The same digest still has an unattempted tail but cannot be inserted twice.
+	var basis string
+	err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		configuration, _, err := readConfiguration(ctx, tx, attemptProject)
+		if err != nil {
+			return err
+		}
+		var remaining bool
+		basis, remaining, err = automaticPlanningBasis(ctx, tx, attemptProject, configuration, "")
+		if err == nil && !remaining {
+			t.Error("fixture needs an unattempted candidate")
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admissionSQL(t, f, `UPDATE review_automatic_selections SET basis_sha256=?, settled_basis_sha256=? WHERE selection_id=?`, basis, basis, first.ID)
+	schedulingGenerate(t, f, false)
+	if attemptCount(t, f.store, `SELECT count(*) FROM review_selections`) != 1 || attemptCount(t, f.store, `SELECT count(*) FROM review_operations`) != 1 {
+		t.Fatal("replay duplicated selection or provider work")
+	}
+	// A settlement-only match can still allow the next PR to proceed.
+	admissionSQL(t, f, `UPDATE review_automatic_selections SET basis_sha256=? WHERE selection_id=?`, strings.Repeat("a", 64), first.ID)
+	schedulingGenerate(t, f, true)
+	selectionNext(t, f, &refreshTestReader{})
+	second := schedulingLatest(t, f)
+	operation, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), second.OperationID)
+	if err != nil || operation.PullNumber != 4 {
+		t.Fatal("settlement-only match blocked the unattempted PR", second, operation, err)
+	}
+}
+
 func TestSchedulingAutomaticUsesExistingWorkerLifecycle(t *testing.T) {
 	f := schedulingFixture(t)
 	schedulingEnable(t, f, 0, true)

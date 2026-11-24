@@ -9,6 +9,8 @@ python3 tools/deploy/deploy.py            # deploy origin/develop
 python3 tools/deploy/deploy.py --dry-run  # build and check only
 ```
 
+For an authorized incident recovery, `python3 tools/deploy/deploy.py --recover-crashloop` replaces the sole existing Controller pod only when the API is unavailable and Kubernetes confirms the container is in `CrashLoopBackOff`. It uses the same deployment, backup and helper custody locks, database snapshot and migration rehearsal, isolated candidate start and post-rollout checks. A responding or running Controller needs the normal drained rollout.
+
 [`deploy.py`](../tools/deploy/deploy.py) requires a checkout with clean tracked files at `origin/develop`. It builds the Linux/amd64 image from the repository [Dockerfile](../Dockerfile), assembles the versioned installation payload, and records the embedded browser asset hashes. The receiving host verifies and materializes the package in a private staging directory. The script verifies the imported image digest before invoking the packaged [`deploy_host.py`](../tools/deploy/deploy_host.py). The dry run verifies and materializes the same package locally. The host side runs the same steps every time:
 
 1. Take the deploy lock, then the stable helper-generation lease exclusively, then the existing shared backup phase lock. Rollback follows the same order. Each helper acquires the generation lease in shared mode before it reads the selector and retains it through `execv`. Deployment and rollback wait for those processes to exit. The existing twenty-minute wait covers both leases. A timeout during first conversion can leave the inert lease inode ready for retry.

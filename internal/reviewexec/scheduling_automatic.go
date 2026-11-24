@@ -800,15 +800,15 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 	// A successful selection consumes only its chosen PR. Its post-selection
 	// digest must not suppress unattempted peers now that queued intents do not
 	// truncate planning. An unproductive pass still deduplicates its whole basis.
-	var seen bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
+	var accepted, settled bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND basis_sha256=?), EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND settled_basis_sha256=?)`, project, basis, project, basis).Scan(&accepted, &settled); err != nil {
 		return nil, err
 	}
-	// A selected pass examined only through its chosen PR. Preserve dedupe for
-	// its held prefix, but allow unattempted candidates beyond that frontier.
-	if seen {
+	// An already accepted digest cannot be inserted again. A matching
+	// settlement alone may describe an unattempted tail past the chosen PR.
+	if settled && !accepted {
 		var selected int64
-		if err = tx.QueryRowContext(ctx, `SELECT pull_number FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?) ORDER BY rowid DESC LIMIT 1`, project, basis, basis).Scan(&selected); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT pull_number FROM review_automatic_selections WHERE project_id=? AND settled_basis_sha256=? ORDER BY rowid DESC LIMIT 1`, project, basis).Scan(&selected); err != nil {
 			return nil, err
 		}
 		if position := slices.Index(c.Queue, selected); selected > 0 && position >= 0 && position+1 < len(c.Queue) {
@@ -819,12 +819,12 @@ func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, 
 				return nil, err
 			}
 			if unseen {
-				seen = false
+				settled = false
 			}
 		}
 	}
 	plan := &automaticProjectPlan{scheduling: s, scope: scope, basis: basis}
-	if seen {
+	if accepted || settled {
 		plan.retry, err = e.automaticSourceRetryCandidate(ctx, tx, project, basis, s.Revision, time.Now(), channel)
 		if err != nil {
 			return nil, err

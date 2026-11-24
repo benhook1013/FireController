@@ -94,6 +94,30 @@ def wait_for_recovery(read_status, expected_instance, timeout=30, sleep=time.sle
         sleep(min(1, remaining))
 
 
+def require_crashloop(api, deployment, pods, container):
+    """Prove the old single writer is down before a crash-only replacement."""
+    try:
+        api("GET", "/api/v1/instance")
+    except OperatorUnavailable:
+        pass
+    else:
+        raise RuntimeError("Controller responds; use the normal drained rollout")
+    if deployment.get("status", {}).get("readyReplicas", 0) != 0 or len(pods) != 1:
+        raise RuntimeError("crash recovery requires exactly one unready Controller pod")
+    pod = pods[0]
+    owner = [reference.get("uid") for reference in pod.get("metadata", {}).get("ownerReferences", [])
+             if reference.get("kind") == "ReplicaSet" and reference.get("controller") is True]
+    statuses = [status for status in pod.get("status", {}).get("containerStatuses", [])
+                if status.get("name") == container]
+    if pod.get("metadata", {}).get("deletionTimestamp") or len(owner) != 1 or not owner[0] or len(statuses) != 1:
+        raise RuntimeError("crash recovery could not identify the Controller container")
+    status = statuses[0]
+    if (status.get("ready") is not False or status.get("restartCount", 0) < 2
+            or status.get("state", {}).get("waiting", {}).get("reason") != "CrashLoopBackOff"
+            or "terminated" not in status.get("lastState", {})):
+        raise RuntimeError("crash recovery requires a previously terminated Controller in CrashLoopBackOff")
+
+
 def retention_args(current, mode):
     """Change only the selected daemon flag, preserving all other arguments."""
     if mode is None:
@@ -167,11 +191,14 @@ def main():
     p.add_argument("--container", default="controller")
     p.add_argument("--context")
     p.add_argument("--drain-seconds", type=int, default=DEFAULT_DRAIN_SECONDS)
+    p.add_argument("--recover-crashloop", action="store_true", help="replace a verified offline, crash-looping Controller")
     p.add_argument("--kubectl", nargs="+", default=["kubectl"], help="Command prefix, for example --kubectl k3s kubectl")
     p.add_argument("--memory-limit", help="Controller container memory limit to apply with the image, for example 1Gi")
     p.add_argument("--retention-mode", choices=["dry-run", "enabled"])
     p.add_argument("--remote-mcp-mode", choices=["enable", "disable"], help="explicit MCP opt-in; enable only after staging the exact proxy location; omit to preserve current args")
     args = p.parse_args()
+    if args.recover_crashloop and not custody_fds:
+        p.error("crash recovery requires the guarded host deployment path")
     if args.memory_limit is not None and not re.fullmatch(r"[1-9][0-9]{0,5}(Mi|Gi)", args.memory_limit):
         p.error("memory limit must look like 512Mi or 1Gi")
     if not re.fullmatch(r"[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}", args.image) or not re.fullmatch(r"[0-9a-f]{40}", args.source_revision) or not 0 <= args.drain_seconds <= 3600:
@@ -220,14 +247,20 @@ def main():
     selected = next(c for c in containers if c["name"] == args.container)
     desired_args = remote_mcp_args(selected.get("args", []), args.remote_mcp_mode, args.url)
     desired_args = retention_args(desired_args, args.retention_mode)
-    if api("GET", "/api/v1/instance").get("instance_id") != args.instance_id:
-        p.error("unexpected service instance")
-    api("GET", "/api/v1/operator/deployment-drain")  # Refuse unsupported old servers before changing anything.
+    if not args.recover_crashloop:
+        if api("GET", "/api/v1/instance").get("instance_id") != args.instance_id:
+            p.error("unexpected service instance")
+        api("GET", "/api/v1/operator/deployment-drain")  # Refuse unsupported old servers before changing anything.
     # Pull and start the image on the serving node before touching admission.
     # This pod has no live data, credentials, provider mounts or service token.
     labels = deployment["spec"]["selector"]["matchLabels"]
     selector = ",".join(key + "=" + value for key, value in labels.items())
-    pods = json.loads(command(["get", "pods", "-l", selector, "-o", "json"]))["items"]
+    def selected_pods():
+        return json.loads(command(["get", "pods", "-l", selector, "-o", "json"]))["items"]
+
+    pods = selected_pods()
+    if args.recover_crashloop:
+        require_crashloop(api, deployment, pods, args.container)
     nodes = {pod["spec"].get("nodeName") for pod in pods if pod.get("status", {}).get("phase") == "Running"}
     if len(nodes) != 1 or None in nodes:
         p.error("select a deployment with one current serving node")
@@ -259,9 +292,13 @@ def main():
         command(["delete", "pod", name, "--ignore-not-found", "--timeout=30s"], timeout=35)
     began, replacing = False, False
     try:
-        began = True  # A lost POST response may still have started the drain.
-        api("POST", "/api/v1/operator/deployment-drain")
-        forced = wait_for_drain(lambda: api("GET", "/api/v1/operator/deployment-drain"), args.drain_seconds)
+        if args.recover_crashloop:
+            require_crashloop(api, deployment, selected_pods(), args.container)
+            forced = False
+        else:
+            began = True  # A lost POST response may still have started the drain.
+            api("POST", "/api/v1/operator/deployment-drain")
+            forced = wait_for_drain(lambda: api("GET", "/api/v1/operator/deployment-drain"), args.drain_seconds)
         # Prevent changing a deployment that another operator changed while we waited.
         deployment["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] = 90
         for c in containers:
@@ -291,7 +328,10 @@ def main():
         if (args.retention_mode is not None or args.remote_mcp_mode is not None) and installed.get("args", []) != desired_args:
             raise RuntimeError("selected Controller arguments changed during rollout")
         wait_for_recovery(lambda: (api("GET", "/api/v1/instance"), api("GET", "/api/v1/operator/deployment-drain")), args.instance_id)
-        print(json.dumps({"state": "deployed", "image": args.image, "drain_deadline_reached": forced}))
+        receipt = {"state": "deployed", "image": args.image, "drain_deadline_reached": forced}
+        if args.recover_crashloop:
+            receipt["recovered_crashloop"] = True
+        print(json.dumps(receipt))
     finally:
         if began and not replacing:
             api("DELETE", "/api/v1/operator/deployment-drain")
