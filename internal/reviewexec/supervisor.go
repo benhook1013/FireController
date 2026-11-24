@@ -688,16 +688,16 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 	return e.processPendingBatch(ctx, drivers, releaseProbe, worker, operations, receipt)
 }
 
-// A typed scheduling refusal requeues only unused preparation. Other local
-// history failures retain the preparation and reservation.
+// A typed scheduling or round-control refusal requeues only unused
+// preparation. Other local history failures retain the reservation.
 func (e *Engine) classifyUnavailablePreparation(ctx context.Context, o Operation, a Attempt, err error) (bool, error) {
 	if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 		return true, nil
 	}
-	if schedulingRefused(err) {
+	if schedulingRefused(err) || isStoredUnavailable(err, storedRoundHistory) {
 		return true, e.finishPreparation(a, "held", "automatic_scheduling_unavailable")
 	}
-	return automaticProjectRefused(err) || isStoredUnavailable(err, storedRoundHistory), nil
+	return automaticProjectRefused(err), nil
 }
 
 func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Driver, releaseProbe func(), worker int, operations []Operation, receipt pendingExhaustion) error {
