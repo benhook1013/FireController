@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"github.com/benhook1013/FireController/internal/adoptionholds"
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 func EnsureSchema(ctx context.Context, store *core.Store) error {
@@ -115,6 +116,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 		return err
 	}
 	if err := EnsureSchedulingSchema(ctx, store); err != nil {
+		return err
+	}
+	if err := store.EnsureSchema(ctx, "review_queue_priority", []string{reviews.QueuePrioritySchema}); err != nil {
 		return err
 	}
 	if err := ensureIntentRebindingSchema(ctx, store); err != nil {

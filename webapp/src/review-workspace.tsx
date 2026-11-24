@@ -4,7 +4,7 @@ import { reviewAttemptCause, reviewAttemptStatus } from './review-attempt-status
 import { ReviewAttemptBadge, ReviewLaneDetailsBadge } from './review-attempt-badge';
 import { useReviewPillCapacity } from './review-pill-capacity';
 import { useReloadWindow, validQueueWindow, type QueueWindow } from './reload-window';
-import { ReviewSchedulingBar, ReviewPullSchedulingControl } from './review-scheduling';
+import { ReviewSchedulingBar, ReviewPullSchedulingControl, ReviewPullPriorityControl } from './review-scheduling';
 import { reviewQueueDescription, ReviewOperationWaitBadge } from './review-operation-wait';
 import { CompactReviewFinding } from './review-finding-display';
 import { ReviewObligations } from './review-obligations';
@@ -112,7 +112,7 @@ export function runDisplayFingerprint(run: ReviewRunSummary, head: string): stri
     Boolean(head && run.head_sha)]);
 }
 export function pullDisplayFingerprint(pull: ReviewPullSummary): string {
-  return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability, pull.merge_status, ...(pull.parent_base_moved ? ['parent_base_moved'] : []),
+  return JSON.stringify([pull.number, pull.title, pull.state, pull.ci_state, pull.mergeability, pull.merge_status, ...(pull.priority ? ['priority'] : []), ...(pull.parent_base_moved ? ['parent_base_moved'] : []),
     pull.diff, pull.parent_pull_number, pull.is_draft, pull.merged_at, pull.complete, pull.head_sha, pull.run_count, [pull.run_counts.hosted, pull.run_counts.cli, pull.run_counts.subagent, pull.run_counts.manual], pull.attempt_count,
     pull.latest_attempts.map(attempt => [attempt.channel, attempt.state, attempt.reason, attempt.finished_at || attempt.started_at]),
     pull.recent_runs.map(run => runDisplayFingerprint(run, pull.head_sha))]);
@@ -265,13 +265,13 @@ export function ReviewPullFacts({ pull, status }: { pull: ReviewPullSummary; sta
   const missing = missingPullFacts(pull);
   const ci = reviewCIDisplay(pull);
   const ciScope = pull.parent_base_moved ? 'previous base' : pull.observation?.ci_gate_ref;
-  const primaryStatus = pull.state === 'merged' || pull.state === 'closed'
+  const primaryStatus = <>{pull.state === 'merged' || pull.state === 'closed'
     ? <span className={`badge review-state-${pull.state}`}>{reviewLabel(pull.state)}</span>
     : pull.state === 'open' && pull.is_draft
       ? <span className="badge review-state-draft">Draft</span>
       : pull.state === 'open' && status
         ? <span className={`badge review-position-${status.kind}`} title={status.description}>{status.text}</span>
-        : null;
+        : null}{pull.priority === true && <span className="badge review-priority-badge" title="This PR is directly marked as queue priority.">Priority</span>}</>;
   return <div className="review-pull-facts">{primaryStatus}{pull.state === 'merged' && pull.merged_at && <strong className="review-merged-age"><RelativeTime value={pull.merged_at} /></strong>}<span className="badge review-fact-pill review-diff"><ReviewBaseTarget pull={pull} />{pull.diff && <> · {pull.review_size ? <span className={`review-file-count${pull.review_size.above_suggested || pull.review_size.excess_files ? ' review-size-exceeded' : ''}`} title={reviewSizeTooltip(pull)}>{pull.diff.files.toLocaleString('en-US')}</span> : pull.diff.files.toLocaleString('en-US')} files · <strong className="review-additions">+{pull.diff.additions.toLocaleString('en-US')}</strong> / <strong className="review-deletions">−{pull.diff.deletions.toLocaleString('en-US')}</strong> lines</>}</span>{pull.state !== 'merged' && <span title={reviewCITooltip(pull, ci)} className={`badge review-fact-pill review-ci review-fact-${ci.state}`}>{ci.label}{ciScope ? ` · ${ciScope}` : ''}</span>}<ReviewMergeStatus pull={pull} /><ReviewObservationBadge value={pull.observation} />{missing.length > 0 && <details className="review-missing-facts"><summary>Missing PR details</summary><ul>{missing.map(detail => <li key={detail}>{detail}</li>)}</ul></details>}</div>;
 }
 // Global stored positions preserve gaps in filtered pages; legacy pages require known predecessors.
@@ -323,7 +323,7 @@ export function ReviewQueueRow({ pull, snapshot, order, progress, fronts, channe
     return badge?.kind === 'queued' && !pull.is_draft && position?.text === 'Queued' ? undefined : position;
   };
   const incoming = anchor && pull.state === 'open' && progress?.pull_number === pull.number ? progress.incoming_routes_pending : undefined;
-  return <ReviewRowDisplay id={anchor ? `review-pr-${pull.number}` : undefined} lifecycle={pull.state} rail={rail ?? !!order} position={position} positionLabel={order && (order.distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`)} number={pull.number} title={pull.title} url={external} className={`${pull.state==='open' && pull.is_draft ? 'review-row-draft ' : ''}${front ? 'review-row-front ' : ''}${badge ? `review-status-${badge.kind} ` : ''}${highlight}`} facts={<ReviewPullFacts pull={pull} status={badge} />} footer={<div className="review-row-footer-controls">{pull.state==='open' && <ReviewPullSchedulingControl number={pull.number} />}{incoming !== undefined && incoming > 0 && <Link className="review-details-link" to={reviewLink(home, 'pulls', pull.number, snapshot)}>{incoming} incoming routed {incoming === 1 ? 'finding' : 'findings'}</Link>}{footer === undefined ? <ReviewHistoryLink number={pull.number} snapshot={snapshot} /> : footer}</div>}><ReviewRunsView summaryPreview={deferPreview ? 'nearby' : 'eager'} readingPrefix={anchor ? `review-pr-${pull.number}` : undefined} number={pull.number} snapshot={snapshot} head={pull.head_sha} parentBaseMoved={pull.parent_base_moved === true} parentPullNumber={pull.parent_pull_number} historical={pull.state === 'merged' || pull.state === 'closed'} attempts={pull.latest_attempts} recentRuns={pull.recent_runs} expected={pull.run_count} channelTotals={pull.run_counts} progress={progress} positions={{hosted:channelPosition('hosted'),cli:channelPosition('cli')}} /></ReviewRowDisplay>;
+  return <ReviewRowDisplay id={anchor ? `review-pr-${pull.number}` : undefined} lifecycle={pull.state} rail={rail ?? !!order} position={position} positionLabel={order && (order.distance === undefined ? `Stored order ${position} on this page` : `Queue distance ${position}${front ? ': first open PR' : ''}`)} number={pull.number} title={pull.title} url={external} className={`${pull.state==='open' && pull.is_draft ? 'review-row-draft ' : ''}${front ? 'review-row-front ' : ''}${badge ? `review-status-${badge.kind} ` : ''}${highlight}`} facts={<ReviewPullFacts pull={pull} status={badge} />} footer={<div className="review-row-footer-controls">{pull.state==='open' && <><ReviewPullPriorityControl number={pull.number} /><ReviewPullSchedulingControl number={pull.number} /></>}{incoming !== undefined && incoming > 0 && <Link className="review-details-link" to={reviewLink(home, 'pulls', pull.number, snapshot)}>{incoming} incoming routed {incoming === 1 ? 'finding' : 'findings'}</Link>}{footer === undefined ? <ReviewHistoryLink number={pull.number} snapshot={snapshot} /> : footer}</div>}><ReviewRunsView summaryPreview={deferPreview ? 'nearby' : 'eager'} readingPrefix={anchor ? `review-pr-${pull.number}` : undefined} number={pull.number} snapshot={snapshot} head={pull.head_sha} parentBaseMoved={pull.parent_base_moved === true} parentPullNumber={pull.parent_pull_number} historical={pull.state === 'merged' || pull.state === 'closed'} attempts={pull.latest_attempts} recentRuns={pull.recent_runs} expected={pull.run_count} channelTotals={pull.run_counts} progress={progress} positions={{hosted:channelPosition('hosted'),cli:channelPosition('cli')}} /></ReviewRowDisplay>;
 }
 export function reviewQueueQuery(session: Session, key: readonly string[], view: 'recent' | 'merged', cursor = '', snapshot = 'current', fresh = false) {
   return { queryKey: [...key, 'reviews', snapshot, 'queue', view, cursor], queryFn: ({ signal }: { signal: AbortSignal }) => session.api.reviewQueue({ limit: pageSize, view, ...(cursor ? { cursor } : {}) }, signalFor(session, signal)), staleTime: Infinity, refetchInterval: 60_000, ...(fresh ? { refetchOnMount: 'always' as const } : {}) };

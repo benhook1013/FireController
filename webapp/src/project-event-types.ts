@@ -20,6 +20,7 @@ export const projectEventTypes = [
   'note.updated',
   'review.observed',
   'reviews.configured',
+  'review.queue_priority_changed',
   'reviews.policy_configured',
   'reviews.rounds_configured',
   'reviews.adoption_obligations_imported',

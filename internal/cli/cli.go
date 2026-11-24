@@ -87,6 +87,7 @@ type invocation struct {
 	reviewScheduling      *reviewSchedulingInvocation
 
 	reviewQueueChange   *reviewQueueChangeInvocation
+	reviewQueuePriority *reviewQueuePriorityInvocation
 	reviewQueueEdit     *reviewQueueEditInvocation
 	reviewImport        *reviewImportInvocation
 	subagentReview      *subagentReviewInvocation
@@ -312,6 +313,9 @@ func RunContext(ctx context.Context, args []string, env map[string]string, stdou
 	}
 	if call.ownerManagement != nil {
 		return executeOwnerManagement(requestCtx, ctx, service, call.ownerManagement, stdout, stderr)
+	}
+	if call.reviewQueuePriority != nil {
+		return executeReviewQueuePriority(requestCtx, ctx, service, call.reviewQueuePriority, stdout, stderr)
 	}
 	if call.reviewQueueChange != nil {
 		return executeReviewQueueChange(requestCtx, ctx, service, call.reviewQueueChange, stdout, stderr)
@@ -608,6 +612,9 @@ func parseInvocation(args []string) (invocation, bool) {
 		var ok bool
 		call.ownerManagement, ok = parseOwnerManagement(call.command+" "+call.subcommand, operationArgs)
 		return call, ok
+	}
+	if call.command == "reviews" && call.subcommand == "queue-priority" {
+		return parseReviewQueuePriority(call, operationArgs)
 	}
 	if call.command == "reviews" && (call.subcommand == "queue-add" || call.subcommand == "queue-move" || call.subcommand == "queue-remove" || call.subcommand == "queue-restore" || call.subcommand == "queue-reorder") {
 		return parseReviewQueueChange(call, operationArgs)

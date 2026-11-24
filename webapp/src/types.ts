@@ -5,6 +5,7 @@ export interface Worker {id: string; project_id: string; name: string; retired?:
 export interface PullScheduling {project_id: string; pull_number: number; revision: number; paused: boolean; reason: string; actor_id?: string; updated_at?: string}
 export interface ReviewScheduling {project_id: string; revision: number; automatic_hosted: boolean; automatic_cli?: boolean; paused_pulls: PullScheduling[]; authorizing_worker_id?: string; updated_at?: string; reason?: 'authorizer_unavailable'|'provider_hold'}
 export interface SchedulingReceipt {id: string; state: 'scheduling_configured'|'pull_scheduling_updated'; revision: number}
+export interface ReviewQueuePrioritySettings {project_id: string; revision: number; priority_pulls: number[]}
 export interface WorkerOptions extends PageOptions {include_retired?: boolean}
 export interface WorkerRetirementBlockers {count: number; ids: string[]}
 export interface WorkerRetirement {worker_id: string; retired: boolean; can_retire: boolean; blockers: {jobs: WorkerRetirementBlockers; notes: WorkerRetirementBlockers; messages: WorkerRetirementBlockers}}
@@ -59,7 +60,7 @@ export interface ReviewPullDiff {files: number; additions: number; deletions: nu
 export type ReviewRunCounts = Record<ReviewChannel, number>;
 export interface ReviewPullObservationHealth {state: 'not_enrolled'|'unavailable'|'waiting'|'current'|'comparison_changed'|'overdue'|'retrying'; checked_at?:string; last_success_at?:string; next_check_at?:string; error?:string; ci_checked_at?:string; ci_gate_ref?:string; ci_gate_state?:'unknown'|'pending'|'success'|'failure'|'not_required'; ci_error?:string; hosted_checked_at?:string; hosted_error?:string}
 export interface ReviewObserverHealth {state: 'running'|'unavailable'|'unconfigured'; started_at?:string}
-export interface ReviewPullSummary {parent_pull_number?: number; parent_base_moved?: true; review_size?: import('./review-size').ReviewSize;
+export interface ReviewPullSummary {priority?: true; parent_pull_number?: number; parent_base_moved?: true; review_size?: import('./review-size').ReviewSize;
   merge_status?: {state: 'ready'|'blocked'|'pending'|'unknown'; reason:string};observation?:ReviewPullObservationHealth;queue_position?: number; diff?: ReviewPullDiff; is_draft?: boolean; merged_at?: string; number: number; title: string; state: 'open'|'merged'|'closed'|'unknown'; head_sha: string; base_ref: string; base_sha: string; ci_state: 'unknown'|'pending'|'success'|'failure'|'not_required'; mergeability: 'unknown'|'mergeable'|'conflicting'; complete: boolean; run_count: number; run_counts: ReviewRunCounts; attempt_count: number; recent_runs: ReviewRunSummary[]; latest_attempts: ReviewAttemptSummary[]}
 export interface ReviewFindingRoute {id:string;target_pull_number:number;revision:number;state:"active"|"superseded";disposition:"unadjudicated"|"accepted"|"rejected";reason:string;actor:string;decided_at:string;fix_sha:string;proof_note:string;fixed_at:string}
 export interface ReviewOperationalProof { digest: string; note: string; actor_id: string; recorded_at: string }

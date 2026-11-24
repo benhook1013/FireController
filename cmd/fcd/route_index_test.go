@@ -134,6 +134,7 @@ func TestDaemonRouteIndex(t *testing.T) {
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/observations"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/policy"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/queue-sorting"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/queue-priority"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/queue/edits"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/rounds/adoption/preview"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/rounds/adoption/apply"},

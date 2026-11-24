@@ -2,10 +2,47 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ActionNotice, useBrowserAction } from './browser-actions';
 import { signalFor, useWorkspace } from './workspace';
-import type { PullScheduling, ReviewScheduling, SchedulingReceipt, Worker } from './types';
+import type { PullScheduling, ReviewScheduling, SchedulingReceipt, ReviewQueuePrioritySettings, Worker } from './types';
 import './review-scheduling.css';
 
 export const reviewSchedulingKey = (key: readonly string[]) => [...key, 'review-scheduling'];
+export const reviewQueuePriorityKey = (key: readonly string[]) => [...key, 'review-queue-priority'];
+
+// Invalidate the existing review family: both queue pages and current fronts
+// must converge to the server's new order, without sorting rows locally.
+export async function refreshReviewQueuePriority(client: ReturnType<typeof useQueryClient>, key: readonly string[]) {
+  await Promise.all([
+    client.invalidateQueries({ queryKey: reviewQueuePriorityKey(key) }),
+    client.invalidateQueries({ queryKey: [...key, 'reviews'] }),
+  ]);
+}
+
+export function ReviewPullPriorityControl({ number }: { number: number }) {
+  const { session } = useWorkspace();
+  return session.api.browserCapabilities?.allow_writes ? <ReviewPullPriorityEditor number={number} /> : null;
+}
+
+function ReviewPullPriorityEditor({ number }: { number: number }) {
+  const { session, key } = useWorkspace();
+  const client = useQueryClient();
+  // Only ReviewSchedulingBar fetches this project inventory. Row observers
+  // share its revision and never fetch or poll independently.
+  const project = useQuery<ReviewQueuePrioritySettings>({ queryKey: reviewQueuePriorityKey(key), enabled: false, staleTime: Infinity });
+  const action = useBrowserAction<{ revision: number; priority: boolean }, ReviewQueuePrioritySettings>(`queue-priority-${number}`,
+    (input, actionKey, signal) => session.api.setReviewQueuePriority(input.revision, [number], input.priority, actionKey, signal),
+    async () => { await refreshReviewQueuePriority(client, key); });
+  const priority = project.data?.priority_pulls.includes(number) ?? false;
+  const unavailable = !project.data || Boolean(project.error) || project.isFetching;
+  return <div className="review-pull-priority">
+    <button type="button" className="review-priority-toggle" aria-label={`Priority for PR #${number}`} aria-pressed={priority} disabled={action.busy || !action.locked && unavailable}
+      title="Promote this PR’s stack in Auto order."
+      onClick={() => { if (action.retained) void action.run(action.retained.input); else if (project.data) void action.run({ revision: project.data.revision, priority: !priority }); }}>
+      {action.busy ? 'Saving priority…' : action.locked ? 'Retry exact priority change' : 'Priority'}
+    </button>
+    {(Boolean(project.error) || Boolean(action.error) && !action.locked) && <button type="button" disabled={project.isFetching} onClick={() => { action.clearNotice(); void client.invalidateQueries({ queryKey: reviewQueuePriorityKey(key) }); }}>Reload priority settings</button>}
+    <ActionNotice error={action.error} done={action.done}>Priority updated.</ActionNotice>
+  </div>;
+}
 
 function SchedulingDetails({ label, children, onOpen }: { label: string; children: ReactNode; onOpen?(): void }) {
   const ref=useRef<HTMLDetailsElement>(null);
@@ -22,10 +59,13 @@ function SchedulingDetails({ label, children, onOpen }: { label: string; childre
 export function ReviewSchedulingBar() {
   const {session,key,ready}=useWorkspace();
   const query=useQuery({queryKey:reviewSchedulingKey(key),queryFn:({signal})=>session.api.reviewScheduling(signalFor(session,signal)),enabled:ready,staleTime:30_000,refetchInterval:60_000,retry:false});
+  const priority=useQuery({queryKey:reviewQueuePriorityKey(key),queryFn:({signal})=>session.api.reviewQueuePriority(signalFor(session,signal)),enabled:ready && session.api.browserCapabilities?.allow_writes===true,staleTime:30_000,refetchInterval:60_000,retry:false});
+  const priorityNotice=priority.error ? <span className="review-scheduling-status" role="status">Priority unavailable</span> : null;
   const value=query.data;
-  if (!value) return query.error ? <span className="review-scheduling-status" title="Refresh to retry loading scheduling settings.">Scheduling unavailable</span> : null;
+  if (!value) return <>{priorityNotice}{query.error ? <span className="review-scheduling-status" title="Refresh to retry loading scheduling settings.">Scheduling unavailable</span> : null}</>;
   const blocked=value.reason==='provider_hold'?'Provider hold':value.reason==='authorizer_unavailable'?'Authorizer unavailable':undefined;
   return <div className="review-scheduling-bar"><span className="review-scheduling-status" title="These settings control new automatic requests.">Automatic Hosted: {value.automatic_hosted?'On':'Off'} · Automatic CLI: {value.automatic_cli?'On':'Off'}</span>{blocked && <span className="review-scheduling-warning">{blocked}</span>}
+    {priorityNotice}
     {session.api.browserCapabilities?.allow_writes && <ProjectSchedulingEditor value={value} reload={async()=>{const result=await query.refetch();return result.data;}} />}
   </div>;
 }

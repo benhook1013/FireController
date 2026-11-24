@@ -171,6 +171,7 @@ type RunSummary struct {
 }
 
 type PullSummary struct {
+	Priority         bool                   `json:"priority,omitempty"`
 	ParentPullNumber int64                  `json:"parent_pull_number,omitempty"`
 	ParentBaseMoved  bool                   `json:"parent_base_moved,omitempty"`
 	ReviewSize       *reviewsize.Assessment `json:"review_size,omitempty"`

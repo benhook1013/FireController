@@ -14,6 +14,7 @@ import (
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 type schedulingBackupReader struct {
@@ -99,6 +100,9 @@ func schedulingBackupRows(t *testing.T, db *sql.DB) map[string][][]any {
 
 func TestSchedulingBackupRetainsNativeControlsAndInactiveRestore(t *testing.T) {
 	f, _, credential := schedulingBackupFixture(t)
+	if _, err := f.store.DB().Exec(`INSERT INTO review_queue_priority VALUES(?,1,'[2,4]')`, f.project); err != nil {
+		t.Fatal(err)
+	}
 	before := schedulingBackupRows(t, f.store.DB())
 	bundle := restoreBundle(t, f)
 	immutable := restoreTree(t, bundle.Path)
@@ -127,6 +131,10 @@ func TestSchedulingBackupRetainsNativeControlsAndInactiveRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	priority, err := reviews.ReadQueuePriority(t.Context(), tx, f.project)
+	if err != nil || priority.Revision != 1 || !reflect.DeepEqual(priority.PriorityPulls, []int64{2, 4}) {
+		t.Fatal("restore lost queue priority", priority, err)
+	}
 	if err := reviewexec.ValidateSchedulingSnapshot(t.Context(), tx); err != nil {
 		t.Fatal("revoked restored authors lost historical validity", err)
 	}

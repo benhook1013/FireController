@@ -60,6 +60,8 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('notes'); add('job'); add('note', id); add('note-history', id);
     } else if (type === 'review.activity_observed') {
       add('reviews', 'current', 'round-progress');
+    } else if (type === 'review.queue_priority_changed') {
+      add('review-queue-priority'); add('reviews', 'current');
     } else if (type === 'review.requested' || type === 'review.operation_updated') {
       add('reviews', 'current', 'round-progress');
       add('reviews', 'current', 'fronts');

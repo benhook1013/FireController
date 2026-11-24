@@ -20,7 +20,7 @@ var projectEventTypes = [...]string{
 	"workers.created", "workers.renamed", "workers.retired", "worker.pause_changed", "worker.primary_job_changed",
 	"note.created", "note.updated",
 	"reviews.adoption_obligations_imported", "reviews.adoption_obligation_resolved", "reviews.adoption_obligation_retargeted",
-	"review.observed", "reviews.configured", "reviews.policy_configured", "reviews.rounds_configured", "review.requested", "review.operation_updated", "review.activity_observed",
+	"review.observed", "reviews.configured", "reviews.policy_configured", "reviews.rounds_configured", "review.requested", "review.operation_updated", "review.activity_observed", "review.queue_priority_changed",
 	"review.evidence.adjudicated", "review.evidence.finalized", "review.evidence.fix_recorded", "review.evidence.routed",
 	"review.route.routed", "review.route.superseded", "review.route.adjudicated", "review.route.fix_recorded",
 }

@@ -14,11 +14,12 @@ import (
 )
 
 type queueWindowCursor struct {
-	View            string `json:"view"`
-	Snapshot        string `json:"snapshot"`
-	Position        int    `json:"position"`
-	Cutoff          string `json:"cutoff,omitempty"`
-	SortingRevision int64  `json:"sorting_revision,omitempty"`
+	View             string `json:"view"`
+	Snapshot         string `json:"snapshot"`
+	Position         int    `json:"position"`
+	Cutoff           string `json:"cutoff,omitempty"`
+	SortingRevision  int64  `json:"sorting_revision,omitempty"`
+	PriorityRevision int64  `json:"priority_revision,omitempty"`
 }
 
 func queueWindowAfter(view, after string, now time.Time) (queueWindowCursor, error) {
@@ -30,7 +31,7 @@ func queueWindowAfter(view, after string, now time.Time) (queueWindowCursor, err
 		return value, nil
 	}
 	value = queueWindowCursor{}
-	if strictjson.Decode([]byte(after), &value) != nil || value.View != view || value.Position < 0 || value.SortingRevision < 0 || value.Snapshot == "" || len(value.Snapshot) > 128 {
+	if strictjson.Decode([]byte(after), &value) != nil || value.View != view || value.Position < 0 || value.SortingRevision < 0 || value.PriorityRevision < 0 || value.Snapshot == "" || len(value.Snapshot) > 128 {
 		return value, validationError("Use a valid cursor from this queue view.")
 	}
 	if view == "recent" {
@@ -172,16 +173,22 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 		setMetaQueue(&response, meta)
 		cursor.Snapshot = meta.SnapshotID
 		sortMode, sortRevision := "auto", int64(0)
+		var priority QueuePriority
 		var configured []int64
 		if topology {
 			sortMode, sortRevision, configured, err = queueSortingConfiguration(ctx, tx, scope.ProjectID)
 			if err != nil {
 				return err
 			}
-			if token != "" && cursor.SortingRevision != sortRevision {
+			priority, err = ReadQueuePriority(ctx, tx, scope.ProjectID)
+			if err != nil {
+				return err
+			}
+			if token != "" && (cursor.SortingRevision != sortRevision || cursor.PriorityRevision != priority.Revision) {
 				return validationError("Queue sorting changed; reload the queue.")
 			}
 			cursor.SortingRevision = sortRevision
+			cursor.PriorityRevision = priority.Revision
 		}
 
 		var positions []int
@@ -207,6 +214,7 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			} else {
 				cutoff, _ := time.Parse(time.RFC3339Nano, cursor.Cutoff)
 				nodes = savedQueueNodes(nodes, configured)
+				markPriorityNodes(nodes, priority)
 				ordered, parents = orderedRecentNodesMode(nodes, repository, cutoff, sortMode)
 				if mergeProjection {
 					movedBases = parentBaseMovedFromParents(nodes, repository, parents)
@@ -276,6 +284,9 @@ func readQueueWindow(ctx context.Context, store *core.Store, scope core.Scope, v
 			if displayPositions != nil {
 				position = displayPositions[position]
 				item.ParentPullNumber = parents[item.Number]
+			}
+			if item.State == "open" {
+				_, item.Priority = slices.BinarySearch(priority.PriorityPulls, item.Number)
 			}
 			if movedBases[item.Number] {
 				item.ParentPullNumber = parents[item.Number]

@@ -2,3 +2,4 @@
 .review-scheduling-editor .review-scheduling-checkbox{display:flex;align-items:center;gap:6px}.review-scheduling-editor .review-scheduling-checkbox input{width:auto}
 
 .review-scheduling-menu:not([open])>.review-scheduling-editor{display:none}
+.review-pull-priority{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.75rem}.review-priority-toggle{font:inherit;font-weight:600;padding:3px 8px;border:1px solid var(--fc-surface_border,#cfccc7);border-radius:4px;background:var(--fc-surface_background,#fff);color:var(--fc-surface_muted,#666874);cursor:pointer}.review-priority-toggle[aria-pressed=true]{color:var(--fc-link,#9c2028);border-color:currentColor}.review-priority-toggle:disabled{cursor:default;opacity:.6}.review-pull-priority .notice,.review-pull-priority .action-success{margin:0}.review-pull-facts .review-priority-badge{color:var(--fc-link,#9c2028);border:1px solid currentColor;font-weight:700}

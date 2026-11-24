@@ -15,6 +15,7 @@ type queueNode struct {
 	baseSHA     string
 	state, base string
 	metadata    PullDisplayMetadata
+	priority    bool
 }
 
 // topologyOrders sorts only proven components into their existing slots. Draft
@@ -108,10 +109,12 @@ func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64
 		children[j] = append(children[j], i)
 	}
 	bad := map[int]bool{}
+	priority := map[int]bool{}
 	roots := map[int][]int{}
 	delivery := map[int]string{}
 	for i, n := range nodes {
 		g := find(i)
+		priority[g] = priority[g] || n.priority
 		// Without authoritative project configuration, conflicting observed delivery
 		// branches cannot establish which disconnected roots are independent.
 		bad[g] = bad[g] || invalid[i] || len(deliveryRefs) > 1
@@ -157,11 +160,13 @@ func topologyOrders(nodes []queueNode, repository int64) ([]queueNode, map[int64
 			walk(j)
 		}
 	}
-	for _, i := range independent {
-		walk(i)
-	}
-	for _, i := range stackRoots {
-		walk(i)
+	rootsInAutoOrder := append(independent, stackRoots...)
+	for _, prioritized := range []bool{true, false} {
+		for _, i := range rootsInAutoOrder {
+			if priority[find(i)] == prioritized {
+				walk(i)
+			}
+		}
 	}
 	result := slices.Clone(nodes)
 	next := 0
@@ -375,6 +380,11 @@ func OrderedExecutionQueue(ctx context.Context, tx *sql.Tx, project string, conf
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	priority, err := ReadQueuePriority(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	markPriorityNodes(nodes, priority)
 	ordered, _, _ := topologyOrders(nodes, repo)
 	order := slices.Clone(configured)
 	for i, n := range ordered {

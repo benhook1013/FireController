@@ -18,7 +18,7 @@ import type { ReviewFronts } from './review-fronts';
 import type { PresentationSnapshot, PresentationRevision, ProjectMetadataPage } from './types';
 import { newSessionID, sessionExpiry, sessionIdentity, sessionSelector } from './browser-session';
 import { validBackupHealth, type BackupHealth } from './backup-health-model';
-import type { ReviewScheduling, PullScheduling, SchedulingReceipt } from './types';
+import type { ReviewScheduling, PullScheduling, SchedulingReceipt, ReviewQueuePrioritySettings } from './types';
 import type { ReviewRoutedFindingsOptions, ReviewRoutedFindingsPage, ReviewRoutedFindingDetail } from './review-routed-findings';
 
 const maxBytes = 1 << 20;
@@ -295,6 +295,9 @@ function validPauseFields(value: Record<string, unknown>): boolean {
 function validWorkerPause(value: unknown, worker: string): value is WorkerPause {
   return record(value) && keys(value, ['worker_id', 'revision', 'paused', 'reason']) && value.worker_id === worker && nonnegative(value.revision) && validPauseFields(value) && (value.revision !== 0 || value.paused === false);
 }
+function validQueuePriority(value: unknown, project: string): value is ReviewQueuePrioritySettings {
+  return record(value) && keys(value, ['project_id', 'revision', 'priority_pulls']) && value.project_id === project && nonnegative(value.revision) && Array.isArray(value.priority_pulls) && value.priority_pulls.every(pullNumber) && new Set(value.priority_pulls).size === value.priority_pulls.length;
+}
 function validPullScheduling(value: unknown, project: string, number?: number): value is PullScheduling {
   if (!record(value) || !keys(value, ['project_id','pull_number','revision','paused','reason'], ['actor_id','updated_at']) || value.project_id !== project || !pullNumber(value.pull_number) || number !== undefined && value.pull_number !== number || !nonnegative(value.revision) || typeof value.paused !== 'boolean' || !text(value.reason,256,true) || /[\u0000-\u001f\u007f]/u.test(value.reason) || !value.paused && value.reason !== '' || value.actor_id !== undefined && !id(value.actor_id) || value.updated_at !== undefined && !assessmentTime(value.updated_at)) return false;
   return value.revision === 0 ? !value.paused && value.reason === '' && value.actor_id === undefined && value.updated_at === undefined : id(value.actor_id) && assessmentTime(value.updated_at);
@@ -521,8 +524,9 @@ function validObserver(value: unknown): boolean {
  return record(value) && keys(value,['state'],['started_at']) && ['running','unavailable','unconfigured'].includes(String(value.state)) && (value.state==='running' ? assessmentTime(value.started_at) : !Object.hasOwn(value,'started_at'));
 }
 function validReviewPull(value: unknown): value is ReviewPullSummary {
+  if (record(value) && Object.hasOwn(value, 'priority') && value.priority !== true) return false;
   if (record(value) && value.review_size!==undefined && !validReviewSize(value.review_size,Number(value.number))) return false;
-  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position', 'observation', 'merge_status', 'review_size', 'parent_pull_number', 'parent_base_moved']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure', 'not_required'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
+  if (!record(value) || !keys(value, ['number', 'title', 'state', 'head_sha', 'base_ref', 'base_sha', 'ci_state', 'mergeability', 'complete', 'run_count', 'run_counts', 'attempt_count', 'recent_runs', 'latest_attempts'], ['diff', 'is_draft', 'merged_at', 'queue_position', 'observation', 'merge_status', 'review_size', 'parent_pull_number', 'parent_base_moved', 'priority']) || !pullNumber(value.number) || !checkpointText(value.title, 500, true) || (typeof value.state !== 'string' || !['open', 'merged', 'closed', 'unknown'].includes(value.state)) || !sha(value.head_sha) || !checkpointText(value.base_ref, 256, false) || !sha(value.base_sha) || (typeof value.ci_state !== 'string' || !['unknown', 'pending', 'success', 'failure', 'not_required'].includes(value.ci_state)) || (typeof value.mergeability !== 'string' || !['unknown', 'mergeable', 'conflicting'].includes(value.mergeability)) || typeof value.complete !== 'boolean' || !nonnegative(value.run_count) || !nonnegative(value.attempt_count) || !Array.isArray(value.recent_runs) || value.recent_runs.length > Math.min(3, value.run_count) || !value.recent_runs.every(item => validReviewRun(item, Number(value.number))) || value.run_count > 0 && value.recent_runs.length === 0 || !Array.isArray(value.latest_attempts) || value.latest_attempts.length > Math.min(4, value.attempt_count) || !value.latest_attempts.every(validReviewAttempt) || value.attempt_count > 0 && value.latest_attempts.length === 0) return false;
   if (Object.hasOwn(value,'observation') && !validObservationHealth(value.observation)) return false;
   if (!record(value.run_counts) || !keys(value.run_counts, ['hosted', 'cli', 'subagent', 'manual']) || !Object.values(value.run_counts).every(nonnegative) || Object.values(value.run_counts).reduce<number>((sum, count) => sum + Number(count), 0) > Number(value.run_count)) return false;
   for (const channel of ['hosted', 'cli', 'subagent', 'manual']) if (value.recent_runs.filter(item => item.channel === channel && item.outcome === 'completed').length > Number(value.run_counts[channel])) return false;
@@ -818,6 +822,16 @@ export class Api {
     if (!id(worker) || !Number.isSafeInteger(revision) || revision<1 || revision>=Number.MAX_SAFE_INTEGER || !['auto','manual'].includes(mode) || !mutationKey(key)) throw new ApiError('invalid_request','Use the current queue sorting revision and selected worker.');
     return this.browserMutation(this.projectRoute('reviews/queue-sorting'),'POST',worker,key,{expected_revision:revision,mode},200,
       (value): value is QueueSortingReceipt => record(value) && keys(value,['id','state','revision']) && value.id===this.projectId && value.state==='configured' && value.revision===revision+1,signal);
+  }
+  async reviewQueuePriority(signal?: AbortSignal): Promise<ReviewQueuePrioritySettings> {
+    const value = await this.finiteGet(this.projectRoute('reviews/queue-priority'), signal, undefined, 64 << 10, assessmentJSON);
+    if (!validQueuePriority(value, this.projectId)) throw new ApiError('invalid_response', 'The service returned invalid queue priority settings.');
+    return value;
+  }
+  async setReviewQueuePriority(revision: number, numbers: number[], priority: boolean, key: string, signal?: AbortSignal): Promise<ReviewQueuePrioritySettings> {
+    if (!nonnegative(revision) || revision >= Number.MAX_SAFE_INTEGER || !Array.isArray(numbers) || numbers.length === 0 || numbers.length > 100 || !numbers.every((number, index) => pullNumber(number) && (index === 0 || numbers[index - 1] < number)) || typeof priority !== 'boolean' || !mutationKey(key)) throw new ApiError('invalid_request', 'Use the current priority revision and sorted PR numbers.');
+    return this.browserMutation(this.projectRoute('reviews/queue-priority'), 'POST', '', key, { expected_revision: revision, pull_numbers: numbers, priority }, 200,
+      (value): value is ReviewQueuePrioritySettings => validQueuePriority(value, this.projectId) && (value.revision === revision || value.revision === revision + 1) && numbers.every(number => value.priority_pulls.includes(number) === priority), signal);
   }
   async reviewScheduling(signal?: AbortSignal): Promise<ReviewScheduling> {
     const value=await this.finiteGet(this.projectRoute('reviews/scheduling'),signal,undefined,64<<10,assessmentJSON);
