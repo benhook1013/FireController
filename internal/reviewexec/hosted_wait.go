@@ -23,20 +23,17 @@ func operationWaitForResponse(wait *OperationWait, channel, version string) *Ope
 	if wait == nil || version != "1" && version != "2" && version != "3" && version != "5" {
 		return nil
 	}
-	copy := *wait
-	if version != "5" {
-		copy.QueueAheadPullNumber = 0
-	}
-	wait = &copy
 	if version == "1" && channel == "cli" && wait.BaselineAttemptID != "" {
 		return &OperationWait{Paused: wait.Paused}
 	}
-	if version != "3" && version != "5" {
-		copy := *wait
-		copy.CLIAllowance = nil
-		return &copy
+	visible := *wait
+	if version != "5" {
+		visible.QueueAheadPullNumber = 0
 	}
-	return wait
+	if version != "3" && version != "5" {
+		visible.CLIAllowance = nil
+	}
+	return &visible
 }
 
 // Keep engine-level held facts intact while preserving older strict HTTP shapes.

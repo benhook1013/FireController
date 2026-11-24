@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 )
 
@@ -123,4 +124,45 @@ func checkSelectionQuarantineCustody(t *testing.T, channel string) {
 	})
 	attemptCode(t, err, "storage_unavailable")
 
+}
+
+func TestSelectionQuarantineRefusesEqualNonTextActors(t *testing.T) {
+	f := schedulingFixtureWithQueue(t, []int64{2})
+	schedulingEnable(t, f, 0, true)
+	schedulingGenerate(t, f, true)
+	selectionNext(t, f, &refreshTestReader{})
+	r := schedulingLatest(t, f)
+	if r.State != "selected" || r.OperationID == "" {
+		t.Fatal("missing retained child")
+	}
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `PRAGMA ignore_check_constraints=ON`); err != nil {
+			return err
+		}
+		for _, change := range []struct{ query, id string }{
+			{`UPDATE review_operations SET actor_id=CAST(actor_id AS BLOB) WHERE id=?`, r.OperationID},
+			{`UPDATE review_automatic_selections SET actor_id=CAST(actor_id AS BLOB) WHERE selection_id=?`, r.ID},
+			{`UPDATE review_selections SET state='selecting',actor_id=CAST(actor_id AS BLOB) WHERE id=?`, r.ID},
+		} {
+			if _, err := tx.ExecContext(ctx, change.query, change.id); err != nil {
+				_, resetErr := tx.ExecContext(ctx, `PRAGMA ignore_check_constraints=OFF`)
+				return errors.Join(err, resetErr)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `PRAGMA ignore_check_constraints=OFF`); err != nil {
+			return err
+		}
+		moved, err := quarantineNativeSelection(ctx, tx, r.ProjectID, r.ID, "selecting", r.Revision)
+		if moved || !selectionCustodyUnproved(err) {
+			t.Fatalf("malformed retained actors proved custody: moved=%t err=%v", moved, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var custody int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_selection_quarantine WHERE selection_id=?`, r.ID).Scan(&custody); err != nil || custody != 0 {
+		t.Fatalf("unexpected custody record: count=%d err=%v", custody, err)
+	}
 }

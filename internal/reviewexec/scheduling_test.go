@@ -1328,7 +1328,7 @@ func TestSchedulingQueuedPauseDiagnosticPrecedence(t *testing.T) {
 				schedulingPause(t, f, pull, 0, true)
 				check := func(want string) {
 					t.Helper()
-					if got := f.e.queuedDiagnostic(t.Context(), scope, r.ID, r.Revision); got != want {
+					if got, _ := f.e.queuedDiagnosticDetails(t.Context(), scope, r.ID, r.Revision); got != want {
 						t.Fatalf("diagnostic=%q want=%q", got, want)
 					}
 				}
@@ -1379,7 +1379,7 @@ func TestSchedulingPausePreservesRetainedCooldown(t *testing.T) {
 			}
 			before := cliWaitRead(t, f, a.OperationID)
 			pause(0, true)
-			if got := f.e.queuedDiagnostic(t.Context(), scope, before.ID, before.Revision); got != "pull_scheduling_paused" {
+			if got, _ := f.e.queuedDiagnosticDetails(t.Context(), scope, before.ID, before.Revision); got != "pull_scheduling_paused" {
 				t.Fatal("quota/cooldown hid PR pause", got)
 			}
 			pause(1, false)

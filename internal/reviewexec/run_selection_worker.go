@@ -485,31 +485,58 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 	}()
 	return done, nil
 }
+
+type runCandidateCursor struct {
+	priority  int64
+	createdAt any
+	id        any
+}
+
 func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+	var cursor runCandidateCursor
+	for {
+		worked, err := e.runNextCandidate(ctx, readers, &cursor)
+		if !selectionCustodyUnproved(err) {
+			return worked, err
+		}
+		// Keep the refused linked row intact. The query advances strictly beyond
+		// this row for this scan; unrelated rows must not lose their workers.
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+	}
+}
+
+func (e *Engine) runNextCandidate(ctx context.Context, readers map[string]TargetReader, cursor *runCandidateCursor) (bool, error) {
 	var selected *Run
 	var configuration Configuration
 	var metadataPins map[int64]reviews.SourceMetadataPin
 	var repo int64
 	var changed string
 	var project, id string
-	var nativeProject, nativeID any
+	var nativeProject, nativeID, nativeCreatedAt any
+	var candidatePriority int64
 	var quarantined bool
 	var expected int64
 	err := retryRunSelectionLocal(ctx, func() error {
 		project, id, expected = "", "", 0
-		nativeProject, nativeID = nil, nil
+		nativeProject, nativeID, nativeCreatedAt = nil, nil, nil
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			// Request capacity is a scheduling constraint, not a terminal hold.
 			// Skip saturated projects before source work so they cannot occupy
 			// both selection workers or repeatedly reacquire provider facts.
 			// A linked selection with a non-native key cannot prove custody.
 			// Leave it intact and allow unrelated selections to proceed.
-			err := tx.QueryRowContext(ctx, `SELECT s.project_id,s.id,`+selectionClaimRevision+` FROM review_selections s
+			err := tx.QueryRowContext(ctx, `WITH candidates AS (
+ SELECT s.*,CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END AS run_priority
+ FROM review_selections s)
+ SELECT s.project_id,s.id,`+selectionClaimRevision+`,s.created_at,s.run_priority FROM candidates s
  WHERE s.state='queued'
+ AND (? IS NULL OR (s.run_priority,s.created_at,s.id)>(?,?,?))
  AND (s.operation_id IS NULL OR (typeof(s.project_id)='text' AND typeof(s.id)='text'))
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END,s.created_at,s.id LIMIT 1`, requestGlobalCapacity, requestProjectCapacity, preferredCLIRepository).Scan(&nativeProject, &nativeID, &expected)
+ ORDER BY s.run_priority,s.created_at,s.id LIMIT 1`, preferredCLIRepository, cursor.id, cursor.priority, cursor.createdAt, cursor.id, requestGlobalCapacity, requestProjectCapacity).Scan(&nativeProject, &nativeID, &expected, &nativeCreatedAt, &candidatePriority)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -519,6 +546,7 @@ func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (
 	if err != nil || nativeID == nil {
 		return false, err
 	}
+	cursor.priority, cursor.createdAt, cursor.id = candidatePriority, nativeCreatedAt, nativeID
 	var projectOK, idOK bool
 	project, projectOK = nativeProject.(string)
 	id, idOK = nativeID.(string)
@@ -675,6 +703,12 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						return
 					}
 					settle := state != "queued" && reason != "selection_changed"
+					// An exhausted local read did not verify the final front. Keep
+					// the accepted basis for unchanged-work suppression, but don't
+					// consume a new basis (e.g. a resumed PR) from this failed read.
+					if pull == 0 && reason == "local_read_unavailable" {
+						settle = false
+					}
 					if settle && pull == 0 && choice.automaticBasisRevision != 0 {
 						var currentBasis int64
 						currentBasis, resultErr = automaticChannelBasisRevision(ctx, tx, r.ProjectID, r.Channel)

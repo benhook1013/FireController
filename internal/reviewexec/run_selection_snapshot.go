@@ -74,18 +74,19 @@ func ValidateSelectionSnapshot(ctx context.Context, q EvidenceQuery) error {
 			if err != nil {
 				return err
 			}
-			if event.Origin != "" {
-				attributed := false
-				if hasScheduling {
-					_, err := readAutomaticSelectionAttribution(ctx, q, r)
-					if err != nil && !errors.Is(err, sql.ErrNoRows) {
-						return err
-					}
-					attributed = err == nil
+			attributed := false
+			if hasScheduling {
+				_, err := readAutomaticSelectionAttribution(ctx, q, r)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
 				}
-				if (event.Origin == selectionOriginAutomatic) != attributed || attributed && r.ExpectedPullNumber != 0 {
-					return schedulingUnavailable()
-				}
+				attributed = err == nil
+			}
+			// A legacy empty-origin event may still have a real acceptance sequence.
+			if event.sequence == 0 && (attributed || r.ExpectedPullNumber != 0) ||
+				event.Origin != "" && (event.Origin == selectionOriginAutomatic) != attributed ||
+				attributed && r.ExpectedPullNumber != 0 {
+				return schedulingUnavailable()
 			}
 			var configurationBody, policyBody string
 			if err = q.QueryRowContext(ctx, `SELECT CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_execution_config WHERE project_id=? AND revision=?`, r.ProjectID, r.ConfigurationRevision).Scan(&configurationBody); err != nil {
