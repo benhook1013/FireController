@@ -20,7 +20,7 @@ import { ReviewArchive, type ReviewArchivePage } from './review-archive';
 import { PageSkeleton, ReviewRoundPlaceholders, ReviewRoundsSkeleton } from './loading';
 import { useRetainedRead } from './retained-read';
 import { RestoringReadingPosition } from './reading-position';
-import { reviewQueueHeadHash, useReviewQueueJump, useReviewQueuePaginationScroll } from './review-queue-navigation';
+import { reviewQueueHeadHash, reviewQueueHeadTarget, useReviewQueueJump, useReviewQueuePaginationScroll } from './review-queue-navigation';
 export { reviewQueueHashTarget } from './review-queue-navigation';
 import { RelativeTime } from './relative-time';
 import { ReviewLaneDisplay, ReviewRoundPillDisplay, ReviewRowDisplay, reviewRoundCountText } from './review-display';
@@ -375,7 +375,8 @@ function ReviewQueueWindow({ embedded, history, jumpToHead }: { embedded: boolea
       setWindowNotice('The saved queue page is unavailable. Showing the first page.');
     }
   }, [query.error, paging.number]);
-  const requestPageScroll = useReviewQueuePaginationScroll(paging.cursor, !query.isFetching && !!page && page.snapshot_id === query.data?.snapshot_id, !!query.error);
+  const paginationHead = !history && paging.number === 1 ? reviewQueueHeadTarget(page) : undefined;
+  const requestPageScroll = useReviewQueuePaginationScroll(paging.cursor, !query.isFetching && !!page && page.snapshot_id === query.data?.snapshot_id, !!query.error, paginationHead);
   const navigation = { ...paging, reloadRetained: windowSaved && validQueueWindow(window),
     previous: () => { requestPageScroll(); paging.previous(); },
     next: (cursor: string) => { requestPageScroll(); paging.next(cursor); },

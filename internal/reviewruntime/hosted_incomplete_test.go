@@ -142,7 +142,11 @@ func TestRecoverHostedPublicationGraceNeedsFreshFinishedACK(t *testing.T) {
 	if err != nil || got.State != "uncertain" || recoveryRuntimeCount(t, f, "review_execution_reservations") != 1 {
 		t.Fatal("publication alone released capacity", got, err)
 	}
+	// A fresh acknowledgement can prove the command stopped even if a
+	// submitted publication is still present and its inventory is unsupported.
+	reviews, comments := reader.record.Snapshot.Reviews, reader.record.Snapshot.ReviewComments
 	unsupportedFinishedSnapshot(&reader.record.Snapshot, reader.record.ProviderActor, 100)
+	reader.record.Snapshot.Reviews, reader.record.Snapshot.ReviewComments = reviews, comments
 	got, err = recoverRuntime(t, f, captures, a, reader)
 	if err != nil || got.State != "failed" || got.Reason != reviewexec.HostedFinishedIncompleteReason || recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f, "review_execution_reservations") != 0 {
 		t.Fatal("fresh stop proof restarted elapsed publication grace", got, err)

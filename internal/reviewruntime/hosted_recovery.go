@@ -217,11 +217,11 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 			}
 			return result, err
 		}
-		if err == nil && (captured.Reason == "hosted_finished_inventory_unproven" || captured.publicationFinished) {
+		if err == nil && (captured.commandFinished || captured.publicationFinished) {
 			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			if settle && !finishedUnproven {
 				_, err = engine.Advance(ctx, project, attempt.ID, attempt.Revision, "uncertain", result.Reason, externalID)
-			} else if settle && finishedUnproven && captured.Reason == "hosted_finished_inventory_unproven" {
+			} else if settle && finishedUnproven && captured.commandFinished {
 				// A fresh, complete collection has again proved the original
 				// provider command finished. Missing inventory remains incomplete,
 				// but cannot occupy the repository lane indefinitely.

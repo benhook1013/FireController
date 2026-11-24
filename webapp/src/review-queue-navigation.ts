@@ -72,12 +72,18 @@ export function useReviewQueueJump(queue: ReviewQueue | undefined, hash: string,
 
 // Pagination is deliberate navigation, unlike background queue observations.
 // Wait for the replacement page instead of anchoring its temporary loading shell.
-export function useReviewQueuePaginationScroll(pageKey: string, ready: boolean, failed: boolean): () => void {
+export function useReviewQueuePaginationScroll(pageKey: string, ready: boolean, failed: boolean, headTarget?: string): () => void {
   const requested = useRef(false);
   useEffect(() => {
     if (failed) { requested.current = false; return; }
     if (!requested.current || !ready) return;
     const frame = requestAnimationFrame(() => {
+      const head = headTarget && document.getElementById(headTarget);
+      if (head) {
+        requested.current = false;
+        scrollToReviewQueueTarget(head);
+        return;
+      }
       const list = document.getElementById('review-queue-list');
       if (!list) return;
       requested.current = false;
@@ -87,7 +93,7 @@ export function useReviewQueuePaginationScroll(pageKey: string, ready: boolean, 
       retainReadingTarget('review-queue-list', edge);
     });
     return () => cancelAnimationFrame(frame);
-  }, [pageKey, ready, failed]);
+  }, [pageKey, ready, failed, headTarget]);
   return () => {
     requested.current = true;
     notifyReadingNavigation();

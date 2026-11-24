@@ -75,10 +75,13 @@ func TestHostedCurrentMarkedSummaryDecodesWithEitherAttributionPath(t *testing.T
 	f := submittedCurrentFixture(t)
 	review := &f.snapshot.Reviews[0]
 	review.Body = externalCurrentSubmission(review.HeadSHA, false) + "\n\n" + publicationTestMarker(1, 1)
-	for _, shape := range []string{"supported", "unknown prompt", "unclosed heading", "unrelated heading"} {
+	for _, shape := range []string{"supported", "unwrapped prompt", "unknown prompt", "unclosed heading", "unrelated heading"} {
 		t.Run(shape, func(t *testing.T) {
 			review := *review
 			switch shape {
+			case "unwrapped prompt":
+				review.Body = strings.Replace(review.Body, "</summary>\n<dl>\n<dd>\n\n```", "</summary>\n\n```", 1)
+				review.Body = strings.Replace(review.Body, "```\n\n</dd>\n</dl>\n</details>", "```\n\n</details>", 1)
 			case "unknown prompt":
 				review.Body = strings.Replace(review.Body, "Prompt to fix all issues", "Other prompt", 1)
 			case "unclosed heading":
@@ -88,17 +91,18 @@ func TestHostedCurrentMarkedSummaryDecodesWithEitherAttributionPath(t *testing.T
 			}
 			f := f
 			f.snapshot.Reviews = []HostedReview{review}
+			supported := shape == "supported" || shape == "unwrapped prompt"
 			got := externalDiscover(t, f)
-			if len(got) != 1 || got[0].Inventory.Complete != (shape == "supported") || len(got[0].Inventory.Findings) != 1 || got[0].Inventory.Publication.Batches[0].Body != review.Body {
+			if len(got) != 1 || got[0].Inventory.Complete != supported || len(got[0].Inventory.Findings) != 1 || got[0].Inventory.Publication.Batches[0].Body != review.Body {
 				t.Fatal("marked archive summary misclassified or rewrote source")
 			}
 			native := f.extract(t)
-			if native.Complete != (shape == "supported") || native.Publication.Trigger.State != "adopted" || len(native.Findings) != 1 {
+			if native.Complete != supported || native.Publication.Trigger.State != "adopted" || len(native.Findings) != 1 {
 				t.Fatal("native capture did not retain exact marked inventory", native.Reason)
 			}
 			parent := strings.Repeat("b", 40)
 			base, proven := ResolveHostedComparison(native.Publication, f.intent.HeadSHA, parent, parent)
-			if proven != (shape == "supported") || proven && base != parent {
+			if proven != supported || proven && base != parent {
 				t.Fatal("unexpected comparison proof for current marked review", proven, base)
 			}
 

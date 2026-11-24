@@ -34,7 +34,9 @@ type HostedPublication struct {
 	FinishedAt        time.Time
 	StandingZero      *HostedStandingZero
 	SubmittedReview   *HostedSubmittedReview
-	markedZero        bool
+	// CommandFinished is a strictly attributed terminal reply. It carries no inventory or coverage.
+	CommandFinished bool `json:"-"`
+	markedZero      bool
 }
 
 const publicationUUID = `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`
@@ -366,6 +368,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		result.State, result.Reason = "failed", "hosted_review_skipped"
 		return result, nil
 	}
+	result.CommandFinished = publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing)
 	batches := map[int]HostedReview{}
 	total := 0
 	for _, review := range result.EligibleReviews {
@@ -396,7 +399,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		if result.State == "attributed" || result.State == "ambiguous" {
 			return result, nil
 		}
-		if publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing) {
+		if result.CommandFinished {
 			result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 			return result, nil
 		}
@@ -451,7 +454,7 @@ func ResolveHostedPublication(snapshot HostedPublicationSnapshot, intent HostedT
 		if !completeInventory {
 			if total == 1 && len(result.EligibleReviews) == 1 && publicationCountAbsent(result) &&
 				snapshot.ReviewComments != nil && hostedReportedProcessingFailure(batches[1].Body) &&
-				publicationFinishedInventoryUnproven(snapshot, result, providerAuthor, closing) {
+				result.CommandFinished {
 				result.State, result.Reason = "uncertain", "hosted_finished_inventory_unproven"
 				return result, nil
 			}

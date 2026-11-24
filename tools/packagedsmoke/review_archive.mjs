@@ -436,6 +436,13 @@ try {
     const data = await response.json();
     const priority = data.items.find(item => item.number === number);
     need(data.snapshot_id !== config.snapshot && priority);
+    // Include a queue head after two merged cards on page one. The checked
+    // stale-comparison PR remains on page two to exercise retained overlays.
+    const head = data.items[2];
+    need(head?.state === 'merged' && head.number !== number);
+    head.state = 'open';
+    delete head.merged_at;
+    data.head_position = head.queue_position;
     resolvePaginationSource({snapshot:data.snapshot_id, queue:data.items.map(item=>item.number),
       priority:{pull_number:number, head_sha:priority.head_sha, base_sha:priority.base_sha, base_ref:priority.base_ref}});
     // Cursor reads keep an older source identity and refresh their live
@@ -486,13 +493,26 @@ try {
       const cursorReadsBefore = queueReads.filter(read=>read.cursor === 'mobile-page-two').length;
       await queue.getByRole('button',{name:`${direction} review queue`,exact:true}).click();
       await expect(queue.locator('.review-queue-row')).toHaveCount(count);
-      await expect.poll(() => current.page.evaluate(() => {
-        const list=document.getElementById('review-queue-list');
-        const edge=Math.max(0,document.querySelector('.mast')?.getBoundingClientRect().bottom ?? 0)+12;
+      await expect.poll(() => current.page.evaluate(returning => {
+        const list = document.getElementById('review-queue-list');
+        const headerEdge = Math.max(0, document.querySelector('.mast')?.getBoundingClientRect().bottom ?? 0) + 12;
+        let target = list, edge = headerEdge;
+        if (returning) {
+          const rows = [...list.querySelectorAll('.review-queue-row')];
+          const headIndex = rows.findIndex(row => row.classList.contains('review-row-front'));
+          if (headIndex < 0) return Infinity;
+          const preceding = rows[headIndex - 1];
+          if (innerWidth >= 651 && preceding?.classList.contains('review-row-merged')) {
+            target = preceding;
+          } else {
+            target = rows[headIndex];
+            edge = parseFloat(getComputedStyle(target).scrollMarginTop) || 0;
+          }
+        }
         // A short last page cannot scroll past the document bottom.
-        const delta=list.getBoundingClientRect().top-edge;
-        return Math.abs(Math.min(delta,document.documentElement.scrollHeight-innerHeight-scrollY));
-      })).toBeLessThan(3);
+        const delta = target.getBoundingClientRect().top - edge;
+        return Math.abs(Math.min(delta, document.documentElement.scrollHeight - innerHeight - scrollY));
+      }, direction === 'Previous')).toBeLessThan(3);
       need(await current.page.evaluate(()=>window.scrollY>0));
       need(new URL(current.page.url()).hash===hash);
       const moved = queue.locator(`#review-pr-${number}`);

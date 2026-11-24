@@ -22,7 +22,7 @@ The hero is one joined, two-tone surface, with project identity vertically cente
 
 Reads stay bounded and project-scoped. Reuse stored summaries and live invalidation; never expand every job brief, checkpoint, note archive or provider capture to paint the board. Expose continuation or partial coverage honestly at larger sizes, without presenting a partial page as the full project. Desktop and narrow layouts preserve readable lanes, a clear queue and stable loading geometry. On phones, the stacked identity panel contracts around its content rather than retaining the desktop panel's empty vertical space.
 
-On mobile, explicit queue Next and Previous navigation aligns the newly loaded queue list below the header, bounded by the document bottom for a short final page. It does not target the overall project page top. Initial loads, saved-position restoration, background observations and desktop pagination keep their existing behavior. Cursor and snapshot selection are unchanged.
+Explicit queue pagination aligns continuation pages below the header, bounded by the document bottom for a short final page. Returning to page one of the current queue uses the same target and alignment as the hero Review queue link. Queue history aligns to its list on every page. Initial loads, saved-position restoration and background observations do not trigger these jumps. Cursor and snapshot selection are unchanged.
 
 Pinned cursor pages retain ordinary 60-second polling for current health and size overlays; their fixed snapshots do not reconcile against current review fronts.
 

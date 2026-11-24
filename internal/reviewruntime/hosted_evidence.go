@@ -22,6 +22,7 @@ type CapturedHosted struct {
 
 	// Internal attribution fact, never final evidence or completion credit.
 	publicationFinished bool
+	commandFinished     bool
 	rejectionState      string
 }
 
@@ -49,6 +50,7 @@ func deriveHostedEvidence(ctx context.Context, captures *HostedCaptureStore, eng
 		result.Reason = "capture_invalid"
 		return result, nil
 	}
+	result.commandFinished = inventory.Publication.CommandFinished
 	var baseline HostedCaptureRecord
 	var baselineReason string
 	var baselineErr error

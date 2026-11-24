@@ -16,7 +16,11 @@ func (p *submittedReviewParser) currentPrompt(body string) bool {
 		return false
 	}
 	header, ok := p.text()
-	if !ok || !currentSubmittedPrompt.MatchString(header) || !p.take("<dl>", false) || !p.take("<dd>", false) {
+	if !ok || !currentSubmittedPrompt.MatchString(header) {
+		return false
+	}
+	wrapped := p.take("<dl>", false)
+	if wrapped && !p.take("<dd>", false) {
 		return false
 	}
 	fence, ok := p.next()
@@ -26,7 +30,7 @@ func (p *submittedReviewParser) currentPrompt(body string) bool {
 	for line, ok := p.next(); ok && line.hidden; line, ok = p.next() {
 		p.at++
 		if line.quote == 0 && strings.TrimSuffix(body[line.start:line.end], "\r") == "```" {
-			return p.close(true)
+			return p.close(wrapped)
 		}
 	}
 	return false
