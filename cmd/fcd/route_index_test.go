@@ -114,7 +114,7 @@ func TestDaemonRouteIndex(t *testing.T) {
 				if !strings.HasPrefix(route.Path, "/api/v1") || route.Method == "HEAD" {
 					t.Fatalf("invalid scope: %v", route)
 				}
-				for _, hidden := range []string{"browser-session", "/credentials", "/operator/", "/hooks/", "/import", "/rounds/adoption/", "/adoption-obligations/preview", "/adoption-obligations/apply", "retained-recovery", "/history/collections"} {
+				for _, hidden := range []string{"browser-session", "/credentials", "/operator/", "/hooks/", "/map/import", "/coordination/import", "/adoption-obligations/preview", "/adoption-obligations/apply", "/history/collections"} {
 					if strings.Contains(route.Path, hidden) {
 						t.Fatalf("private route advertised: %v", route)
 					}
@@ -126,6 +126,19 @@ func TestDaemonRouteIndex(t *testing.T) {
 				{Method: "GET", Path: "/api/v1/projects/{project_id}/vars"}, {Method: "GET", Path: "/api/v1/projects/{project_id}/vars/{key}/history"},
 				{Method: "GET", Path: "/api/v1/projects/{project_id}/presentation"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/requests"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/retained-recovery"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/settlement"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/execution/configuration"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/import/preview"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/import/apply"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/observations"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/policy"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/queue-sorting"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/queue/edits"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/rounds/adoption/preview"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/rounds/adoption/apply"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/transfer/preview"},
+				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/transfer/apply"},
 				{Method: "GET", Path: "/api/v1/projects/{project_id}/reviews/pulls/{number}"},
 				{Method: "PUT", Path: "/api/v1/projects/{project_id}/reviews/pulls/{pull_number}/following"},
 				{Method: "GET", Path: "/api/v1/projects/{project_id}/reviews/adoption-obligations"},
@@ -142,9 +155,6 @@ func TestDaemonRouteIndex(t *testing.T) {
 				{Method: "PUT", Path: "/api/v1/projects/{project_id}/vars/{key}"},
 				{Method: "PUT", Path: "/api/v1/projects/{project_id}/presentation"},
 				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/scheduling"},
-				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/policy"},
-				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/queue-sorting"},
-				{Method: "POST", Path: "/api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/settlement"},
 			} {
 				if present[route] {
 					t.Errorf("administrative route advertised: %v", route)
