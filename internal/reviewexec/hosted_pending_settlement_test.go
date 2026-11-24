@@ -133,9 +133,7 @@ func TestHostedPendingSettlementRejectsUnprovenBinding(t *testing.T) {
 	if err := f.store.DB().QueryRow(`SELECT body_json FROM review_hosted_observations WHERE attempt_id=?`, a.ID).Scan(&originalObservation); err != nil {
 		t.Fatal(err)
 	}
-	for _, token := range []string{f.writer, f.reader} {
-		settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), token, "deny-nonadmin", encoded(hostedAbandonmentBody(a))), 403, "forbidden")
-	}
+	settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.reader, "deny-reader", encoded(hostedAbandonmentBody(a))), 403, "forbidden")
 	// Each independent change is rolled back through exact fixture values so the
 	// matrix reuses one database without rebuilding unrelated schema per guard.
 	for _, tc := range []struct {
@@ -267,7 +265,7 @@ func TestHostedPendingSettlementExplicitAbandonActiveAndRestart(t *testing.T) {
 			stale := hostedAbandonmentBody(a)
 			stale["expected_revision"] = a.Revision - 1
 			settlementError(t, hostedSettlementCall(t, f, a, "stale-local-abandon", stale), 409, "review_attempt_revision_conflict")
-			r := hostedSettlementCall(t, f, a, "local-abandon", body)
+			r := f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "local-abandon", encoded(body))
 			if r.Code != 200 {
 				t.Fatal(r.Code, r.Body.String())
 			}
@@ -303,14 +301,14 @@ func TestHostedPendingSettlementExplicitAbandonActiveAndRestart(t *testing.T) {
 			// abandonment must never release that new reservation or create another.
 			next := f.start(t, attemptProject, f.enqueue(t, attemptProject, "later-explicit-local-intent", "hosted", 2, 1))
 			nextBefore := attemptState(t, f, next)
-			replay := hostedSettlementCall(t, f, a, "local-abandon", body)
+			replay := f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "local-abandon", encoded(body))
 			if replay.Code != 200 || replay.Body.String() != r.Body.String() || attemptState(t, f, next) != nextBefore || attemptCount(t, f.store, `SELECT count(*) FROM events WHERE event_type='review.hosted_settled' AND resource_id=?`, a.ID) != 1 {
 				t.Fatal("replay altered newer work or repeated audit", replay.Body.String())
 			}
 			verified := hostedSettlementBody(a)
-			settlementError(t, hostedSettlementCall(t, f, a, "local-abandon", verified), 409, "idempotency_conflict")
-			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE is_admin=1`)
-			settlementError(t, hostedSettlementCall(t, f, a, "local-abandon", body), 401, "unauthorized")
+			settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "local-abandon", encoded(verified)), 409, "idempotency_conflict")
+			admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+			settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "local-abandon", encoded(body)), 401, "unauthorized")
 		})
 	}
 }

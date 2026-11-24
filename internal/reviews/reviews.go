@@ -14,14 +14,14 @@ import (
 func Register(mux apiroutes.Registrar, store *core.Store, health ...ObservationHealthReader) {
 	registerSubagentReports(mux, store)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/activity", activity(store))
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/preview", previewTransfer(store))
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/apply", applyTransfer(store))
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/preview", previewImport(store))
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/apply", applyImport(store))
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/observations", func(w http.ResponseWriter, r *http.Request) {
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/preview", previewTransfer(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/transfer/apply", applyTransfer(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/preview", previewImport(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/import/apply", applyImport(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/observations", func(w http.ResponseWriter, r *http.Request) {
 		appendObservation(store, w, r)
 	})
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/queue/edits", editQueue(store))
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/queue/edits", editQueue(store))
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue", queue(store, health...))
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue/active", activeQueue(store))
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{number}", pull(store))

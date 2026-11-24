@@ -12,28 +12,29 @@ import (
 
 // ReviewOperationStatus omits private configuration and capture contents.
 type ReviewOperationStatus struct {
-	queuedCause        string
-	queuedReservation  *queuedReservation
-	SettlementTarget   *ReviewSettlementTarget     `json:"settlement_target,omitempty"`
-	Observer           *ReviewHostedObserverStatus `json:"observer,omitempty"`
-	Wait               *ReviewOperationWait        `json:"wait,omitempty"`
-	SourceRefusal      *ReviewSourceRefusal        `json:"source_refusal,omitempty"`
-	deploymentDraining bool
-	PendingEvidence    *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
-	ID                 string                 `json:"id"`
-	PullNumber         int64                  `json:"pull_number"`
-	Channel            string                 `json:"channel"`
-	State              string                 `json:"state"`
-	Revision           int64                  `json:"revision"`
-	Stage              string                 `json:"stage"`
-	Reason             string                 `json:"reason"`
-	AttemptID          string                 `json:"attempt_id"`
-	EvidenceID         string                 `json:"evidence_id,omitempty"`
-	ReviewFinishedAt   string                 `json:"review_finished_at,omitempty"`
-	EvidenceRecordedAt string                 `json:"evidence_recorded_at,omitempty"`
-	RetryNotBefore     string                 `json:"retry_not_before,omitempty"`
-	UpdatedAt          string                 `json:"updated_at"`
-	NextAction         string                 `json:"next_action"`
+	queuedCause          string
+	queuedReservation    *queuedReservation
+	HostedRecoveryTarget *RecoverHostedReviewRequest `json:"hosted_recovery_target,omitempty"`
+	SettlementTarget     *ReviewSettlementTarget     `json:"settlement_target,omitempty"`
+	Observer             *ReviewHostedObserverStatus `json:"observer,omitempty"`
+	Wait                 *ReviewOperationWait        `json:"wait,omitempty"`
+	SourceRefusal        *ReviewSourceRefusal        `json:"source_refusal,omitempty"`
+	deploymentDraining   bool
+	PendingEvidence      *ReviewPendingEvidence `json:"pending_evidence,omitempty"`
+	ID                   string                 `json:"id"`
+	PullNumber           int64                  `json:"pull_number"`
+	Channel              string                 `json:"channel"`
+	State                string                 `json:"state"`
+	Revision             int64                  `json:"revision"`
+	Stage                string                 `json:"stage"`
+	Reason               string                 `json:"reason"`
+	AttemptID            string                 `json:"attempt_id"`
+	EvidenceID           string                 `json:"evidence_id,omitempty"`
+	ReviewFinishedAt     string                 `json:"review_finished_at,omitempty"`
+	EvidenceRecordedAt   string                 `json:"evidence_recorded_at,omitempty"`
+	RetryNotBefore       string                 `json:"retry_not_before,omitempty"`
+	UpdatedAt            string                 `json:"updated_at"`
+	NextAction           string                 `json:"next_action"`
 }
 
 func (c *Client) ReviewOperationStatus(ctx context.Context, id string) (ReviewOperationStatus, error) {
@@ -96,6 +97,12 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 			return strictjson.ErrSyntax
 		}
 	}
+	if raw, present := fields["hosted_recovery_target"]; present {
+		var target RecoverHostedReviewRequest
+		if strictjson.Decode(raw, &target) != nil {
+			return strictjson.ErrSyntax
+		}
+	}
 	typ := reflect.TypeOf(ReviewOperationStatus{})
 	for i := 0; i < typ.NumField(); i++ {
 		if typ.Field(i).PkgPath != "" || typ.Field(i).Tag.Get("json") == "-" {
@@ -112,6 +119,15 @@ func decodeCompactOperationStatus(data []byte, dst any) error {
 }
 
 func validCompactOperationStatus(v ReviewOperationStatus) bool {
+	if target := v.HostedRecoveryTarget; target != nil {
+		settlement := v.SettlementTarget
+		if v.Channel != "hosted" || v.State != "failed" || v.Reason != "hosted_finished_incomplete" ||
+			ValidateRecoverHostedReview(v.AttemptID, *target) != nil || target.OperationID != v.ID ||
+			settlement == nil || target.ExpectedRevision != settlement.AttemptRevision || target.RepositoryID != settlement.RepositoryID ||
+			target.HeadSHA != settlement.HeadSHA || target.ExternalID != settlement.ExternalID {
+			return false
+		}
+	}
 	if !validReviewSettlementTarget(v.SettlementTarget, v.AttemptID) {
 		return false
 	}

@@ -3,8 +3,6 @@ package mcpadapter_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -27,12 +25,8 @@ func TestSchedulingSDKBoundControlsAndDiscovery(t *testing.T) {
 	engine.Register(mux)
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	managerCredential := filepath.Join(t.TempDir(), "manager.token")
-	if err := os.WriteFile(managerCredential, []byte(f.admin), 0600); err != nil {
-		t.Fatal(err)
-	}
-	managerProfile := profiles(t, map[string]profile.Context{"chosen": {Profile: "chosen", ServerURL: server.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}}, managerCredential)
-	manager := reviewControlsStdio(t, managerProfile, "chosen")
+	writerProfile := profiles(t, map[string]profile.Context{"chosen": {Profile: "chosen", ServerURL: server.URL, InstanceID: f.store.InstanceID(), ProjectID: f.project, WorkerID: f.sender}}, f.credential)
+	stdioWriter := reviewControlsStdio(t, writerProfile, "chosen")
 	writer := connect(t, f.adapter(t, server.URL, f.sender), "")
 	beforeProviders := f.providers.Load()
 	var initial client.ReviewScheduling
@@ -40,27 +34,26 @@ func TestSchedulingSDKBoundControlsAndDiscovery(t *testing.T) {
 	if initial.Revision != 0 || initial.AutomaticHosted || initial.PausedPulls == nil {
 		t.Fatal(initial)
 	}
-	diagnosticResult(t, call(t, writer, "review_scheduling_configure", map[string]any{"expected_revision": 0, "automatic_hosted": true, "idempotency_key": "writer-cannot-enable"}), "forbidden", false)
-	input := map[string]any{"expected_revision": 0, "automatic_hosted": true, "idempotency_key": "manager-enable"}
+	input := map[string]any{"expected_revision": 0, "automatic_hosted": true, "idempotency_key": "writer-enable"}
 	var first, replay client.ReviewRequestReceipt
-	decodeResult(t, call(t, manager, "review_scheduling_configure", input), &first)
-	decodeResult(t, call(t, manager, "review_scheduling_configure", input), &replay)
+	decodeResult(t, call(t, stdioWriter, "review_scheduling_configure", input), &first)
+	decodeResult(t, call(t, stdioWriter, "review_scheduling_configure", input), &replay)
 	if first != replay || first.ID != f.project || first.Revision != 1 {
 		t.Fatal(first, replay)
 	}
 	// CLI opt-in is independent; a legacy Hosted-only write preserves it.
-	decodeResult(t, call(t, manager, "review_scheduling_configure", map[string]any{"expected_revision": 1, "automatic_hosted": false, "automatic_cli": true, "idempotency_key": "manager-cli-enable"}), &first)
+	decodeResult(t, call(t, stdioWriter, "review_scheduling_configure", map[string]any{"expected_revision": 1, "automatic_hosted": false, "automatic_cli": true, "idempotency_key": "writer-cli-enable"}), &first)
 	var automatic client.ReviewScheduling
 	decodeResult(t, call(t, writer, "review_scheduling_read", nil), &automatic)
 	if automatic.AutomaticHosted || !automatic.AutomaticCLI || automatic.AuthorizingWorkerID != f.sender {
 		t.Fatal("CLI opt-in lost shared authorization", automatic)
 	}
-	decodeResult(t, call(t, manager, "review_scheduling_configure", map[string]any{"expected_revision": 2, "automatic_hosted": true, "idempotency_key": "manager-legacy-preserve"}), &first)
+	decodeResult(t, call(t, stdioWriter, "review_scheduling_configure", map[string]any{"expected_revision": 2, "automatic_hosted": true, "idempotency_key": "writer-legacy-preserve"}), &first)
 	decodeResult(t, call(t, writer, "review_scheduling_read", nil), &automatic)
 	if !automatic.AutomaticHosted || !automatic.AutomaticCLI {
 		t.Fatal("legacy configuration changed CLI opt-in", automatic)
 	}
-	decodeResult(t, call(t, manager, "review_scheduling_configure", map[string]any{"expected_revision": 3, "automatic_hosted": true, "automatic_cli": false, "idempotency_key": "manager-cli-disable"}), &first)
+	decodeResult(t, call(t, stdioWriter, "review_scheduling_configure", map[string]any{"expected_revision": 3, "automatic_hosted": true, "automatic_cli": false, "idempotency_key": "writer-cli-disable"}), &first)
 	decodeResult(t, call(t, writer, "review_scheduling_read", nil), &automatic)
 	if !automatic.AutomaticHosted || automatic.AutomaticCLI {
 		t.Fatal("explicit CLI disable was lost", automatic)
@@ -91,9 +84,9 @@ func TestSchedulingSDKBoundControlsAndDiscovery(t *testing.T) {
 		{"review_pull_scheduling_update", map[string]any{"pull_number": 7, "expected_revision": 2, "paused": nil, "idempotency_key": "null-pause"}},
 		{"review_pull_scheduling_update", map[string]any{"pull_number": 7, "expected_revision": 2, "paused": true, "reason": nil, "idempotency_key": "null-reason"}},
 	} {
-		diagnosticResult(t, call(t, manager, tc.name, tc.args), "invalid_arguments", false)
+		diagnosticResult(t, call(t, stdioWriter, tc.name, tc.args), "invalid_arguments", false)
 	}
-	listed, err := allDiscoveredTools(t, manager)
+	listed, err := allDiscoveredTools(t, stdioWriter)
 	if err != nil {
 		t.Fatal(err)
 	}

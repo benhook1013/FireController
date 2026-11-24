@@ -66,13 +66,13 @@ func TestSchedulingCLIAutomaticDefaultOffCancellationAndRestart(t *testing.T) {
 	schedulingCLIGenerate(t, f, true)
 }
 func TestSchedulingCLIAutomaticAuthorizerWithdrawalAndRestoreHold(t *testing.T) {
-	for _, kind := range []string{"management", "revoked", "retired", "disabled", "restore"} {
+	for _, kind := range []string{"lost-write", "revoked", "retired", "disabled", "restore"} {
 		t.Run(kind, func(t *testing.T) {
 			f := schedulingFixture(t)
 			schedulingCLIEnable(t, f, 0, true)
 			switch kind {
-			case "management":
-				admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+			case "lost-write":
+				admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 			case "revoked":
 				admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 			case "retired":
@@ -94,10 +94,10 @@ func TestSchedulingCLIAutomaticAuthorizerWithdrawalAndRestoreHold(t *testing.T) 
 	schedulingCLIGenerate(t, f, true)
 	selectionNext(t, f, &refreshTestReader{})
 	r := schedulingLatest(t, f)
-	admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+	admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 	a, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
 	if err != nil || a.ID != "" {
-		t.Fatal("withdrawn manager claimed attempt", a, err)
+		t.Fatal("withdrawn writer claimed attempt", a, err)
 	}
 }
 
@@ -223,7 +223,6 @@ func TestSchedulingCLIControlsAndCurrentHead(t *testing.T) {
 func TestSchedulingCLIPublicationAndAdjudicationRemainRequired(t *testing.T) {
 	f, a, _ := cliPublicationFixture(t, 1, "completed")
 	admissionSQL(t, f, `INSERT INTO workers VALUES(?,'selection-worker','Selector')`, attemptProject)
-	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 	one := int64(1)
 	_, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "single-pull", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}})
 	if err != nil {
@@ -258,7 +257,6 @@ func TestSchedulingCLIPartialFindingsHoldAndChangedComparisonAdvances(t *testing
 		t.Fatal(err)
 	}
 	admissionSQL(t, f, `INSERT INTO workers VALUES(?,'selection-worker','Selector')`, attemptProject)
-	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 	one := int64(1)
 	_, err := f.e.Configure(ctx, f.scope(t, attemptProject, f.admin, true), "partial-single-pull", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}})
 	if err != nil {

@@ -22,15 +22,16 @@ func TestQueueSortingHTTPPreservesConfigurationAndRetries(t *testing.T) {
 		t.Fatal(get.Code, get.Body.String())
 	}
 	body := `{"expected_revision":1,"mode":"manual"}`
-	denied := f.request("POST", path, f.writer, "denied-sort", body)
-	if denied.Code != 403 {
-		t.Fatal(denied.Code, denied.Body.String())
+	for _, token := range []string{f.reader, f.other} {
+		if denied := f.request("POST", path, token, "denied-sort", body); denied.Code != 403 {
+			t.Fatal(denied.Code, denied.Body.String())
+		}
 	}
-	first := f.request("POST", path, f.admin, "sort-manual", body)
+	first := f.request("POST", path, f.writer, "sort-manual", body)
 	if first.Code != 200 {
 		t.Fatal(first.Code, first.Body.String())
 	}
-	retry := f.request("POST", path, f.admin, "sort-manual", body)
+	retry := f.request("POST", path, f.writer, "sort-manual", body)
 	if retry.Code != 200 || retry.Body.String() != first.Body.String() {
 		t.Fatal("retry", retry.Code, retry.Body.String())
 	}
@@ -42,10 +43,17 @@ func TestQueueSortingHTTPPreservesConfigurationAndRetries(t *testing.T) {
 	if stale.Code != 409 {
 		t.Fatal("stale", stale.Code, stale.Body.String())
 	}
+	if w := f.request("POST", path, f.writer, "sort-auto", `{"expected_revision":2,"mode":"auto"}`); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	c, err = f.e.ReadExecutionConfiguration(t.Context(), f.scope(t, attemptProject, f.writer, false))
+	if err != nil || c.Revision != 3 || c.QueueSortMode != "auto" || c.CapabilityID != "test-capability" || !slices.Equal(c.Queue, []int64{2, 4}) {
+		t.Fatal(c, err)
+	}
 	for i, mode := range []string{`null`, `"bogus"`, `true`} {
-		w := f.request("POST", path, f.admin, fmt.Sprintf("invalid-sort-%d", i), `{"expected_revision":2,"mode":`+mode+`}`)
-		if w.Code == 200 {
-			t.Fatal("invalid accepted", mode)
+		w := f.request("POST", path, f.writer, fmt.Sprintf("invalid-sort-%d", i), `{"expected_revision":3,"mode":`+mode+`}`)
+		if w.Code != 400 {
+			t.Fatal("expected invalid mode rejection", mode, w.Code, w.Body.String())
 		}
 	}
 }

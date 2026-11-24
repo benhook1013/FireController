@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit project-management action. Actual [Subagent reviews](subagent-reviews.md) use normal worker recording and guarded updates over the same history and browser views. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
+The service stores project-scoped review observations and serves queue, PR history, run, finding, decision and fix-proof views from its own indexed database. Importing an observation is an explicit project-write action. Actual [Subagent reviews](subagent-reviews.md) use normal worker recording and guarded updates over the same history and browser views. Ordinary reads and browser refresh make no provider calls and do not construct another controller or renderer. Jobs and messaging do not depend on the reviews domain.
 
 This slice provides the read model for the [review engine](reviews.md). Optional native execution and revision-bound policy admission are described in the [execution boundary](review-execution.md). Native queue selection and explicit source refresh publish selected current display facts through the guarded path below; browser reads never trigger that provider work. Explicit [captured-comparison policy assessment](review-controls.md#captured-comparison-assessment) is a separate provider-free read. Historical counts, a completed attempt, CI success and a matching head are separate facts. This API never returns a merge-ready verdict or authorizes a merge. Projects without observations return an explicitly unconfigured workspace.
 
@@ -33,10 +33,10 @@ All paths below are relative to `/api/v1/projects/{project_id}`. Existing instan
 | `POST /reviews/subagent-reports` | Worker recording of one completed independent review; server-derived identities/counts, no provider execution. |
 | `GET /reviews/subagent-reports/{run_id}` | Full report and stable run revision for guarded updates. |
 | `POST /reviews/subagent-reports/{run_id}/updates` | Worker decision/fix batches and explicit finalization; original capture/counts retained. |
-| `POST /reviews/observations` | Project management or instance administration; revision-guarded observation append with a required idempotency key. |
-| `POST /reviews/import/preview` | Project management or instance administration; provider-free prepared observation preview; no receipt or write. |
-| `POST /reviews/import/apply` | Project management or instance administration; prepared observation apply bound to its preview, with the existing observation receipt semantics. |
-| `POST /reviews/queue/edits` | Project management or instance administration; bounded selected metadata, retirement and reactivation; preserves omitted history. |
+| `POST /reviews/observations` | Project write; revision-guarded observation append with a required idempotency key. |
+| `POST /reviews/import/preview` | Project write; provider-free prepared observation preview; no receipt or write. |
+| `POST /reviews/import/apply` | Project write; prepared observation apply bound to its preview, with the existing observation receipt semantics. |
+| `POST /reviews/queue/edits` | Project write; bounded selected metadata, retirement and reactivation; preserves omitted history. |
 | `GET /reviews/fronts` | Provider-free current per-channel assessment over a bounded verified source frame; see [fronts](review-fronts.md). |
 | `GET /reviews/queue` | Compact ordered PR summaries, including merged and closed history. |
 | `GET /reviews/pulls/{number}` | One compact PR summary, including latest attempt facts per channel. |
@@ -92,7 +92,7 @@ Normal native queue selection and explicit source refresh reuse the verified PR 
 
 Before provider I/O, pin each selected current entry's display facts. At publication, update only entries whose facts still match that baseline. Preserve concurrent attempts, findings, decisions, queue order and all historical snapshots. A concurrent display edit wins over an older in-flight provider response; a retired or missing entry is never reactivated by this path. Unchanged facts produce no snapshot or event. A changed head clears inherited completeness. Changing the head or base makes previously stored CI and mergeability unknown until separately observed. Optional display facts preserve known same-head values when the provider did not supply a replacement.
 
-Partial source publication does not advance the whole queue's observation timestamp. It is distinct from review history acquisition, explicit project-management queue edits and the initial missing-projection fallback. Review-front badges additionally require an authoritative per-channel selection projection; merge-head order and retained review counts cannot establish that permission.
+Partial source publication does not advance the whole queue's observation timestamp. It is distinct from review history acquisition, explicit project queue edits and the initial missing-projection fallback. Review-front badges additionally require an authoritative per-channel selection projection; merge-head order and retained review counts cannot establish that permission.
 
 Merged PRs remain in the queue as completed history. Removing a previously visible queue entry requires an explicit `superseded` or `defunct` retirement in the new observation. A PR already hidden by a retirement in that same previous snapshot may be omitted without repeating its reason. Explicit repeat retirement remains valid for a known previous parent or current retirement marker; an unknown target is refused. Full observations still replace current membership, while immutable retirement history prevents later native publication from silently resurfacing an omitted retired PR. Lifecycle changes never remove visible entries implicitly. Snapshots and retirement provenance remain retained; this slice does not introduce a pruning or project-deletion API.
 
@@ -110,11 +110,11 @@ One project-authorized read transaction pins the current snapshot on the first p
 
 Review retention is independent of Delivery selection. A worker can record an actual Subagent review for an unseen PR in one ordinary call; it remains privately readable without appearing in the queue. [Execution configuration](review-execution.md#operator-configuration-reference) selects and orders the same Delivery entries atomically; agents do not maintain a second visible queue. Explicit enrollment selects an existing review-only identity and preserves its reviews. No provider allowances or execution configuration are created by recording. See [Subagent reviews](subagent-reviews.md).
 
-Project-management queue edits provide observation-only setup and selected metadata repair, including direct visibility changes in the observation workspace. [Routine execution queue changes](review-execution.md#routine-queue-changes) own ordinary enrollment, retirement, restoration and order for configured execution. Project-management queue edits are available through the API, typed client and bound CLI/MCP. Their focused and packaged proof is recorded below.
+Project-write queue edits provide observation-only setup and selected metadata repair, including direct visibility changes in the observation workspace. [Routine execution queue changes](review-execution.md#routine-queue-changes) own ordinary enrollment, retirement, restoration and order for configured execution. Project-write queue edits are available through the API, typed client and bound CLI/MCP. Their focused and packaged proof is recorded below.
 
 Complete observations replace a small workspace and retain their per-request bounds. A large workspace uses additive transfer for selected history and `POST /api/v1/projects/{project_id}/reviews/queue/edits` for selected metadata, retirement and reactivation. Neither operation requires a complete project export or a lifetime PR ceiling.
 
-Queue edits require `manage` permission for the selected project or instance administration, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for management provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
+Queue edits require `write` permission for the selected project, an explicit idempotency key, the current `expected_revision`, the configured `repository_id` and a bounded `source` label for management provenance. The strict JSON document is limited to 256 KiB. Its `queue` and `retired` arrays select at most one hundred entries in total, with unique, disjoint PR numbers. At least one entry is required unless `order` is supplied. Omitted metadata and retirement arrays become empty; explicit null fields, unknown fields and duplicate keys are refused.
 
 Each `queue` entry contains `number`, `title`, `state`, `head_sha`, `base_ref`, `base_sha`, `ci_state` and `mergeability`, with optional `diff`, `is_draft` and `merged_at` under the [PR display facts contract](#optional-pr-display-facts). Omitted optional SHA/base strings become empty. Runs, attempts, findings, counts and completeness cannot be supplied. Without an explicit order, an existing PR keeps its position and retained producer histories; changing its head clears completeness. A new or previously absent PR appends with partial coverage. Explicitly selecting a retired PR reactivates it without inventing review evidence.
 
@@ -124,7 +124,7 @@ Each `retired` entry names a currently visible PR and its `superseded` or `defun
 
 Omitted PRs and records remain unchanged. Revision admission, the new snapshot, history references, compact summaries, receipt, event and public projection refresh commit together. A queue edit inherits the prior observation time and does no provider work; it cannot claim freshly collected source facts. Exact original-key replay returns its original receipt after later changes or restart, subject to current authorization. A changed request under the same key conflicts. Successful HTTP 201 returns only the snapshot `id`, new `revision` and `outcome: queue_edited`.
 
-The bound project-management CLI is:
+The bound project CLI is:
 
 ```sh
 fc reviews queue-edit --file /private/queue-edit.json --key retained-action-key

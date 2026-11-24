@@ -22,7 +22,6 @@ func schedulingFixture(t *testing.T) *attemptFixture {
 }
 func schedulingFixtureWithQueue(t *testing.T, queue []int64) *attemptFixture {
 	f := selectionFixtureWithQueue(t, queue)
-	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 	mux := http.NewServeMux()
 	f.e.Register(mux)
 	f.handler = mux
@@ -84,11 +83,11 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
-	if w = call("POST", "scheduling", f.writer, "permission", `{"expected_revision":0,"automatic_hosted":true}`); w.Code != 403 {
-		t.Fatal(w.Code, w.Body.String())
+	for _, token := range []string{f.reader, f.other} {
+		if w = call("POST", "scheduling", token, "permission", `{"expected_revision":0,"automatic_hosted":true}`); w.Code != 403 {
+			t.Fatal(w.Code, w.Body.String())
+		}
 	}
-	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 	w = call("POST", "scheduling", f.writer, "enable", `{"expected_revision":0,"automatic_hosted":true}`)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
@@ -119,9 +118,9 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 	if json.Unmarshal(w.Body.Bytes(), &p) != nil || p.Paused || p.Reason != "" || p.Revision != 2 {
 		t.Fatal(w.Body.String())
 	}
-	admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+	admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 	if w = call("POST", "scheduling", f.writer, "enable", `{"expected_revision":0,"automatic_hosted":true}`); w.Code != 403 {
-		t.Fatal("replay bypassed current management", w.Code)
+		t.Fatal("replay bypassed current write permission", w.Code)
 	}
 }
 func TestSchedulingPausedBothChannelsPreservesQueuedIdentityAndOperationPause(t *testing.T) {
@@ -199,13 +198,13 @@ func TestSchedulingAutomaticDefaultOffCancellationAndRestart(t *testing.T) {
 	schedulingGenerate(t, f, true)
 }
 func TestSchedulingAutomaticAuthorizerWithdrawalAndRestoreHold(t *testing.T) {
-	for _, kind := range []string{"management", "revoked", "retired", "disabled", "restore"} {
+	for _, kind := range []string{"lost-write", "revoked", "retired", "disabled", "restore"} {
 		t.Run(kind, func(t *testing.T) {
 			f := schedulingFixture(t)
 			schedulingEnable(t, f, 0, true)
 			switch kind {
-			case "management":
-				admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+			case "lost-write":
+				admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 			case "revoked":
 				admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
 			case "retired":
@@ -227,10 +226,10 @@ func TestSchedulingAutomaticAuthorizerWithdrawalAndRestoreHold(t *testing.T) {
 	schedulingGenerate(t, f, true)
 	selectionNext(t, f, &refreshTestReader{})
 	r := schedulingLatest(t, f)
-	admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+	admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 	a, err := f.e.StartAttempt(t.Context(), attemptProject, r.OperationID)
 	if err != nil || a.ID != "" {
-		t.Fatal("withdrawn manager claimed attempt", a, err)
+		t.Fatal("withdrawn writer claimed attempt", a, err)
 	}
 }
 func TestSchedulingPausedFrontSkipsIndependentAndStackedReviews(t *testing.T) {
@@ -357,7 +356,6 @@ func TestSchedulingProjectionRefreshDoesNotRegenerateAndValidatorPreservesRevoca
 	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "projected-one-pr", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
 		t.Fatal(err)
 	}
-	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 	schedulingEnable(t, f, 0, true)
 	schedulingGenerate(t, f, true)
 	selectionNext(t, f, &refreshTestReader{})
@@ -419,7 +417,6 @@ func TestSchedulingAutomaticIndependentProgressAcrossRetainedEvidence(t *testing
 		t.Run(map[bool]string{false: "independent", true: "dependent"}[dependent], func(t *testing.T) {
 			f, a, capture := hostedPublicationFixture(t, false)
 			admissionSQL(t, f, `INSERT INTO workers VALUES(?,'selection-worker','Selector')`, attemptProject)
-			admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 			if _, err := f.e.RecordReviewEvidence(t.Context(), attemptProject, a.ID, capture); err != nil {
 				t.Fatal(err)
 			}
@@ -771,7 +768,7 @@ func TestSchedulingPrepareControlRaceRefusesBeforeDispatch(t *testing.T) {
 				case "disable":
 					schedulingEnable(t, f, 1, false)
 				case "withdraw":
-					admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+					admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 				}
 				intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: o.ID, AttemptID: a.ID, HeadSHA: o.HeadSHA})
 				return Preparation{Anchor: anchor, Intent: intent}, err
@@ -790,7 +787,17 @@ func TestSchedulingPrepareControlRaceRefusesBeforeDispatch(t *testing.T) {
 			if externalHosted != 0 {
 				t.Fatal("admission sent an external action after a control change", externalHosted)
 			}
-			cli := f.enqueue(t, attemptProject, "independent-cli-after-control-race", "cli", 4, 1)
+			independent := selectionScope(t, f, attemptProject, f.admin, "write")
+			cliBody, err := f.e.Enqueue(t.Context(), independent, "independent-cli-after-control-race", Request{
+				ExpectedConfigurationRevision: 1, PullNumber: 4, Channel: "cli", HeadSHA: strings.Repeat("a", 40),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cli Receipt
+			if err := json.Unmarshal(cliBody, &cli); err != nil {
+				t.Fatal(err)
+			}
 			if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil {
 				t.Fatal("independent CLI work could not continue", err)
 			}

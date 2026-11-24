@@ -68,7 +68,7 @@ func (e *Engine) acceptedWaitDetached(ctx context.Context, scope core.Scope, id 
 
 // Wait subscribes before reading, so completion between admission and the first
 // read cannot be missed. Cancellation detaches only this waiter. The operation
-// remains durable and reads recheck current administrator/project/worker scope.
+// remains durable and reads recheck current project write and worker binding.
 func (e *Engine) Wait(ctx context.Context, scope core.Scope, id string, duration time.Duration) (Operation, error) {
 	if ctx == nil || !operationPattern.MatchString(id) || scope.PrincipalID == "" || duration < 0 || duration > 900*time.Second {
 		return Operation{}, invalid()

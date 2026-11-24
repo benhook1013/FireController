@@ -175,14 +175,14 @@ func TestEndedSettlementRejectsMissingAndChangedOriginalAuthority(t *testing.T) 
 	}
 }
 
-func TestEndedSettlementAdminGuardAuditFailureAndExactRetry(t *testing.T) {
+func TestEndedSettlementWriterGuardAuditFailureAndExactRetry(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli", "cli-interrupted"} {
 		t.Run(channel, func(t *testing.T) {
 			f, a := endedSettlementFixture(t, channel)
 			before := transferAuthorityRows(t, f, true)
-			settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "project-write-denied", encoded(hostedSettlementBody(a))), 403, "forbidden")
+			settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), f.reader, "project-read-denied", encoded(hostedSettlementBody(a))), 403, "forbidden")
 			if !reflect.DeepEqual(before, transferAuthorityRows(t, f, true)) {
-				t.Fatal("nonadmin refusal changed local work")
+				t.Fatal("reader refusal changed local work")
 			}
 			admissionSQL(t, f, `CREATE TRIGGER reject_ended_audit BEFORE INSERT ON events WHEN NEW.event_type IN ('review.hosted_settled','review.cli_settled') BEGIN SELECT RAISE(FAIL,'controlled audit failure'); END`)
 			before = transferAuthorityRows(t, f, true)
@@ -315,7 +315,7 @@ func TestInterruptedCLISettlementZeroFindings(t *testing.T) {
 		code    string
 	}{
 		{"false-stop", f.admin, attemptProject, hostedAbandonmentBody(a), 409, "review_settlement_unavailable"},
-		{"writer", f.writer, attemptProject, hostedSettlementBody(a), 403, "forbidden"},
+		{"reader", f.reader, attemptProject, hostedSettlementBody(a), 403, "forbidden"},
 		{"foreign-project", f.admin, otherAttemptProject, hostedSettlementBody(a), 404, "not_found"},
 	} {
 		t.Run(check.name, func(t *testing.T) {
@@ -330,7 +330,7 @@ func TestInterruptedCLISettlementZeroFindings(t *testing.T) {
 		})
 	}
 	before := transferAuthorityRows(t, f, true)
-	r := hostedSettlementCall(t, f, a, "interrupted-zero", hostedSettlementBody(a))
+	r := f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "interrupted-zero", encoded(hostedSettlementBody(a)))
 	if r.Code != 200 {
 		t.Fatalf("interrupted zero settlement: %d %s", r.Code, r.Body.String())
 	}
@@ -355,7 +355,7 @@ func TestInterruptedCLISettlementZeroFindings(t *testing.T) {
 		t.Fatal("reservation not released")
 	}
 	settled := transferAuthorityRows(t, f, true)
-	replay := hostedSettlementCall(t, f, a, "interrupted-zero", hostedSettlementBody(a))
+	replay := f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "interrupted-zero", encoded(hostedSettlementBody(a)))
 	if replay.Code != 200 || replay.Body.String() != r.Body.String() || !reflect.DeepEqual(settled, transferAuthorityRows(t, f, true)) {
 		t.Fatal("exact replay changed state")
 	}

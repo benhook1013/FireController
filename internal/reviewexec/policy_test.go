@@ -137,22 +137,20 @@ func TestPolicyCurrentAuthorizationAndProjectIsolation(t *testing.T) {
 	writer := f.scope(t, attemptProject, f.writer, false)
 	reader := evidenceReadScope(t, f, attemptProject, f.reader)
 	before := policyState(t, f)
-	for _, scope := range []core.Scope{writer, reader} {
-		_, err := f.e.ConfigurePolicy(t.Context(), scope, "denied", input)
-		attemptCode(t, err, "forbidden")
-	}
+	_, err := f.e.ConfigurePolicy(t.Context(), reader, "denied", input)
+	attemptCode(t, err, "forbidden")
 	if policyState(t, f) != before {
-		t.Fatal("write/read grant configured admin policy")
+		t.Fatal("read grant configured policy")
 	}
-	// Direct callers need not have obtained AdminScope; role is checked in Mutate.
-	directAdmin := f.scope(t, attemptProject, f.admin, false)
-	first := policyConfigure(t, f, directAdmin, "direct-admin", input)
+	first := policyConfigure(t, f, writer, "direct-writer", input)
 	otherScope := evidenceReadScope(t, f, otherAttemptProject, f.other)
-	_, err := f.e.ReadPolicy(t.Context(), otherScope)
+	_, err = f.e.ReadPolicy(t.Context(), otherScope)
 	attemptCode(t, err, "reviews_policy_unconfigured")
-	forged := reader
+	forged := writer
 	forged.ProjectID = otherAttemptProject
 	_, err = f.e.ReadPolicy(t.Context(), forged)
+	attemptCode(t, err, "forbidden")
+	_, err = f.e.ConfigurePolicy(t.Context(), forged, "foreign-write", input)
 	attemptCode(t, err, "forbidden")
 	otherAdmin := f.scope(t, otherAttemptProject, f.admin, true)
 	other := policyInput(0)
@@ -167,12 +165,12 @@ func TestPolicyCurrentAuthorizationAndProjectIsolation(t *testing.T) {
 	}
 	_, err = f.e.ReadPolicy(t.Context(), reader)
 	attemptCode(t, err, "unauthorized")
-	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE is_admin=1`); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE is_admin=1 OR id='exec-writer-cred'`); err != nil {
 		t.Fatal(err)
 	}
 	before = policyState(t, f)
-	for _, scope := range []core.Scope{admin, directAdmin} {
-		_, err = f.e.ConfigurePolicy(t.Context(), scope, "direct-admin", input)
+	for _, scope := range []core.Scope{admin, writer} {
+		_, err = f.e.ConfigurePolicy(t.Context(), scope, "direct-writer", input)
 		attemptCode(t, err, "unauthorized")
 	}
 	if policyState(t, f) != before || len(first) == 0 {

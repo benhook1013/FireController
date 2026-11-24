@@ -12,7 +12,7 @@ Optional source tooling exports the selected effective policy and its current un
 
 ## Carried obligations
 
-The native service accepts generic source-bound obligations through a project-management preview/apply facility, independently of display history and captured native evidence. A carried obligation identifies its source namespace and immutable key, repository and snapshot digest, kind (finding, route or result), retained summary and evidence references, and explicitly affected PRs. The service retains private original provenance. It does not interpret imported text as instructions, merge authority or proof of current-code coverage.
+The native service accepts generic source-bound obligations through a project-write preview/apply facility, independently of display history and captured native evidence. A carried obligation identifies its source namespace and immutable key, repository and snapshot digest, kind (finding, route or result), retained summary and evidence references, and explicitly affected PRs. The service retains private original provenance. It does not interpret imported text as instructions, merge authority or proof of current-code coverage.
 
 Open obligations hold new review admission and queue progression for their affected PRs in both channels, except a fully validated route explicitly assigned to the unassigned backlog. That route remains unresolved in source history, attention and combined readiness, but does not hold source reviews. Missing, malformed or conflicting receiver markers do not establish this exception. The guard applies before provider preparation and again at transactional operation admission and final dispatch. A finished grant, existing capture, channel closure, head change, reordered queue or another channel cannot bypass it. Unrelated PRs and projects retain their existing behavior. Local assessment and browser views explain the hold with bounded counts and a deliberate detail read; ordinary calls do not print the imported ledger.
 
@@ -32,7 +32,7 @@ The opt-in synthetic history measurement runs with `FC_ADOPTION_COST_BENCH=1 go 
 
 ## Bound commands and authority
 
-Import preview/apply require `manage` permission for the selected project or instance administration, plus a valid project worker. Ordinary project read/write permission is insufficient. CLI and MCP use the explicitly selected bound profile, and current authority is rechecked for preview, apply and exact-key replay. Listing, reading, retargeting and resolving use the selected project profile; retargeting and resolution require ordinary project write permission and a valid project worker, without an administrator or Overseer handoff. Ordinary commands remain compact and provider-free:
+Import preview/apply require `write` permission for the selected project and a valid project worker. CLI and MCP use the explicitly selected bound profile, and current authority is rechecked for preview, apply and exact-key replay. Listing, reading, retargeting and resolving use the selected project profile; retargeting and resolution require ordinary project write permission and a valid project worker, without an administrator or Overseer handoff. Ordinary commands remain compact and provider-free:
 
 ```sh
 fc reviews obligations adopt preview --file /private/obligations.json
@@ -62,7 +62,7 @@ The native HTTP contract uses the following codes for guarded changes and source
 | `not_found` | The selected project, worker, obligation or linked retained source is absent in the bound scope. | Verify the binding and identifier. A policy link requires its matching obligation source to be retained in that project first; do not treat absence as clearance. |
 | `repository_changed` | A retained obligation source belongs to a different repository from the project's current binding. | Stop and have the repository/source binding verified. Retrying with a newer revision does not repair provenance. |
 | `adoption_obligation_not_route` | Retargeting an open `finding` or `result` obligation after its revision/status guard passes. | Stop retargeting it. Only `route` obligations can change receiver; resolution still requires actual completion evidence. |
-| `forbidden` | Required project-management, instance-administration or project-write permission or worker attribution is missing, including on exact-key replay. | Stop until the required authority and valid project-worker binding are available. A previous receipt does not authorize its retrieval after permission loss. |
+| `forbidden` | Required project-write permission or worker attribution is missing, including on exact-key replay. | Stop until the required authority and valid project-worker binding are available. A previous receipt does not authorize its retrieval after permission loss. |
 | `unauthorized` | Authentication is missing, invalid, expired or revoked, including on exact-key replay. | Restore valid authentication before retrying the unchanged original request/key; do not replace the key to bypass revocation. |
 
 ## Policy and obligation linkage

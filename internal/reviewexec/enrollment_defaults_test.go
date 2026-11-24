@@ -204,12 +204,12 @@ func TestEnrollmentPreservesExplicitPreparedAdoptionBeforeExecutionExists(t *tes
 	}
 }
 
-func TestEnrollmentDefaultsRollbackWithConfigurationAndRejectNonAdmin(t *testing.T) {
+func TestEnrollmentDefaultsRollbackWithConfigurationAndRejectNonOperatorBinding(t *testing.T) {
 	f := newAttemptFixture(t)
 	c := enrollmentConfiguration(0, []int64{2}, []string{"hosted", "cli"})
 	before := enrollmentState(t, f)
 	_, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.writer, false), "not-admin", c)
-	attemptCode(t, err, "forbidden")
+	attemptCode(t, err, "operator_capability_binding_required")
 	if enrollmentState(t, f) != before {
 		t.Fatal("non-admin enrollment changed state")
 	}

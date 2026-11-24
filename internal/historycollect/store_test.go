@@ -2,8 +2,6 @@ package historycollect
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -281,31 +279,17 @@ func TestCollectionStoreAuthorityIsCurrentAndExplicit(t *testing.T) {
 	collectionStoreCode(t, err, "worker_required")
 	_, err = e.Read(context.Background(), f.scope(t, other, ow, f.admin), receipt.ID)
 	collectionStoreCode(t, err, "not_found")
-	for _, write := range []bool{false, true} {
-		token := core.NewID("test_credential")
-		sum := sha256.Sum256([]byte(token))
-		permissions := `["read"]`
-		if write {
-			permissions = `["read","write"]`
-		}
-		response := f.request(t, "POST", "/api/v1/projects/"+p+"/credentials", f.admin, "", `{"token_sha256":"`+hex.EncodeToString(sum[:])+`","permissions":`+permissions+`}`, 200)
-		var grant struct {
-			ID string `json:"id"`
-		}
-		if err = json.Unmarshal(response.Body.Bytes(), &grant); err != nil {
-			t.Fatal(err)
-		}
-		ordinary := f.scope(t, p, w, token)
-		_, err = e.Enqueue(context.Background(), ordinary, core.NewID("key"), Selection{PullNumbers: []int64{47}})
-		collectionStoreCode(t, err, "forbidden")
-		_, err = e.Read(context.Background(), ordinary, receipt.ID)
-		collectionStoreCode(t, err, "forbidden")
-		f.request(t, "DELETE", "/api/v1/projects/"+p+"/credentials/"+grant.ID, f.admin, "", `{}`, 200)
-		_, err = e.Enqueue(context.Background(), ordinary, core.NewID("key"), Selection{PullNumbers: []int64{47}})
-		collectionStoreCode(t, err, "unauthorized")
-		_, err = e.Read(context.Background(), ordinary, receipt.ID)
-		collectionStoreCode(t, err, "unauthorized")
-	}
+	token, grant := collectionGrant(t, f, p, w, `["read"]`)
+	reader := f.scope(t, p, w, token)
+	_, err = e.Enqueue(context.Background(), reader, core.NewID("key"), Selection{PullNumbers: []int64{47}})
+	collectionStoreCode(t, err, "forbidden")
+	_, err = e.Read(context.Background(), reader, receipt.ID)
+	collectionStoreCode(t, err, "forbidden")
+	f.request(t, "DELETE", "/api/v1/projects/"+p+"/credentials/"+grant, f.admin, "", `{}`, 200)
+	_, err = e.Enqueue(context.Background(), reader, core.NewID("key"), Selection{PullNumbers: []int64{47}})
+	collectionStoreCode(t, err, "unauthorized")
+	_, err = e.Read(context.Background(), reader, receipt.ID)
+	collectionStoreCode(t, err, "unauthorized")
 	session := strings.Repeat("b", 32)
 	response := f.request(t, "POST", "/api/v1/projects/"+p+"/browser-session", f.admin, "", `{"session_id":"`+session+`"}`, 200)
 	r := f.scopeRequest(p, w, "")
@@ -403,7 +387,9 @@ func TestCollectionStoreResumeRequiresInitiatingWorker(t *testing.T) {
 	collectionStorePause(t, f, receipt.ID)
 	paused := collectionStoreRead(t, e, other, receipt.ID)
 	before := collectionStoreRows(t, f)
-	_, err := e.Change(t.Context(), other, receipt.ID, "binding-resume", "resume", paused.Revision)
+	_, err := e.Enqueue(t.Context(), other, "binding-enqueue", Selection{PullNumbers: []int64{47, 12}})
+	collectionStoreCode(t, err, "idempotency_conflict")
+	_, err = e.Change(t.Context(), other, receipt.ID, "binding-resume", "resume", paused.Revision)
 	collectionStoreCode(t, err, "collection_binding_changed")
 	var refusal *core.Error
 	if !errors.As(err, &refusal) || refusal.Status != 409 {
@@ -419,8 +405,11 @@ func TestCollectionStoreResumeRequiresInitiatingWorker(t *testing.T) {
 	if resumed.State != "queued" || resumed.Revision != paused.Revision+1 || resumed.PassNumber != paused.PassNumber+1 || resumed.Position != (Position{PullIndex: 1, Resource: "review_comments", Page: 1}) || !reflect.DeepEqual(resumed.Selection, paused.Selection) {
 		t.Fatal("initiating binding did not resume its selected unfinished resource")
 	}
-	if len(f.provider.calls) != 0 {
-		t.Fatal("resume binding checks invoked provider")
+	before = collectionStoreRows(t, f)
+	_, err = e.Change(t.Context(), other, receipt.ID, "binding-resume", "resume", paused.Revision)
+	collectionStoreCode(t, err, "idempotency_conflict")
+	if collectionStoreRows(t, f) != before || len(f.provider.calls) != 0 {
+		t.Fatal("cross-binding replay changed durable rows or invoked provider")
 	}
 }
 

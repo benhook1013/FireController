@@ -8,7 +8,7 @@ import (
 
 func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management"} {
+		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-write"} {
 			t.Run(channel+"/"+change, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
 				automatic := change != "explicit-pause"
@@ -56,8 +56,8 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 						}
 					case "revoke":
 						admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
-					case "lost-management":
-						admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+					case "lost-write":
+						admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 					}
 					intent := ""
 					if channel == "hosted" {

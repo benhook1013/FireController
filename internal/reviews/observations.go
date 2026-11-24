@@ -287,7 +287,7 @@ func runOpaqueID(projectID, source, sourceRunID string) string {
 }
 
 func appendObservation(store *core.Store, w http.ResponseWriter, r *http.Request) {
-	scope, err := store.AdminScope(r)
+	scope, err := store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return

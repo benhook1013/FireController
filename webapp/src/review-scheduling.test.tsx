@@ -15,7 +15,7 @@ function fixture(writes:boolean,manager:boolean) {
 }
 describe('compact review scheduling controls',()=>{
   it.each([[false,false],[true,false],[true,true]])('keeps readonly/writer/manager boundaries (%s,%s)',(writes,manager)=>{
-    const f=fixture(writes,manager);try {const html=f.render();expect(html).toContain('Automatic Hosted: On');expect(html).toContain('Automatic CLI: On');expect(html).toContain('Provider hold');expect(html).toContain('Reviews paused');expect(html).toContain('Prepared &lt;fixes&gt;');expect(html.includes('<summary>Scheduling</summary>')).toBe(manager);expect(html.includes('<summary>Resume reviews</summary>')).toBe(writes);expect(html.includes('Authorizing worker')).toBe(manager);for(const read of [f.api.reviewScheduling,f.api.pullScheduling,f.api.workers]) expect(read).not.toHaveBeenCalled();}finally{f.client.clear();}
+    const f=fixture(writes,manager);try {const html=f.render();expect(html).toContain('Automatic Hosted: On');expect(html).toContain('Automatic CLI: On');expect(html).toContain('Provider hold');expect(html).toContain('Reviews paused');expect(html).toContain('Prepared &lt;fixes&gt;');expect(html.includes('<summary>Scheduling</summary>')).toBe(writes);expect(html.includes('<summary>Resume reviews</summary>')).toBe(writes);expect(html.includes('Authorizing worker')).toBe(writes);for(const read of [f.api.reviewScheduling,f.api.pullScheduling,f.api.workers]) expect(read).not.toHaveBeenCalled();}finally{f.client.clear();}
   });
   it('omits any guessed off/paused state before the shared project read exists',()=>{
     const f=fixture(true,true);f.client.clear();try {expect(f.render()).not.toContain('Automatic Hosted: Off');expect(f.api.pullScheduling).not.toHaveBeenCalled();}finally{f.client.clear();}

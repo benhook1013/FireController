@@ -54,7 +54,6 @@ func TestSchedulingAutomaticHistoryChurnPreservesFactsAndDedupe(t *testing.T) {
 	if _, err := f.e.Configure(t.Context(), f.scope(t, attemptProject, f.admin, true), "one-target", Configuration{ExpectedRevision: &one, CapabilityID: "test-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}); err != nil {
 		t.Fatal(err)
 	}
-	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-writer-cred'`)
 	schedulingEnable(t, f, 0, true)
 	schedulingGenerate(t, f, true)
 	selectionNext(t, f, &refreshTestReader{})

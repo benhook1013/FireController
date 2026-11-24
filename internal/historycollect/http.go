@@ -22,7 +22,7 @@ func (e *Engine) Register(mux apiroutes.Registrar) {
 }
 
 func (e *Engine) pagesHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -49,7 +49,7 @@ func (e *Engine) pagesHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) captureHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -76,7 +76,7 @@ func responseDeadline(w http.ResponseWriter, seconds int) error {
 
 func (e *Engine) enqueueHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -156,7 +156,7 @@ func acceptedWaitError(w http.ResponseWriter, id string, err error) {
 
 func (e *Engine) readHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Vary", "Prefer")
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -185,7 +185,7 @@ func (e *Engine) readHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) changeHTTP(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, err := e.store.AdminScope(r)
+		scope, err := e.store.Scope(r, "write")
 		if err != nil {
 			core.WriteError(w, err)
 			return

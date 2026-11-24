@@ -141,6 +141,29 @@ func recoverInterrupted(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// The background lane has retained identity, not the request credential. Check
+// for a current write grant (or instance administration) for that principal,
+// preserving any connector's exact project and worker binding.
+func checkRetainedWriter(ctx context.Context, tx *sql.Tx, scope core.Scope) error {
+	if err := checkBoundWorker(ctx, tx, scope); err != nil {
+		return err
+	}
+	var allowed bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials c
+		LEFT JOIN connector_credentials b ON b.credential_id=c.id
+		WHERE c.principal_id=? AND c.revoked=0
+		AND (b.credential_id IS NULL OR (c.is_admin=0 AND b.project_id=? AND b.worker_id=?))
+		AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1)))`,
+		scope.PrincipalID, scope.ProjectID, scope.WorkerID, scope.ProjectID).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return core.Fail("forbidden", "Project write permission is required.", 403)
+	}
+	return nil
+}
+
 func (e *Engine) binding(ctx context.Context, tx *sql.Tx, r retainedOperation) (string, error) {
 	var repositoryID int64
 	if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, r.ProjectID).Scan(&repositoryID); err != nil {
@@ -149,10 +172,10 @@ func (e *Engine) binding(ctx context.Context, tx *sql.Tx, r retainedOperation) (
 	if repositoryID != r.RepositoryID || r.fingerprint != e.fingerprint {
 		return "configuration_changed", nil
 	}
-	err := checkActor(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker})
+	err := checkRetainedWriter(ctx, tx, core.Scope{ProjectID: r.ProjectID, PrincipalID: r.actor, WorkerID: r.worker})
 	if err != nil {
 		var failure *core.Error
-		if errors.As(err, &failure) && (failure.Status == 400 || failure.Status == 403 || failure.Status == 404) {
+		if errors.As(err, &failure) && (failure.Status == 400 || failure.Status == 403 || failure.Status == 404 || failure.Code == "worker_retired") {
 			return "authorization_changed", nil
 		}
 	}

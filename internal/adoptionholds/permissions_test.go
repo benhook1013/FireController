@@ -10,11 +10,8 @@ import (
 	m "github.com/benhook1013/FireController/internal/adoptionholdsmodel"
 )
 
-func TestOrdinaryWriterResolvesButCannotImportAndRevokedReplayRefuses(t *testing.T) {
+func TestOrdinaryWriterImportsAndResolvesButRevokedReplayRefuses(t *testing.T) {
 	f := fresh(t)
-	p := f.preview(batch())
-	f.apply(batch(), "seed")
-	id := f.page("?status=all").Items[0].ID
 	token := "ordinary-adoption-writer"
 	sum := sha256.Sum256([]byte(token))
 	f.exec(`INSERT INTO credentials VALUES('ordinary_writer','ordinary_principal',?,0,0)`, hex.EncodeToString(sum[:]))
@@ -27,18 +24,42 @@ func TestOrdinaryWriterResolvesButCannotImportAndRevokedReplayRefuses(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	decode[map[string]any](t, f.call("POST", base+"/preview", token, "worker_one", "", batch()), 403)
-	decode[map[string]any](t, f.call("POST", base+"/apply", token, "worker_one", "cannot-import", m.ApplyRequest{Batch: batch(), PreviewSHA256: p.PreviewSHA256}), 403)
+	foreignToken := "foreign-adoption-writer"
+	foreignSum := sha256.Sum256([]byte(foreignToken))
+	f.exec(`INSERT INTO credentials VALUES('foreign_writer','foreign_principal',?,0,0)`, hex.EncodeToString(foreignSum[:]))
+	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('foreign_writer','project_two',1,1)`)
+	readerToken := "readonly-adoption-token"
+	readerSum := sha256.Sum256([]byte(readerToken))
+	f.exec(`INSERT INTO credentials VALUES('adoption_reader','reader_principal',?,0,0)`, hex.EncodeToString(readerSum[:]))
+	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('adoption_reader','project_one',1,0)`)
+	previewPath, applyPath := base+"/preview", base+"/apply"
+	p := decode[m.Preview](t, f.call("POST", previewPath, token, "worker_one", "", batch()), 200)
+	input := m.ApplyRequest{Batch: batch(), PreviewSHA256: p.PreviewSHA256}
+	for _, denied := range []string{readerToken, foreignToken} {
+		decode[map[string]any](t, f.call("POST", previewPath, denied, "worker_one", "", batch()), 403)
+		decode[map[string]any](t, f.call("POST", applyPath, denied, "worker_one", "writer-import", input), 403)
+	}
+	decode[map[string]any](t, f.call("POST", previewPath, token, "", "", batch()), 403)
+	decode[map[string]any](t, f.call("POST", applyPath, token, "", "writer-import", input), 403)
+	decode[map[string]any](t, f.call("POST", previewPath, token, "worker_two", "", batch()), 404)
+	decode[map[string]any](t, f.call("POST", applyPath, token, "worker_two", "writer-import", input), 404)
+	if f.count("receipts") != 0 || f.count("review_adoption_sources") != 0 {
+		t.Fatal("preview or unauthorized import wrote state")
+	}
+	imported := f.call("POST", applyPath, token, "worker_one", "writer-import", input)
+	if receipt := decode[m.Receipt](t, imported, 200); receipt.Outcome != "imported" || receipt.New != 2 {
+		t.Fatal("writer import failed", receipt)
+	}
+	if replay := f.call("POST", applyPath, token, "worker_one", "writer-import", input); replay.Code != 200 || replay.Body.String() != imported.Body.String() {
+		t.Fatal("writer import replay changed", replay.Body.String())
+	}
+	id := f.page("?status=all").Items[0].ID
 	one := int64(1)
 	resolution := m.ResolveRequest{ExpectedRevision: &one, Reason: "Verified correction and counting effects", Evidence: []string{"commit:verified"}}
 	path := base + "/" + id + "/resolve"
 	// Invalid attribution and foreign project writers cannot resolve a hold.
 	decode[map[string]any](t, f.call("POST", path, token, "", "missing-worker", resolution), 403)
 	decode[map[string]any](t, f.call("POST", path, token, "worker_two", "foreign-worker", resolution), 404)
-	foreignToken := "foreign-adoption-writer"
-	foreignSum := sha256.Sum256([]byte(foreignToken))
-	f.exec(`INSERT INTO credentials VALUES('foreign_writer','foreign_principal',?,0,0)`, hex.EncodeToString(foreignSum[:]))
-	f.exec(`INSERT INTO grants(credential_id,project_id,can_read,can_write) VALUES('foreign_writer','project_two',1,1)`)
 	decode[map[string]any](t, f.call("POST", path, foreignToken, "worker_one", "foreign-project", resolution), 403)
 	first := f.call("POST", path, token, "worker_one", "resolve", resolution)
 	decode[map[string]any](t, first, 200)
@@ -73,6 +94,13 @@ func TestOrdinaryWriterResolvesButCannotImportAndRevokedReplayRefuses(t *testing
 	decode[map[string]any](t, response, 403)
 	before := f.count("receipts")
 	f.exec(`UPDATE grants SET can_write=0 WHERE credential_id='ordinary_writer'`)
+	decode[map[string]any](t, f.call("POST", applyPath, token, "worker_one", "writer-import", input), 403)
+	if _, err = f.service.Preview(t.Context(), scope, batch()); err == nil {
+		t.Fatal("cached scope preview bypassed revoked write grant")
+	}
+	if _, err = f.service.Apply(t.Context(), scope, "writer-import", input); err == nil {
+		t.Fatal("cached scope import replay bypassed revoked write grant")
+	}
 	decode[map[string]any](t, f.call("POST", path, token, "worker_one", "resolve", resolution), 403)
 	if _, err = f.service.Resolve(t.Context(), scope, id, "resolve", resolution); err == nil {
 		t.Fatal("cached writer scope replay bypassed revoked write grant")

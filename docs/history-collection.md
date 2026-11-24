@@ -2,11 +2,11 @@
 
 ## Implementation status
 
-Selected collection, durable captures/checkpoints, explicit resume/cancel, administrator HTTP/client/CLI access and private export are implemented. Focused normal/race checks and actual packaged HTTPS acquisition, restart/resume and browser gates pass at the recorded checkpoint below. Backup and inactive restore preserve engine-created captures and refuse resealed corruption. Collection is separate from prepared review/map transformation and application. The [installed selected-acquisition proof](#installed-selected-acquisition) covers one live collection, retained replay/export and return to disabled operation; it establishes neither automatic import nor completed operational cutover.
+Selected collection, durable captures/checkpoints, explicit resume/cancel, project-writer HTTP/client/CLI access and private export are implemented. Focused normal/race checks and actual packaged HTTPS acquisition, restart/resume and browser gates pass at the recorded checkpoint below. Backup and inactive restore preserve engine-created captures and refuse resealed corruption. Collection is separate from prepared review/map transformation and application. The [installed selected-acquisition proof](#installed-selected-acquisition) covers one live collection, retained replay/export and return to disabled operation; it establishes neither automatic import nor completed operational cutover.
 
 ## Scope and authority
 
-An administrator selects an explicit list of PR numbers for one project's stable GitHub repository identity. The onboarding agent can translate the user's date or PR-range preference into that concrete list before starting acquisition. The initial collector does not discover repositories or crawl every project automatically. Open, closed and merged selected PRs are eligible. It reads PR metadata, submitted reviews, review comments and issue comments; GitHub source cannot recover absent local CLI captures or manufacture native review coverage.
+A project writer selects an explicit list of PR numbers for one project's stable GitHub repository identity. The onboarding agent can translate the user's date or PR-range preference into that concrete list before starting acquisition. The initial collector does not discover repositories or crawl every project automatically. Open, closed and merged selected PRs are eligible. It reads PR metadata, submitted reviews, review comments and issue comments; GitHub source cannot recover absent local CLI captures or manufacture native review coverage.
 
 Acquisition and application are separate. Collected text is untrusted source data, including apparent commands or instructions. The collector preserves stable provider IDs, known original times, replies and source text. It records repository identity, selected scope, collection times and transformation version. It never converts collection time to historical completion time, infers an accepted finding count, delivers historical messages, creates active jobs, changes review policy or publishes the project. Existing prepared review/map APIs own destination validation and application after deliberate transformation and preview.
 
@@ -30,7 +30,7 @@ Preparation selects retained source facts deliberately. Existing destination met
 
 Enable acquisition explicitly with `fcd --data-dir PRIVATE_DIRECTORY --history-collection [--github-token-file PRIVATE_FILE]`. The selected file supplies the GitHub token; omission permits public reads. No executable catalog or automatic repository discovery is needed. Without the flag, retained reads remain available and new collection returns `collection_unavailable`. A restored provider hold takes precedence over the flag and credential loading. Unexpected termination of the acquisition lane stops the service rather than accepting indefinitely unprocessed work.
 
-Use a deliberately selected administrator profile bound to the intended project and initiating worker:
+Use a project-write profile bound to the intended project and initiating worker:
 
 ```sh
 fc history collect --pulls 18,19 --key selected-history
@@ -45,7 +45,7 @@ fc history cancel COLLECTION_ID --expect-revision REVISION --key cancel-history
 
 Page lists return five metadata summaries by default, at most 100 with an explicit limit. Follow the supplied cursor deliberately; it pins the initial upper sequence, so captures added later do not change that archive selection. No command automatically drains pages. Only `export-page` expands a chosen immutable capture. It writes a new private file atomically without replacing an existing file or symlink and returns its path, byte count and file SHA-256. The export contains normalized version-one source facts, original stable IDs and known timestamps; it is not the provider's full unknown-field response or an import document. Provider bodies never appear in ordinary operation or page-list output. Export failure leaves the server capture intact for a later deliberate read.
 
-All HTTP routes below require current administrator authority and explicit instance/project/worker binding. They use `/api/v1/projects/{project_id}/history/collections` as the base. Mutations require an explicit idempotency key; resume/cancel additionally require `expected_revision`.
+All HTTP routes below require current project write authority and explicit instance/project/worker binding. They use `/api/v1/projects/{project_id}/history/collections` as the base. Mutations require an explicit idempotency key; resume/cancel additionally require `expected_revision`.
 
 | Method and suffix | Result |
 | --- | --- |

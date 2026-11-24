@@ -41,12 +41,41 @@ type hostedRetainedReceipt struct {
 	State       string `json:"state"`
 }
 
+// hostedRecoveryTarget exposes only the original request guards. The decoder
+// and write transaction still establish eligibility from the retained source.
+func hostedRecoveryTarget(ctx context.Context, tx *sql.Tx, operation Operation, target SettlementTarget) (*hostedRetainedRequest, error) {
+	var capture, capability string
+	err := tx.QueryRowContext(ctx, `SELECT o.capture_sha256,json_extract(c.body_json,'$.capability_id')
+FROM review_hosted_observations o
+JOIN review_execution_config c ON c.project_id=? AND c.revision=?
+JOIN events e ON e.project_id=c.project_id AND e.resource_id=o.attempt_id AND e.revision=?
+ AND e.event_type='review.hosted_incomplete_released'
+ AND json_extract(e.payload_json,'$.capture_sha256')=o.capture_sha256
+ AND json_extract(e.payload_json,'$.operation_id')=?
+ AND json_extract(e.payload_json,'$.external_id')=?
+WHERE o.attempt_id=? AND o.position=(SELECT MAX(position) FROM review_hosted_observations WHERE attempt_id=o.attempt_id)
+LIMIT 1`, operation.ProjectID, operation.ConfigurationRevision, target.AttemptRevision, operation.ID, target.ExternalID, operation.AttemptID).Scan(&capture, &capability)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !hash.MatchString(capture) || !identifier.MatchString(capability) || !identifier.MatchString(target.ExternalID) {
+		return nil, nil
+	}
+	return &hostedRetainedRequest{
+		ExpectedRevision: target.AttemptRevision, OperationID: operation.ID, CapabilityID: capability,
+		RepositoryID: target.RepositoryID, HeadSHA: target.HeadSHA, ExternalID: target.ExternalID, CaptureSHA256: capture,
+	}, nil
+}
+
 func retainedRecoveryUnavailable() error {
 	return core.Fail("hosted_retained_recovery_unavailable", "Only an audited incomplete release with unchanged original source and no pending replacement can be recovered.", 409)
 }
 
 func (e *Engine) recoverHostedRetainedHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return

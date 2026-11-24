@@ -29,9 +29,10 @@ type PresentationAction = { worker: string; config: BrowserPresentationConfig; r
 export function ProjectSettings() {
   const { session, key } = useWorkspace();
   const [reload, setReload] = useState(0);
-  const query = useQuery({ queryKey: [...key, 'settings', 'presentation'], queryFn: ({ signal }) => session.api.presentation(signalFor(session, signal)), staleTime: Infinity, enabled: session.api.browserCapabilities.can_edit_presentation });
-  if (!session.api.browserCapabilities.can_edit_presentation) return <section className="panel"><h2>Settings unavailable</h2><p>This connection does not permit project appearance changes.</p></section>;
-  return <><div className="page-heading tab-heading"><h2>Settings</h2><p>Project appearance, worker order and review preferences.</p></div><QueueSortingSettings /><ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <PresentationEditor key={`${session.nonce}:${reload}`} initial={query.data.presentation} reload={async () => { const fresh = await query.refetch(); if (!fresh.error && !session.controller.signal.aborted) setReload(value => value + 1); }} />}</ReadState></>;
+  const { allow_writes: writer, can_edit_presentation: manager } = session.api.browserCapabilities;
+  const query = useQuery({ queryKey: [...key, 'settings', 'presentation'], queryFn: ({ signal }) => session.api.presentation(signalFor(session, signal)), staleTime: Infinity, enabled: manager });
+  if (!writer) return <section className="panel"><h2>Settings unavailable</h2><p>This connection does not permit project settings changes.</p></section>;
+  return <><div className="page-heading tab-heading"><h2>Settings</h2><p>{manager ? 'Project appearance, worker order and review preferences.' : 'Review preferences.'}</p></div><QueueSortingSettings />{manager && <ReadState error={query.error} loading={query.isPending} empty={false}>{query.data && <PresentationEditor key={`${session.nonce}:${reload}`} initial={query.data.presentation} reload={async () => { const fresh = await query.refetch(); if (!fresh.error && !session.controller.signal.aborted) setReload(value => value + 1); }} />}</ReadState>}</>;
 }
 
 function WorkerOrderEditor({ value, change, disabled }: { value: string[]; change(value: string[]): void; disabled: boolean }) {

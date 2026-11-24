@@ -32,7 +32,7 @@ func (e *Engine) readPolicyHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Engine) configurePolicyHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return

@@ -27,7 +27,7 @@ func TestPolicyHTTPConfigurationReadAndHistoricalReceipt(t *testing.T) {
 	if policyState(t, f) != "//" {
 		t.Fatal("missing policy read allocated defaults")
 	}
-	first := evidenceHTTPReceipt(t, f.request("POST", path, f.admin, "first-policy", policyHTTPInitial), attemptProject, "policy_configured", 1)
+	first := evidenceHTTPReceipt(t, f.request("POST", path, f.writer, "first-policy", policyHTTPInitial), attemptProject, "policy_configured", 1)
 	before := policyState(t, f)
 	value := evidenceHTTPRequire(t, f.request("GET", path, f.reader, "", ""), 200, "")
 	evidenceHTTPKeys(t, value, "project_id", "revision", "actor_id", "recorded_at", "policy")
@@ -48,12 +48,12 @@ func TestPolicyHTTPConfigurationReadAndHistoricalReceipt(t *testing.T) {
 	second := `{"expected_revision":1,"required_channels":["cli"],"max_review_files":100000}`
 	evidenceHTTPReceipt(t, f.request("POST", path, f.admin, "second-policy", second), attemptProject, "policy_configured", 2)
 	before = policyState(t, f)
-	replay := f.request("POST", path, f.admin, "first-policy", policyHTTPInitial)
+	replay := f.request("POST", path, f.writer, "first-policy", policyHTTPInitial)
 	if replay.Code != 200 || !bytes.Equal(first, replay.Body.Bytes()) {
 		t.Fatal("HTTP replay lost its original compact policy receipt")
 	}
 	evidenceHTTPRequire(t, f.request("POST", path, f.admin, "stale", policyHTTPInitial), 409, "review_conflict")
-	evidenceHTTPRequire(t, f.request("POST", path, f.admin, "first-policy", strings.Replace(policyHTTPInitial, `"max_review_files":0`, `"max_review_files":1`, 1)), 409, "idempotency_conflict")
+	evidenceHTTPRequire(t, f.request("POST", path, f.writer, "first-policy", strings.Replace(policyHTTPInitial, `"max_review_files":0`, `"max_review_files":1`, 1)), 409, "idempotency_conflict")
 	current := evidenceHTTPRequire(t, f.request("GET", path, f.writer, "", ""), 200, "")
 	if current["revision"] != float64(2) || current["policy"].(map[string]any)["max_review_files"] != float64(100000) || policyState(t, f) != before {
 		t.Fatal("historical retry changed current policy")
@@ -77,7 +77,7 @@ func TestPolicyHTTPAuthorizationCookieInstanceAndRevocation(t *testing.T) {
 	before := policyState(t, f)
 	evidenceHTTPRequire(t, f.request("GET", path, "", "", ""), 401, "unauthorized")
 	evidenceHTTPRequire(t, f.request("GET", path, f.other, "", ""), 403, "forbidden")
-	for _, token := range []string{f.reader, f.writer, f.other} {
+	for _, token := range []string{f.reader, f.other} {
 		evidenceHTTPRequire(t, f.request("POST", path, token, "denied", `{`), 403, "forbidden")
 	}
 	evidenceHTTPRequire(t, f.request("POST", path, "", "denied", `{`), 401, "unauthorized")

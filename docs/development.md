@@ -190,7 +190,7 @@ Project writers use `reviews queue-add`, `reviews queue-move`, `reviews queue-re
 
 Ordinary explicit PR work follows [merged/closed inbox notices](review-notifications.md) for the acting worker automatically. Optional `reviews follow PR` and `reviews unfollow PR` take `--expect-revision N --key KEY` after reading `reviews following PR`; an explicit unfollow survives later work. These controls do not enroll or assign a PR or request provider work.
 
-Administrator [selected queue edits](review-workspace.md#selected-queue-edits) use `reviews queue-edit --file /private/queue-edit.json --key KEY`. They change only selected PR metadata and visibility, preserving omitted work and review history. They keep the same explicit-key recovery and ordinary command budget; they do not request reviews or provider refreshes.
+Project-writer [selected queue edits](review-workspace.md#selected-queue-edits) use `reviews queue-edit --file /private/queue-edit.json --key KEY`. They change only selected PR metadata and visibility, preserving omitted work and review history. They keep the same explicit-key recovery and ordinary command budget; they do not request reviews or provider refreshes.
 
 The [project-map agent commands](project-map.md#agent-commands) add explicit compact map reads, full guarded editorial replacements and independent job/workstream references. Ordinary job/context reads do not expand map content.
 

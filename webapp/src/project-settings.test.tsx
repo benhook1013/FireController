@@ -3,8 +3,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import App, { leavesActionProject } from './App';
-import { decodePresentationDraft, presentationDraft } from './project-settings';
+import { BrowserActionMemory } from './browser-actions';
+import { decodePresentationDraft, presentationDraft, ProjectSettings } from './project-settings';
 import type { ReviewGroup } from './types';
+import { WorkspaceContext, type Session } from './workspace';
 
 describe('browser connection and appearance input', () => {
   it('offers one login without a permission-mode checkbox', () => {
@@ -15,6 +17,19 @@ describe('browser connection and appearance input', () => {
   it('guards exits to another project, root and public routes while allowing same-project view changes', () => {
     for (const pathname of ['/', '/projects/project_two/inbox', '/public/showcase', '/public']) expect(leavesActionProject('project_one', pathname)).toBe(true);
     for (const pathname of ['/projects/project_one', '/projects/project_one/inbox', '/projects/project_one/inbox/conversation_one', '/projects/project_one/settings']) expect(leavesActionProject('project_one', pathname)).toBe(false);
+  });
+  it.each([[false, false], [true, false], [true, true]])('separates queue sorting (%s) from appearance changes (%s)', (writes, appearance) => {
+    const client = new QueryClient();
+    const key = ['project_one'];
+    const session = { nonce: 'connection', worker: { id: 'worker_one' }, controller: new AbortController(), actions: new BrowserActionMemory(), api: { browserCapabilities: { allow_writes: writes, can_edit_presentation: appearance } } } as unknown as Session;
+    client.setQueryData([...key, 'queue-sorting'], { mode: 'auto', writable: true, revision: 1 });
+    client.setQueryData([...key, 'settings', 'presentation'], { presentation: { name: 'Project', brand_name: 'Brand', tagline: 'Workspace', headings: {}, theme: {}, revision: 1 } });
+    try {
+      const html = renderToStaticMarkup(<QueryClientProvider client={client}><WorkspaceContext.Provider value={{ session, key, home: '/projects/project_one', ready: true, fail: () => {}, selectWorker: () => {} }}><ProjectSettings /></WorkspaceContext.Provider></QueryClientProvider>);
+      expect(html.includes('>Save queue sorting</button>')).toBe(writes);
+      expect(html.includes('>Save appearance</button>')).toBe(appearance);
+      expect(html.includes('Settings unavailable')).toBe(!writes);
+    } finally { client.clear(); }
   });
   it('round-trips complete settings with literal headings and default theme reset', () => {
     const config = { name: 'Project <literal>', brand_name: 'Project brand', tagline: 'Project workspace', headings: { hero_title: '<script>Literal text</script>' }, theme: {} };

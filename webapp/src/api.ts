@@ -817,7 +817,7 @@ export class Api {
   async setQueueSorting(worker: string, revision: number, mode: 'auto'|'manual', key: string, signal?: AbortSignal): Promise<QueueSortingReceipt> {
     if (!id(worker) || !Number.isSafeInteger(revision) || revision<1 || revision>=Number.MAX_SAFE_INTEGER || !['auto','manual'].includes(mode) || !mutationKey(key)) throw new ApiError('invalid_request','Use the current queue sorting revision and selected worker.');
     return this.browserMutation(this.projectRoute('reviews/queue-sorting'),'POST',worker,key,{expected_revision:revision,mode},200,
-      (value): value is QueueSortingReceipt => record(value) && keys(value,['id','state','revision']) && value.id===this.projectId && value.state==='configured' && value.revision===revision+1,signal,true);
+      (value): value is QueueSortingReceipt => record(value) && keys(value,['id','state','revision']) && value.id===this.projectId && value.state==='configured' && value.revision===revision+1,signal);
   }
   async reviewScheduling(signal?: AbortSignal): Promise<ReviewScheduling> {
     const value=await this.finiteGet(this.projectRoute('reviews/scheduling'),signal,undefined,64<<10,assessmentJSON);
@@ -833,7 +833,7 @@ export class Api {
   async configureReviewScheduling(worker: string, automatic: boolean, revision: number, key: string, signal?: AbortSignal): Promise<SchedulingReceipt> {
     if (typeof automatic!=='boolean' || automatic && !id(worker) || worker!=='' && !id(worker) || !nonnegative(revision) || revision>=Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request','Select an active authorizing worker and current settings before enabling automatic Hosted reviews.');
     return this.browserMutation(this.projectRoute('reviews/scheduling'),'POST',worker,key,{expected_revision:revision,automatic_hosted:automatic},200,
-      (v):v is SchedulingReceipt=>record(v) && keys(v,['id','state','revision']) && v.id===this.projectId && v.state==='scheduling_configured' && v.revision===revision+1,signal,true);
+      (v):v is SchedulingReceipt=>record(v) && keys(v,['id','state','revision']) && v.id===this.projectId && v.state==='scheduling_configured' && v.revision===revision+1,signal);
   }
   async configurePullScheduling(number: number, paused: boolean, reason: string, revision: number, key: string, signal?: AbortSignal): Promise<SchedulingReceipt> {
     if (!pullNumber(number) || typeof paused!=='boolean' || !text(reason,256,true) || /[\u0000-\u001f\u007f]/u.test(reason) || !nonnegative(revision) || revision>=Number.MAX_SAFE_INTEGER || !mutationKey(key)) throw new ApiError('invalid_request','Use a current PR revision and a short pause reason.');

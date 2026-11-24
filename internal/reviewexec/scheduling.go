@@ -161,7 +161,7 @@ func schedulingAuthorizerAllowed(ctx context.Context, tx *sql.Tx, s schedulingRe
 		LEFT JOIN connector_credentials b ON b.credential_id=c.id
 		WHERE c.id=? AND c.principal_id=? AND c.revoked=0
 		AND (b.credential_id IS NULL OR (c.is_admin=0 AND b.project_id=? AND b.worker_id=?))
-		AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1 AND g.can_manage=1))
+		AND (c.is_admin=1 OR EXISTS(SELECT 1 FROM grants g WHERE g.credential_id=c.id AND g.project_id=? AND g.can_read=1 AND g.can_write=1))
 		AND EXISTS(SELECT 1 FROM workers w WHERE w.project_id=? AND w.id=?
 			AND NOT EXISTS(SELECT 1 FROM worker_retirements r WHERE r.project_id=w.project_id AND r.worker_id=w.id)))`,
 		s.credential, s.actor, s.ProjectID, s.AuthorizingWorkerID, s.ProjectID, s.ProjectID, s.AuthorizingWorkerID).Scan(&allowed)
@@ -219,10 +219,9 @@ func (e *Engine) ReadScheduling(ctx context.Context, scope core.Scope) (Scheduli
 }
 func validSchedulingRevision(r *int64) bool { return r != nil && *r >= 0 && *r < math.MaxInt64 }
 func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key string, input SchedulingRequest) (json.RawMessage, error) {
-	if !validSchedulingRevision(input.ExpectedRevision) || input.AutomaticHosted == nil {
+	if !identifier.MatchString(scope.ProjectID) || !validSchedulingRevision(input.ExpectedRevision) || input.AutomaticHosted == nil {
 		return nil, invalid()
 	}
-	scope = scope.RequireAdministration()
 	out, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.scheduling", Target: "scheduling", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		old, err := readScheduling(ctx, tx, scope.ProjectID)
 		if err != nil {
@@ -249,7 +248,7 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 				return nil, err
 			}
 			if !allowed {
-				return nil, core.Fail("forbidden", "An active bound project manager must authorize automatic review scheduling.", 403)
+				return nil, core.Fail("forbidden", "A project writer with an active bound worker must authorize automatic review scheduling.", 403)
 			}
 		}
 		hostedBasis, cliBasis, err := schedulingBasisRevisions(ctx, tx, old)

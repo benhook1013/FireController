@@ -300,3 +300,50 @@ func TestProjectOwnerCLICredentialFileRejectsInvalidTokensBeforeHTTP(t *testing.
 		})
 	}
 }
+
+func TestHostedRecoverCLIUsesExactOriginalRequest(t *testing.T) {
+	f, project, worker := reviewExecutionFixture(t, true)
+	attempt := "review_attempt_" + strings.Repeat("a", 32)
+	operation := "review_operation_" + strings.Repeat("b", 32)
+	evidence := "review_evidence_" + strings.Repeat("c", 32)
+	input := client.RecoverHostedReviewRequest{
+		ExpectedRevision: 6,
+		OperationID:      operation,
+		CapabilityID:     "fixture",
+		RepositoryID:     42,
+		HeadSHA:          strings.Repeat("d", 40),
+		ExternalID:       "123456",
+		CaptureSHA256:    strings.Repeat("e", 64),
+	}
+	file := filepath.Join(t.TempDir(), "recovery.json")
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/projects/"+project+"/reviews/attempts/"+attempt+"/retained-recovery" {
+			f.handler.ServeHTTP(w, r)
+			return
+		}
+		calls.Add(1)
+		var sent client.RecoverHostedReviewRequest
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil || sent != input || r.Header.Get("Idempotency-Key") != "original-recovery" || r.Header.Get("X-FC-Worker") != worker {
+			t.Errorf("wrong recovery request: %+v, %v", sent, err)
+			http.Error(w, "wrong recovery request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(client.HostedReviewRecoveryReceipt{AttemptID: attempt, OperationID: operation, EvidenceID: evidence, Revision: 7, State: "completed"})
+	}))
+	defer server.Close()
+	profiles := mutationProfiles(t, f, server.URL, map[string][2]string{"owner": {project, worker}})
+	code, out, stderr := mutationInvoke(t, profiles, "owner", "reviews", "hosted-recover", attempt, "--file", file, "--key", "original-recovery")
+	var receipt client.HostedReviewRecoveryReceipt
+	if code != 0 || stderr != "" || json.Unmarshal([]byte(out), &receipt) != nil || receipt.EvidenceID != evidence || calls.Load() != 1 {
+		t.Fatal(code, out, stderr, calls.Load())
+	}
+}

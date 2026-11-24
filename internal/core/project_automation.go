@@ -27,7 +27,7 @@ func (s *Store) AuthenticatedCredentialID(ctx context.Context, tx *sql.Tx, scope
 // ProjectAutomationScope revalidates an explicitly retained project automation
 // authorization. Callers obtain these identities from their own durable control
 // record, never from an unauthenticated request. The exact credential must still
-// manage this project and its attributed worker must remain active. Subsequent
+// grant project write and its attributed worker must remain active. Subsequent
 // Store operations reauthorize the returned scope again at their boundary.
 func (s *Store) ProjectAutomationScope(ctx context.Context, tx *sql.Tx, project, principal, worker, credential string) (Scope, error) {
 	if project == "" || principal == "" || worker == "" || credential == "" {
@@ -41,8 +41,8 @@ func (s *Store) ProjectAutomationScope(ctx context.Context, tx *sql.Tx, project,
 	if err != nil {
 		return Scope{}, storageError(err)
 	}
-	scope := Scope{ProjectID: project, PrincipalID: principal, WorkerID: worker, tokenHash: hash, instanceID: s.instanceID, admin: true}
-	if err := s.authorize(ctx, tx, scope, "admin"); err != nil {
+	scope := Scope{ProjectID: project, PrincipalID: principal, WorkerID: worker, tokenHash: hash, instanceID: s.instanceID}
+	if err := s.authorize(ctx, tx, scope, "write"); err != nil {
 		return Scope{}, err
 	}
 	if err := CheckActiveWorker(ctx, tx, project, worker); err != nil {

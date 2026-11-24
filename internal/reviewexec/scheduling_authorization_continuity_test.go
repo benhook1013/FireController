@@ -75,7 +75,7 @@ func TestRetainedAutomaticAuthorizationSurvivesUnrelatedLaneToggle(t *testing.T)
 
 func TestRetainedAutomaticAuthorizationRequiresCompleteAuthorityAndHistory(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, fault := range []string{"lane-disabled", "lane-off-on", "missing-initial", "missing-middle", "missing-current", "duplicate-revision", "original-actor", "current-actor", "malformed-payload", "duplicate-channel", "fractional-revision", "null-lane", "revoked-original", "lost-manage", "retired-original", "revoked-current", "mismatched-child", "unselected"} {
+		for _, fault := range []string{"lane-disabled", "lane-off-on", "missing-initial", "missing-middle", "missing-current", "duplicate-revision", "original-actor", "current-actor", "malformed-payload", "duplicate-channel", "fractional-revision", "null-lane", "revoked-original", "lost-write", "retired-original", "revoked-current", "mismatched-child", "unselected"} {
 			t.Run(channel+"/"+fault, func(t *testing.T) {
 				f, r := continuityFixture(t, channel, fault != "unselected")
 				switch fault {
@@ -113,8 +113,8 @@ func TestRetainedAutomaticAuthorizationRequiresCompleteAuthorityAndHistory(t *te
 					admissionSQL(t, f, `UPDATE events SET payload_json='{"automatic_hosted":null,"automatic_cli":null}' WHERE event_type='review.scheduling_updated' AND revision=2`)
 				case "revoked-original":
 					admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
-				case "lost-manage":
-					admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+				case "lost-write":
+					admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 				case "retired-original":
 					admissionSQL(t, f, `INSERT INTO worker_retirements VALUES(?,'selection-worker',?,'synthetic-actor')`, attemptProject, stamp())
 				case "revoked-current":

@@ -189,7 +189,7 @@ func TestRoundAdoptionReplayAdmissionAndAtomicity(t *testing.T) {
 	_, err = f.e.ApplyRoundAdoption(t.Context(), admin, "recover", changed)
 	attemptCode(t, err, "import_preview_mismatch")
 	_, err = f.e.ApplyRoundAdoption(t.Context(), adoptionScope(t, f, f.writer, false), "writer", request)
-	attemptCode(t, err, "forbidden")
+	attemptCode(t, err, "import_preview_mismatch")
 	// A fresh preview for another PR cannot reuse the original source identity.
 	other := p
 	other.PullNumber = 4
@@ -248,6 +248,50 @@ func TestRoundAdoptionHTTPStrictShape(t *testing.T) {
 			t.Fatalf("invalid shape accepted status %d", got.Code)
 		}
 	}
+}
+
+func TestRoundAdoptionRequiresProjectWrite(t *testing.T) {
+	f := adoptionFixture(t)
+	path := "/api/v1/projects/" + attemptProject + "/reviews/rounds/adoption"
+	p := adoptionPrepared()
+	before := roundTables(t, f)
+	check := func(path, token, key, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		response := f.request(http.MethodPost, path, token, key, body)
+		if response.Code != want {
+			t.Fatalf("%s want %d, got %d %s", path, want, response.Code, response.Body.String())
+		}
+		return response
+	}
+	for _, denied := range []string{f.reader, f.other} {
+		check(path+"/preview", denied, "", encoded(p), 403)
+	}
+	previewResponse := check(path+"/preview", f.writer, "", encoded(p), 200)
+	var preview roundadoptionmodel.Preview
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil || len(preview.PreviewSHA256) != 64 {
+		t.Fatalf("invalid preview: %v", err)
+	}
+	request := roundadoptionmodel.ApplyRequest{PreviewSHA256: preview.PreviewSHA256, Control: p}
+	for _, denied := range []string{f.reader, f.other} {
+		check(path+"/apply", denied, "writer-adopt", encoded(request), 403)
+	}
+	if roundTables(t, f) != before {
+		t.Fatal("preview or unauthorized apply changed durable state")
+	}
+	first := check(path+"/apply", f.writer, "writer-adopt", encoded(request), 200)
+	if replay := check(path+"/apply", f.writer, "writer-adopt", encoded(request), 200); replay.Body.String() != first.Body.String() {
+		t.Fatal("writer replay changed the original receipt")
+	}
+	scope := adoptionScope(t, f, f.writer, false)
+	if _, err := f.store.DB().Exec(`UPDATE grants SET can_write=0 WHERE project_id=? AND credential_id IN (SELECT id FROM credentials WHERE principal_id=?)`, attemptProject, scope.PrincipalID); err != nil {
+		t.Fatal(err)
+	}
+	check(path+"/apply", f.writer, "writer-adopt", encoded(request), 403)
+	_, err := f.e.PreviewRoundAdoption(t.Context(), scope, p)
+	attemptCode(t, err, "forbidden")
+	_, err = f.e.ApplyRoundAdoption(t.Context(), scope, "writer-adopt", request)
+	attemptCode(t, err, "forbidden")
+	adoptionValid(t, f)
 }
 func TestRoundAdoptionVersionOneUpgradeConservesHistory(t *testing.T) {
 	f := adoptionFixture(t)

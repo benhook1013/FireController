@@ -56,6 +56,24 @@ type ReviewAttemptSettlementReceipt struct {
 type CreateWorkerRequest struct {
 	Name string `json:"name"`
 }
+type RecoverHostedReviewRequest struct {
+	ExpectedRevision int64  `json:"expected_revision"`
+	OperationID      string `json:"operation_id"`
+	CapabilityID     string `json:"capability_id"`
+	RepositoryID     int64  `json:"repository_id"`
+	HeadSHA          string `json:"head_sha"`
+	ExternalID       string `json:"external_id"`
+	CaptureSHA256    string `json:"capture_sha256"`
+}
+
+type HostedReviewRecoveryReceipt struct {
+	AttemptID   string `json:"attempt_id"`
+	OperationID string `json:"operation_id"`
+	EvidenceID  string `json:"evidence_id"`
+	Revision    int64  `json:"revision"`
+	State       string `json:"state"`
+}
+
 type WorkerCreateReceipt struct {
 	ID       string `json:"id"`
 	Revision int64  `json:"revision"`
@@ -214,6 +232,31 @@ func (c *Client) SettleReviewAttempt(ctx context.Context, key, id string, r Sett
 	}
 	return v, nil
 }
+func ValidateRecoverHostedReview(id string, r RecoverHostedReviewRequest) error {
+	if !validReviewOpaqueID(id, "review_attempt_") || r.ExpectedRevision < 3 || r.ExpectedRevision == math.MaxInt64 ||
+		ValidateReviewOperationID(r.OperationID) != nil || !validExecutionIdentifier(r.CapabilityID) ||
+		r.RepositoryID < 1 || len(r.HeadSHA) != 40 || !validReviewSHA(r.HeadSHA) ||
+		!validExecutionIdentifier(r.ExternalID) || len(r.CaptureSHA256) != 64 || !lowerHex(r.CaptureSHA256) {
+		return mutationValidation()
+	}
+	return nil
+}
+
+func (c *Client) RecoverHostedReview(ctx context.Context, key, id string, r RecoverHostedReviewRequest) (HostedReviewRecoveryReceipt, error) {
+	var receipt HostedReviewRecoveryReceipt
+	if !validMutationKey(key) || ValidateRecoverHostedReview(id, r) != nil {
+		return receipt, mutationValidation()
+	}
+	if err := c.mutate(ctx, http.MethodPost, c.projectPath("reviews", "attempts", id, "retained-recovery"), key, r, http.StatusOK, &receipt); err != nil {
+		return receipt, err
+	}
+	if receipt.AttemptID != id || receipt.OperationID != r.OperationID || !validReviewOpaqueID(receipt.EvidenceID, "review_evidence_") ||
+		receipt.Revision != r.ExpectedRevision+1 || receipt.State != "completed" {
+		return HostedReviewRecoveryReceipt{}, unknownMutation("invalid_response", "The recovery receipt was invalid; retain the original key and request.", 200)
+	}
+	return receipt, nil
+}
+
 func (c *Client) CreateWorker(ctx context.Context, key string, r CreateWorkerRequest) (WorkerCreateReceipt, error) {
 	var v WorkerCreateReceipt
 	if !validMutationKey(key) || ValidateCreateWorker(r) != nil {

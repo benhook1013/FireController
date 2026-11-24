@@ -50,11 +50,11 @@ func validSettlementText(value string, multiline bool) bool {
 	return utf8.ValidString(value) && len(value) <= 1024 && strings.TrimSpace(value) != "" && strings.IndexFunc(value, func(r rune) bool { return unicode.IsControl(r) && (!multiline || r != '\t' && r != '\n') }) < 0
 }
 
-// This action records either an administrator's verified external stop or an
+// This action records either a project writer's verified external stop or an
 // explicit local abandonment of a confirmed issued Hosted request.
 // It never fetches the reference, cancels a provider or fabricates completion.
 func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -78,7 +78,7 @@ func (e *Engine) settleAttemptHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	// AdminScope makes Mutate reauthorize admin access before both replay and
+	// Mutate reauthorizes project write access before both replay and
 	// fresh execution, in the same transaction as the guarded local changes.
 	receipt, err := e.store.Mutate(r.Context(), scope, core.Mutation{Operation: "reviews.hosted.settle", Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		a, err := readAttempt(ctx, tx, scope.ProjectID, id)

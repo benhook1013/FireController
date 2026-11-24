@@ -108,17 +108,13 @@ func missing() error {
 	return core.Fail("not_found", "The selected collection is unavailable.", 404)
 }
 
-// An administrator starts acquisition with an explicit project and worker.
-// Background reads recheck retained principal authority before provider work
-// and again before retaining its response.
-func checkActor(ctx context.Context, tx *sql.Tx, scope core.Scope) error {
+// Foreground calls use authenticated Store transactions in addition to binding
+// collection work to an explicit active worker in the selected project.
+func checkBoundWorker(ctx context.Context, tx *sql.Tx, scope core.Scope) error {
 	if scope.ProjectID == "" || scope.WorkerID == "" {
 		return core.Fail("worker_required", "Select the collection project and worker.", 400)
 	}
-	if err := core.CheckProjectAdministrator(ctx, tx, scope.ProjectID, scope.PrincipalID, scope.WorkerID); err != nil {
-		return err
-	}
-	return core.CheckWorker(ctx, tx, scope.ProjectID, scope.WorkerID)
+	return core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID)
 }
 
 func checkCapacity(ctx context.Context, tx *sql.Tx, projectID string) error {
@@ -135,14 +131,13 @@ func checkCapacity(ctx context.Context, tx *sql.Tx, projectID string) error {
 // Enqueue performs only local storage work. Result waiting and provider work are
 // separate; exact original-key replay remains useful with a disabled reader.
 func (e *Engine) Enqueue(ctx context.Context, scope core.Scope, key string, selection Selection) (json.RawMessage, error) {
-	scope = scope.RequireAdministration()
 	s, err := Normalize(selection)
 	if err != nil {
 		return nil, err
 	}
 	mutation := core.Mutation{Operation: "history.collect", Target: "collections", Key: key, Request: s}
 	result, err := e.store.Mutate(ctx, scope, mutation, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		if err := checkActor(ctx, tx, scope); err != nil {
+		if err := checkBoundWorker(ctx, tx, scope); err != nil {
 			return nil, err
 		}
 		if e.provider == nil {
@@ -200,13 +195,12 @@ func readOperation(ctx context.Context, tx *sql.Tx, project, id string) (retaine
 }
 
 func (e *Engine) Read(ctx context.Context, scope core.Scope, id string) (Operation, error) {
-	scope = scope.RequireAdministration()
 	var result Operation
 	if !operationPattern.MatchString(id) {
 		return result, invalid()
 	}
-	err := e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
-		if err := checkActor(ctx, tx, scope); err != nil {
+	err := e.store.ReadForWrite(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
+		if err := checkBoundWorker(ctx, tx, scope); err != nil {
 			return err
 		}
 		r, err := readOperation(ctx, tx, scope.ProjectID, id)
@@ -219,7 +213,6 @@ func (e *Engine) Read(ctx context.Context, scope core.Scope, id string) (Operati
 // Change is a guarded explicit local action. Resume starts a new retained pass
 // at page one of the unfinished resource; cancellation never erases captures.
 func (e *Engine) Change(ctx context.Context, scope core.Scope, id, key, action string, expected int64) (json.RawMessage, error) {
-	scope = scope.RequireAdministration()
 	if !operationPattern.MatchString(id) || expected < 1 || action != "resume" && action != "cancel" {
 		return nil, invalid()
 	}
@@ -228,7 +221,7 @@ func (e *Engine) Change(ctx context.Context, scope core.Scope, id, key, action s
 		Action           string `json:"action"`
 	}{expected, action}
 	result, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "history." + action, Target: id, Key: key, Request: request}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		if err := checkActor(ctx, tx, scope); err != nil {
+		if err := checkBoundWorker(ctx, tx, scope); err != nil {
 			return nil, err
 		}
 		r, err := readOperation(ctx, tx, scope.ProjectID, id)

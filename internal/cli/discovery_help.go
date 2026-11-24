@@ -20,7 +20,7 @@ var discoveryGroups = map[string]string{
 	"vars":                      "list get set unset history",
 	"history":                   "collect collection pages export-page resume cancel",
 	"import":                    "state preview apply",
-	"reviews":                   "following follow unfollow policy policy-configure execution execution-configure attempt-settle settle-hosted queue queue-add queue-move queue-remove queue-restore queue-reorder queue-edit pull runs attempts run evidence adjudication route-create route routes route-decide route-fix assess source-assess ci-assess ci-wait actions-liveness actions-run activity scheduling readiness operations watch operation-control decide fix correct-fix operational-fix decide-batch fix-batch finalize publish publication publication-recover source-operation request start run-read operation source-refresh subagent-record subagent-read subagent-update import-preview import-apply transfer-preview transfer-apply rounds obligations",
+	"reviews":                   "following follow unfollow policy policy-configure execution execution-configure attempt-settle hosted-recover settle-hosted queue queue-add queue-move queue-remove queue-restore queue-reorder queue-edit pull runs attempts run evidence adjudication route-create route routes route-decide route-fix assess source-assess ci-assess ci-wait actions-liveness actions-run activity scheduling readiness operations watch operation-control decide fix correct-fix operational-fix decide-batch fix-batch finalize publish publication publication-recover source-operation request start run-read operation source-refresh subagent-record subagent-read subagent-update import-preview import-apply transfer-preview transfer-apply rounds obligations",
 	"reviews rounds":            "read grant close taper adopt",
 	"reviews rounds adopt":      "preview apply",
 	"reviews obligations":       "list read retarget resolve adopt",
@@ -246,7 +246,7 @@ func discoveryOperationHelp(operation string) (operationHelpResponse, bool) {
 		}
 		out.Documentation = "docs/map-import.md"
 	case "reviews queue-edit":
-		args, semantics = "--file ABSOLUTE_PRIVATE_JSON_PATH --key KEY", "Project-management selected queue metadata/order edit. Preserves omitted entries and retained review history; no provider refresh or review request. Retain the exact file, key and binding after uncertain output."
+		args, semantics = "--file ABSOLUTE_PRIVATE_JSON_PATH --key KEY", "Project-write selected queue metadata/order edit. Preserves omitted entries and retained review history; no provider refresh or review request. Retain the exact file, key and binding after uncertain output."
 		out.Documentation = "docs/review-workspace.md"
 	case "reviews pull", "reviews attempts":
 		args, semantics = "NUMBER [--snapshot SNAPSHOT_ID]", "Read retained PR state, not live provider data. Snapshot selects retained history; no refresh, review request or automatic pagination."

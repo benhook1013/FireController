@@ -56,7 +56,7 @@ The service implements project-scoped jobs, durable messages and native CLI/host
 - [Subagent reviews](subagent-reviews.md): normal worker recording, guarded findings/fix updates and shared review history without provider execution.
 - [Native review evidence controls](review-controls.md): explicit retained capture reads, guarded finding decisions, fix references and source finalization.
 - [Same-project finding routes](review-routes.md): immutable source counts, receiving decisions/fix proof, guarded rerouting and incoming-policy holds.
-- [Ended review settlement](hosted-settlement.md): guarded administrator recovery after verified external termination, preserving evidence and preventing automatic reposts.
+- [Ended review settlement](hosted-settlement.md): guarded project-writer recovery after verified external termination or explicit Hosted abandonment, preserving evidence and preventing automatic reposts.
 - [Operation discovery](review-operations.md): bounded provider-free recovery of pending operations and lost receipts.
 - [Native review execution](review-execution.md): durable operations, provider adapters, isolated workspaces and the remaining dispatch/cutover boundary.
 - [Source preparation retries](source-preparation-retry-design.md): bounded retained rate-limit waits, shared credential throttling and backup/helper compatibility.

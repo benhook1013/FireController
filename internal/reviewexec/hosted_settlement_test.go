@@ -295,10 +295,10 @@ func (r *settlementBodyReader) Read(p []byte) (int, error) {
 	r.once.Do(r.before)
 	return r.Reader.Read(p)
 }
-func TestHostedSettlementRequiresCurrentAdminIncludingReplayAndTransaction(t *testing.T) {
+func TestHostedSettlementRequiresCurrentWriteIncludingReplayAndTransaction(t *testing.T) {
 	f, a, _ := hostedSettlementFixture(t, false)
 	before := hostedObservationState(t, f, a)
-	for _, token := range []string{f.writer, f.reader, f.other, ""} {
+	for _, token := range []string{f.reader, f.other, ""} {
 		settlementError(t, f.request("POST", hostedSettlementPath(attemptProject, a), token, "denied", encoded(hostedSettlementBody(a))), map[bool]int{true: 401, false: 403}[token == ""], map[bool]string{true: "unauthorized", false: "forbidden"}[token == ""])
 	}
 	create := httptest.NewRequest("POST", "http://127.0.0.1/", nil)
@@ -325,24 +325,29 @@ func TestHostedSettlementRequiresCurrentAdminIncludingReplayAndTransaction(t *te
 	if hostedObservationState(t, f, a) != before {
 		t.Fatal("denied authority changed journal")
 	}
-	reader := &settlementBodyReader{Reader: strings.NewReader(encoded(hostedSettlementBody(a))), before: func() { admissionSQL(t, f, `UPDATE credentials SET is_admin=0 WHERE is_admin=1`) }}
+	// Authorization must be checked again after parsing the body.
+	reader := &settlementBodyReader{Reader: strings.NewReader(encoded(hostedSettlementBody(a))), before: func() {
+		admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
+	}}
 	req := httptest.NewRequest("POST", hostedSettlementPath(attemptProject, a), reader)
-	req.Header.Set("Authorization", "Bearer "+f.admin)
-	req.Header.Set("Idempotency-Key", "admin-demoted-after-auth")
+	req.Header.Set("Authorization", "Bearer "+f.writer)
+	req.Header.Set("Idempotency-Key", "writer-demoted-after-auth")
 	w = httptest.NewRecorder()
 	f.handler.ServeHTTP(w, req)
 	settlementError(t, w, 403, "forbidden")
 	if hostedObservationState(t, f, a) != before {
-		t.Fatal("transaction failed to recheck administrator")
+		t.Fatal("transaction failed to recheck project write")
 	}
-	admissionSQL(t, f, `UPDATE credentials SET is_admin=1 WHERE is_admin=0 AND id NOT IN ('exec-writer-cred','exec-reader-cred','exec-other-cred')`)
-	r := hostedSettlementCall(t, f, a, "current-admin", hostedSettlementBody(a))
-	if r.Code != 200 {
+	admissionSQL(t, f, `UPDATE grants SET can_write=1 WHERE credential_id='exec-writer-cred'`)
+	call := func() *httptest.ResponseRecorder {
+		return f.request("POST", hostedSettlementPath(attemptProject, a), f.writer, "current-writer", encoded(hostedSettlementBody(a)))
+	}
+	if r := call(); r.Code != 200 {
 		t.Fatal(r.Body.String())
 	}
 	before = hostedObservationState(t, f, a)
-	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE is_admin=1`)
-	settlementError(t, hostedSettlementCall(t, f, a, "current-admin", hostedSettlementBody(a)), 401, "unauthorized")
+	admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+	settlementError(t, call(), 401, "unauthorized")
 	if hostedObservationState(t, f, a) != before {
 		t.Fatal("revoked exact replay revived authority")
 	}

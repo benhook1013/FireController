@@ -56,13 +56,13 @@ func (e *Engine) validateConfiguration(c Configuration) error {
 // Configure retains every configuration revision. An update never silently
 // rebinds an already queued request to another provider or source policy.
 func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c Configuration) (json.RawMessage, error) {
-	scope = scope.RequireAdministration()
 	if err := validateConfigurationShape(c); err != nil {
 		return nil, err
 	}
+	if !identifier.MatchString(scope.ProjectID) {
+		return nil, invalid()
+	}
 	return e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.configure", Target: "configuration", Key: key, Request: c}, func(ctx context.Context, tx *sql.Tx) (any, error) {
-		// The administrative requirement is rechecked by Mutate before both
-		// new writes and receipt replay, including direct Go callers.
 		var revision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM review_execution_config WHERE project_id=?`, scope.ProjectID).Scan(&revision); err != nil {
 			return nil, err
@@ -82,12 +82,14 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 		if c.QueueSortMode == "" && revision > 0 {
 			c.QueueSortMode = previous.QueueSortMode
 		}
-		operator, err := core.IsInstanceAdministrator(ctx, tx, scope.PrincipalID)
-		if err != nil {
-			return nil, err
-		}
-		if !operator && (revision == 0 || c.CapabilityID != previous.CapabilityID) {
-			return nil, core.Fail("operator_capability_binding_required", "A service operator must establish or change this project's provider capability; preserve its current capability_id for project management.", 403)
+		if revision == 0 || c.CapabilityID != previous.CapabilityID {
+			operator, err := core.IsInstanceAdministrator(ctx, tx, scope.PrincipalID)
+			if err != nil {
+				return nil, err
+			}
+			if !operator {
+				return nil, core.Fail("operator_capability_binding_required", "A service operator must establish or change this project's provider capability; preserve its current capability_id.", 403)
+			}
 		}
 		if err := e.validateConfiguration(c); err != nil {
 			return nil, err
@@ -102,7 +104,7 @@ func (e *Engine) Configure(ctx context.Context, scope core.Scope, key string, c 
 	})
 }
 
-// persistConfiguration is shared by administrative replacement and narrow
+// persistConfiguration is shared by full replacement and narrow
 // ordinary queue edits. Callers establish authority and the exact prior revision.
 // A nonnil order scopes bulk reorder publication to only the selected PR slots.
 func (e *Engine) persistConfiguration(ctx context.Context, tx *sql.Tx, scope core.Scope, previous, c Configuration, revision, restore int64, order []int64) (Receipt, error) {

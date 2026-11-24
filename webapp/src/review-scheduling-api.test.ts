@@ -42,10 +42,10 @@ describe('review scheduling browser API',()=>{
     await expect(api.configureReviewScheduling('worker_one',true,0,'same-key')).rejects.toMatchObject({outcomeUnknown:true});expect(requests).toBe(1);
     await api.configureReviewScheduling('worker_one',true,0,'same-key');expect(bodies[0]).toBe(bodies[1]);expect(requests).toBe(2);
   });
-  it('enforces read-only versus project-manager capabilities before mutation',async()=>{
-    const reader=await connected(false,false);const writer=await connected(true,false);const fetch=vi.fn(async()=>json({id:'7',state:'pull_scheduling_updated',revision:1}));vi.stubGlobal('fetch',fetch);
+  it('permits both scheduling controls for writers without presentation authority',async()=>{
+    const reader=await connected(false,false);const writer=await connected(true,false);const fetch=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('/pulls/')?json({id:'7',state:'pull_scheduling_updated',revision:1}):json({id:project.id,state:'scheduling_configured',revision:1}));vi.stubGlobal('fetch',fetch);
     await expect(reader.configurePullScheduling(7,true,'',0,'key')).rejects.toMatchObject({code:'forbidden',outcomeUnknown:false});
-    await expect(writer.configureReviewScheduling('worker_one',true,0,'key')).rejects.toMatchObject({code:'forbidden',outcomeUnknown:false});expect(fetch).not.toHaveBeenCalled();
-    await writer.configurePullScheduling(7,true,'',0,'key');expect(fetch).toHaveBeenCalledTimes(1);
+    await expect(reader.configureReviewScheduling('worker_one',true,0,'key')).rejects.toMatchObject({code:'forbidden',outcomeUnknown:false});expect(fetch).not.toHaveBeenCalled();
+    await writer.configureReviewScheduling('worker_one',true,0,'key');await writer.configurePullScheduling(7,true,'',0,'key');expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

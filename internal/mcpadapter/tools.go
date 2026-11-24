@@ -279,7 +279,7 @@ func connectorToolServer(stdioBinding profile.Binding, remote *remoteMCP, multiP
 					value, err = service.ReviewFollowing(ctx, args.pullNumber)
 				case "review_following_update":
 					value, err = service.ConfigureReviewFollowing(ctx, args.key, args.pullNumber, args.following)
-				case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_revoke", "project_credential_update":
+				case "review_operation_control", "review_policy_read", "review_policy_configure", "review_execution_configure", "review_attempt_settle", "review_hosted_recover", "worker_create", "worker_retirement_read", "worker_retire", "project_credential_grant", "project_credential_revoke", "project_credential_update":
 					value, err = executeOwnerManagement(ctx, service, args.ownerManagement)
 				case "review_execution_read":
 					value, err = service.ReviewExecutionWithScheduling(ctx)

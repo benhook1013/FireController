@@ -21,6 +21,20 @@ func IsReadAdmissionOverload(err error) bool {
 // Read authorizes and reads one consistent database snapshot. Callbacks must
 // finish local queries without waiting on clients or external work.
 func (s *Store) Read(ctx context.Context, scope Scope, fn func(context.Context, *sql.Tx) error) error {
+	return s.read(ctx, scope, "read", fn)
+}
+
+// ReadForWrite previews a project mutation without writing or reserving anything.
+// It rechecks project write authority (or a stronger scope requirement) in the
+// same snapshot used by the preview.
+func (s *Store) ReadForWrite(ctx context.Context, scope Scope, fn func(context.Context, *sql.Tx) error) error {
+	if scope.ProjectID == "" {
+		return Fail("validation_failed", "A project identity is required.", 400)
+	}
+	return s.read(ctx, scope, "write", fn)
+}
+
+func (s *Store) read(ctx context.Context, scope Scope, permission string, fn func(context.Context, *sql.Tx) error) error {
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -32,7 +46,6 @@ func (s *Store) Read(ctx context.Context, scope Scope, fn func(context.Context, 
 		return storageError(err)
 	}
 	defer tx.Rollback()
-	permission := "read"
 	if scope.admin {
 		permission = "admin"
 	}

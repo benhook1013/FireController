@@ -18,16 +18,10 @@ func (s *Service) Register(mux apiroutes.Registrar) {
 	apiroutes.Client(mux).HandleFunc("POST "+base+"/{id}/resolve", s.resolveHTTP)
 	apiroutes.Client(mux).HandleFunc("POST "+base+"/{id}/retarget", s.retargetHTTP)
 }
-func (s *Service) scope(w http.ResponseWriter, r *http.Request, admin bool) (core.Scope, bool) {
-	var scope core.Scope
-	var err error
-	if admin {
-		scope, err = s.store.AdminScope(r)
-		if err == nil {
-			err = administrative(scope)
-		}
-	} else {
-		scope, err = s.store.Scope(r, "read")
+func (s *Service) scope(w http.ResponseWriter, r *http.Request, permission string) (core.Scope, bool) {
+	scope, err := s.store.Scope(r, permission)
+	if err == nil && permission == "write" {
+		err = requireImportWorker(scope)
 	}
 	if err == nil {
 		_, err = core.QueryKeys(r, "validation_failed")
@@ -39,7 +33,7 @@ func (s *Service) scope(w http.ResponseWriter, r *http.Request, admin bool) (cor
 	return scope, true
 }
 func (s *Service) previewHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, ok := s.scope(w, r, true)
+	scope, ok := s.scope(w, r, "write")
 	if !ok {
 		return
 	}
@@ -56,7 +50,7 @@ func (s *Service) previewHTTP(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, 200, out)
 }
 func (s *Service) applyHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, ok := s.scope(w, r, true)
+	scope, ok := s.scope(w, r, "write")
 	if !ok {
 		return
 	}
@@ -104,7 +98,7 @@ func (s *Service) resolveHTTP(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, 200, out)
 }
 func (s *Service) detailHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, ok := s.scope(w, r, false)
+	scope, ok := s.scope(w, r, "read")
 	if !ok {
 		return
 	}

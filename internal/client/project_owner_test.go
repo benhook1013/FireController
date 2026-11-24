@@ -47,13 +47,13 @@ func TestProjectOwnerClientActualScopedManagement(t *testing.T) {
 	writer := f.newClient(t, "synthetic-writer-token", f.sender, service.URL)
 	reader := f.newClient(t, "synthetic-reader-token", f.sender, service.URL)
 	policy := client.ConfigureReviewPolicyRequest{RequiredChannels: []string{"cli", "hosted"}, MaxReviewFiles: 99, RoundDefaults: &client.ReviewRoundDefaults{Hosted: client.ReviewRoundBounds{Minimum: 2, Maximum: 5}, CLI: client.ReviewRoundBounds{Minimum: 0, Maximum: 8}}}
-	_, err = writer.ConfigureReviewPolicy(t.Context(), "writer-policy", policy)
+	_, err = reader.ConfigureReviewPolicy(t.Context(), "reader-policy", policy)
 	checkError(t, err, "forbidden")
-	first, err := owner.ConfigureReviewPolicy(t.Context(), "owner-policy", policy)
+	first, err := writer.ConfigureReviewPolicy(t.Context(), "writer-policy", policy)
 	if err != nil || first.Revision != 1 {
 		t.Fatal(first, err)
 	}
-	replay, err := owner.ConfigureReviewPolicy(t.Context(), "owner-policy", policy)
+	replay, err := writer.ConfigureReviewPolicy(t.Context(), "writer-policy", policy)
 	if err != nil || !reflect.DeepEqual(first, replay) {
 		t.Fatal(replay, err)
 	}
@@ -64,11 +64,17 @@ func TestProjectOwnerClientActualScopedManagement(t *testing.T) {
 	_, err = owner.ConfigureReviewPolicy(t.Context(), "stale-policy", policy)
 	checkError(t, err, "review_conflict")
 	initial := client.ConfigureReviewExecutionRequest{CapabilityID: "owner-capability", Mode: "independent", Queue: []int64{2}, Channels: []string{"cli", "hosted"}}
+	_, err = writer.ConfigureReviewExecution(t.Context(), "writer-bind", initial)
+	checkError(t, err, "operator_capability_binding_required")
 	f.call(t, "POST", "/api/v1/projects/"+f.project+"/reviews/execution/configuration", f.admin, f.sender, initial)
 	config := client.ConfigureReviewExecutionRequest{ExpectedRevision: 1, CapabilityID: "owner-capability", Mode: "independent", Queue: []int64{}, Channels: []string{"cli", "hosted"}}
-	_, err = writer.ConfigureReviewExecution(t.Context(), "writer-execution", config)
+	_, err = reader.ConfigureReviewExecution(t.Context(), "reader-execution", config)
 	checkError(t, err, "forbidden")
-	configured, err := owner.ConfigureReviewExecution(t.Context(), "owner-execution", config)
+	rebind := config
+	rebind.CapabilityID = "other-capability"
+	_, err = owner.ConfigureReviewExecution(t.Context(), "owner-rebind", rebind)
+	checkError(t, err, "operator_capability_binding_required")
+	configured, err := writer.ConfigureReviewExecution(t.Context(), "writer-execution", config)
 	if err != nil || configured.Revision != 2 {
 		t.Fatalf("configuration: %+v error: %#v", configured, err)
 	}

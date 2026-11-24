@@ -2,9 +2,7 @@ package historycollect
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,8 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/benhook1013/FireController/internal/core"
 )
 
 type collectionHTTPFixture struct {
@@ -206,45 +202,63 @@ func TestCollectionHTTPAdmissionErrorsAreProviderFreeAndAtomic(t *testing.T) {
 
 func TestCollectionHTTPCurrentAuthorityCookieAndProjectIsolation(t *testing.T) {
 	h := newCollectionHTTPFixture(t)
-	body, _ := collectionHTTPDo(t, h.request(t, "POST", h.path(), "one", `{"pull_numbers":[47]}`, "wait=0"), 202)
-	id := collectionHTTPReceipt(t, body).ID
-	other, otherWorker := h.f.project(t, "other/repository")
-	foreign := h.request(t, "GET", "/api/v1/projects/"+other+"/history/collections/"+id, "", "")
-	foreign.Header.Set("X-FC-Worker", otherWorker)
-	before := collectionStoreRows(t, h.f)
-	collectionHTTPDo(t, foreign, 404)
-	if before != collectionStoreRows(t, h.f) {
-		t.Fatal("foreign-project read changed retained state")
-	}
-	for _, permissions := range []string{`["read"]`, `["read","write"]`} {
-		token := core.NewID("ordinary")
-		sum := sha256.Sum256([]byte(token))
-		h.f.request(t, "POST", "/api/v1/projects/"+h.project+"/credentials", h.f.admin, "", `{"token_sha256":"`+hex.EncodeToString(sum[:])+`","permissions":`+permissions+`}`, 200)
-		before = collectionStoreRows(t, h.f)
-		for _, method := range []string{"GET", "POST"} {
-			path := h.path()
-			if method == "GET" {
-				path += "/" + id
-			}
-			r := h.request(t, method, path, "ordinary", `{"pull_numbers":[47]}`, "wait=0")
+	writer, _ := collectionGrant(t, h.f, h.project, h.worker, `["read","write"]`)
+	reader, _ := collectionGrant(t, h.f, h.project, h.worker, `["read"]`)
+	requestAs := func(token, method, path, key, body string) *http.Request {
+		r := h.request(t, method, path, key, body, "wait=0")
+		if token == "" {
+			r.Header.Del("Authorization")
+		} else {
 			r.Header.Set("Authorization", "Bearer "+token)
-			collectionHTTPDo(t, r, 403)
 		}
-		if before != collectionStoreRows(t, h.f) {
-			t.Fatal("ordinary credential refusal changed retained state")
-		}
+		return r
 	}
+	const selection = `{"pull_numbers":[47,12]}`
+	body, _ := collectionHTTPDo(t, requestAs(writer, "POST", h.path(), "one", selection), 202)
+	id := collectionHTTPReceipt(t, body).ID
+	path := h.path() + "/" + id
+	collectionAdvance(t, h.e)
+	collectionStorePause(t, h.f, id)
+	collectionHTTPDo(t, requestAs(writer, "GET", path, "", ""), 200)
+	body, _ = collectionHTTPDo(t, requestAs(writer, "GET", path+"/pages", "", ""), 200)
+	var list PageList
+	if json.Unmarshal(body, &list) != nil || len(list.Items) != 1 {
+		t.Fatal("writer did not receive the retained page list")
+	}
+	page := "/pages/" + list.Items[0].ID
+	body, _ = collectionHTTPDo(t, requestAs(writer, "GET", path+page, "", ""), 200)
+	var capture Capture
+	if json.Unmarshal(body, &capture) != nil || capture.PullNumber != 47 || capture.Resource != "pull" || len(capture.Facts) == 0 {
+		t.Fatal("writer did not receive the selected capture")
+	}
+	collectionHTTPDo(t, requestAs(writer, "POST", path+"/resume", "resume", `{"expected_revision":4}`), 200)
+	collectionHTTPDo(t, requestAs(writer, "POST", path+"/cancel", "cancel", `{"expected_revision":5}`), 200)
+	collectionHTTPDo(t, requestAs(writer, "GET", path+page, "", ""), 200)
+
+	other, otherWorker := h.f.project(t, "other/repository")
+	otherWriter, _ := collectionGrant(t, h.f, other, otherWorker, `["read","write"]`)
 	session := strings.Repeat("b", 32)
 	cookie := h.f.request(t, "POST", "/api/v1/projects/"+h.project+"/browser-session", h.f.admin, "", `{"session_id":"`+session+`"}`, 200)
-	before = collectionStoreRows(t, h.f)
-	r := h.request(t, "GET", h.path()+"/"+id, "", "")
-	r.Header.Del("Authorization")
+	before := collectionStoreRows(t, h.f)
+	for _, suffix := range []string{"", "/pages", page} {
+		collectionHTTPDo(t, requestAs(reader, "GET", path+suffix, "", ""), 403)
+		collectionHTTPDo(t, requestAs(otherWriter, "GET", path+suffix, "", ""), 403)
+		foreign := requestAs(otherWriter, "GET", "/api/v1/projects/"+other+"/history/collections/"+id+suffix, "", "")
+		foreign.Header.Set("X-FC-Worker", otherWorker)
+		collectionHTTPDo(t, foreign, 404)
+	}
+	collectionHTTPDo(t, requestAs("", "GET", path+page, "", ""), 401)
+	collectionHTTPDo(t, requestAs(reader, "POST", h.path(), "reader", selection), 403)
+	for _, action := range []string{"resume", "cancel"} {
+		collectionHTTPDo(t, requestAs(reader, "POST", path+"/"+action, "reader", `{"expected_revision":5}`), 403)
+	}
+	r := requestAs("", "GET", path+page, "", "")
 	r.Header.Set("X-FC-Browser-Session", session)
 	for _, c := range cookie.Result().Cookies() {
 		r.AddCookie(c)
 	}
 	collectionHTTPDo(t, r, 403)
-	if before != collectionStoreRows(t, h.f) || len(h.f.provider.calls) != 0 {
+	if before != collectionStoreRows(t, h.f) || len(h.f.provider.calls) != 2 {
 		t.Fatal("rejected authority altered acquisition rows or invoked providers")
 	}
 }

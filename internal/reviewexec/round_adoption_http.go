@@ -54,7 +54,7 @@ func decodeRoundAdoption(raw json.RawMessage) (roundadoptionmodel.Prepared, erro
 	return p, nil
 }
 func (e *Engine) previewRoundAdoptionHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -81,7 +81,7 @@ func (e *Engine) previewRoundAdoptionHTTP(w http.ResponseWriter, r *http.Request
 	core.WriteJSON(w, 200, value)
 }
 func (e *Engine) applyRoundAdoptionHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return

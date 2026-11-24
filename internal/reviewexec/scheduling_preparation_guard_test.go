@@ -57,7 +57,7 @@ func TestSchedulingPreparationGuardRetainsOperation(t *testing.T) {
 							t.Fatal(err)
 						}
 					case "withdraw":
-						admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+						admissionSQL(t, f, `UPDATE grants SET can_write=0 WHERE credential_id='exec-writer-cred'`)
 					}
 					_, err := f.e.ExecutionContext(ctx, o.ProjectID, o.ID)
 					attemptCode(t, err, expected)

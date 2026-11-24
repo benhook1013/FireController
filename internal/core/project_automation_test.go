@@ -101,12 +101,13 @@ func TestAuthenticatedCredentialIDRetainsExactIdentityAndScopeCeilings(t *testin
 	browserCoreCode(t, err, "forbidden")
 }
 
-func TestProjectAutomationScopeRequiresExactCurrentManagementAndActiveWorker(t *testing.T) {
+func TestProjectAutomationScopeRequiresExactCurrentWriteAndActiveWorker(t *testing.T) {
 	s, _ := automationFixture(t)
 	for _, tc := range []struct {
 		name, project, principal, worker, credential, query, code string
 	}{
 		{name: "valid"},
+		{name: "writer-without-manage", query: `UPDATE grants SET can_manage=0 WHERE credential_id='credential'`},
 		{name: "instance-administrator", query: `UPDATE grants SET can_manage=0 WHERE credential_id='credential'; UPDATE credentials SET is_admin=1 WHERE id='credential'`},
 		{name: "missing-credential", credential: "missing", code: "forbidden"},
 		{name: "wrong-principal", principal: "another-principal", code: "forbidden"},
@@ -117,7 +118,7 @@ func TestProjectAutomationScopeRequiresExactCurrentManagementAndActiveWorker(t *
 		{name: "missing-worker", worker: "missing", code: "not_found"},
 		{name: "foreign-worker", worker: "foreign-worker", code: "not_found"},
 		{name: "revoked-original", query: `UPDATE credentials SET revoked=1 WHERE id='credential'`, code: "forbidden"},
-		{name: "demoted-original", query: `UPDATE grants SET can_manage=0 WHERE credential_id='credential'`, code: "forbidden"},
+		{name: "demoted-original", query: `UPDATE grants SET can_write=0,can_manage=0 WHERE credential_id='credential'`, code: "forbidden"},
 		{name: "retired-worker", query: `INSERT INTO worker_retirements VALUES('project','worker','2026-11-01T00:00:00Z','synthetic-actor')`, code: "worker_retired"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,8 +149,8 @@ func TestProjectAutomationScopeRequiresExactCurrentManagementAndActiveWorker(t *
 				}
 				return
 			}
-			if err != nil || background.ProjectID != project || background.PrincipalID != principal || background.WorkerID != worker || !background.Administrative() {
-				t.Fatal("background scope lost exact management attribution", err)
+			if err != nil || background.ProjectID != project || background.PrincipalID != principal || background.WorkerID != worker || background.Administrative() {
+				t.Fatal("background scope lost exact attribution or required management", err)
 			}
 			id, err := s.AuthenticatedCredentialID(t.Context(), tx, background)
 			if err != nil || id != credential {
@@ -179,18 +180,16 @@ func TestProjectAutomationScopeReauthorizesAtNormalStoreBoundaries(t *testing.T)
 	}
 	mutation := Mutation{Operation: "test.automation", Target: "local-control", Key: "original-automation-key", Request: struct{}{}}
 	if _, err := s.Mutate(t.Context(), background, mutation, func(context.Context, *sql.Tx) (any, error) { return map[string]string{"outcome": "stored"}, nil }); err != nil {
-		t.Fatal("current background management scope was unusable", err)
+		t.Fatal("current background write scope was unusable", err)
 	}
 	for _, tc := range []struct{ query, reset, code string }{
-		{`UPDATE grants SET can_manage=0 WHERE credential_id='credential'`, `UPDATE grants SET can_manage=1 WHERE credential_id='credential'`, "forbidden"},
+		{`UPDATE grants SET can_write=0,can_manage=0 WHERE credential_id='credential'`, `UPDATE grants SET can_write=1,can_manage=1 WHERE credential_id='credential'`, "forbidden"},
 		{`UPDATE credentials SET revoked=1 WHERE id='credential'`, `UPDATE credentials SET revoked=0 WHERE id='credential'`, "unauthorized"},
 	} {
 		if _, err := s.DB().Exec(tc.query); err != nil {
 			t.Fatal(err)
 		}
 		called := false
-		err := s.Read(t.Context(), background, func(context.Context, *sql.Tx) error { called = true; return nil })
-		browserCoreCode(t, err, tc.code)
 		_, err = s.Mutate(t.Context(), background, mutation, func(context.Context, *sql.Tx) (any, error) { called = true; return nil, nil })
 		browserCoreCode(t, err, tc.code)
 		_, _, err = s.Replay(t.Context(), background, mutation)

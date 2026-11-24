@@ -354,15 +354,24 @@ func TestCollectionWorkerCancellationDiscardsUncommittedResponse(t *testing.T) {
 
 func TestCollectionWorkerBindingRecheckedBeforeReadAndCommit(t *testing.T) {
 	for _, boundary := range []string{"before-read", "before-commit"} {
-		for _, kind := range []string{"revoked", "fingerprint", "repository"} {
+		for _, kind := range []string{"revoked", "write-removed", "worker-retired", "fingerprint", "repository"} {
 			t.Run(boundary+"/"+kind, func(t *testing.T) {
-				f, e, scope, r := collectionWorkerSetup(t, Selection{[]int64{47}})
+				f := newCollectionStoreFixture(t)
+				p, w := f.project(t, "owner/one")
+				token, grant := collectionGrant(t, f, p, w, `["read","write"]`)
+				scope := f.scope(t, p, w, token)
+				e := f.engine(t)
+				r := f.enqueue(t, scope, "collection-binding", Selection{[]int64{47}})
 				mutate := func() {
 					t.Helper()
 					var err error
 					switch kind {
 					case "revoked":
 						_, err = f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE principal_id=?`, scope.PrincipalID)
+					case "write-removed":
+						_, err = f.store.DB().Exec(`UPDATE grants SET can_write=0 WHERE credential_id=? AND project_id=?`, grant, p)
+					case "worker-retired":
+						_, err = f.store.DB().Exec(`INSERT INTO worker_retirements(project_id,worker_id,retired_at,actor_id) VALUES(?,?,?,?)`, p, w, stamp(), scope.PrincipalID)
 					case "repository":
 						_, err = f.store.DB().Exec(`UPDATE projects SET github_repository_id=124 WHERE id=?`, scope.ProjectID)
 					case "fingerprint":
@@ -389,7 +398,7 @@ func TestCollectionWorkerBindingRecheckedBeforeReadAndCommit(t *testing.T) {
 					t.Fatal(err)
 				}
 				expected := "configuration_changed"
-				if kind == "revoked" {
+				if kind == "revoked" || kind == "write-removed" || kind == "worker-retired" {
 					expected = "authorization_changed"
 				}
 				pages, seen, _ := collectionCounts(t, f.store, r.ID)

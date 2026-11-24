@@ -150,7 +150,7 @@ func validateQueueEdit(req *QueueEditRequest) error {
 
 func editQueue(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, err := store.AdminScope(r)
+		scope, err := store.Scope(r, "write")
 		if err != nil {
 			core.WriteError(w, err)
 			return

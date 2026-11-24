@@ -83,22 +83,22 @@ func (e *Engine) admitRoundAdoption(ctx context.Context, tx *sql.Tx, scope core.
 	return nil
 }
 func (e *Engine) PreviewRoundAdoption(ctx context.Context, scope core.Scope, input roundadoptionmodel.Prepared) (roundadoptionmodel.Preview, error) {
-	if !scope.Administrative() || scope.WorkerID == "" {
-		return roundadoptionmodel.Preview{}, core.Fail("forbidden", "Administrative worker permission is required.", 403)
+	if scope.WorkerID == "" {
+		return roundadoptionmodel.Preview{}, core.Fail("forbidden", "Project worker attribution is required.", 403)
 	}
 	p, body, err := normalizeRoundAdoption(input)
 	if err != nil {
 		return roundadoptionmodel.Preview{}, err
 	}
-	err = e.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error { return e.admitRoundAdoption(ctx, tx, scope, p) })
+	err = e.store.ReadForWrite(ctx, scope, func(ctx context.Context, tx *sql.Tx) error { return e.admitRoundAdoption(ctx, tx, scope, p) })
 	if err != nil {
 		return roundadoptionmodel.Preview{}, err
 	}
 	return e.roundAdoptionPreview(scope, p, body), nil
 }
 func (e *Engine) ApplyRoundAdoption(ctx context.Context, scope core.Scope, key string, input roundadoptionmodel.ApplyRequest) (json.RawMessage, error) {
-	if !scope.Administrative() || scope.WorkerID == "" {
-		return nil, core.Fail("forbidden", "Administrative worker permission is required.", 403)
+	if scope.WorkerID == "" {
+		return nil, core.Fail("forbidden", "Project worker attribution is required.", 403)
 	}
 	p, body, err := normalizeRoundAdoption(input.Control)
 	if err != nil {

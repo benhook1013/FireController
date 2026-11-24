@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
+
+	"github.com/benhook1013/FireController/internal/core"
 )
 
 type queueSortingView struct {
@@ -17,10 +18,11 @@ type queueSortingView struct {
 }
 
 func (e *Engine) queueSortingHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.Scope(r, "read")
+	permission := "read"
 	if r.Method == http.MethodPost {
-		scope, err = e.store.AdminScope(r)
+		permission = "write"
 	}
+	scope, err := e.store.Scope(r, permission)
 	if err != nil {
 		core.WriteError(w, err)
 		return

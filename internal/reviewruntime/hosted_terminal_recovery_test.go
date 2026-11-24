@@ -90,7 +90,18 @@ func TestTerminalHostedRecoveryOriginalEvidenceAndReplay(t *testing.T) {
 	f := terminalHostedFixture(t)
 	path := filepath.Join(f.f.captures.root, hostedCaptureFilename(f.f.a.ID, f.ref))
 	before, _ := os.ReadFile(path)
-	result := f.call(t, f.f.f.admin, "original-repair")
+	status, err := f.f.f.engine.ReadOperationStatus(t.Context(), f.f.f.scopeWithAccess(t, f.f.f.writer, false, "read"), f.f.a.OperationID)
+	if err != nil || status.HostedRecoveryTarget == nil {
+		t.Fatal("missing bound recovery target", err)
+	}
+	guard, err := json.Marshal(status.HostedRecoveryTarget)
+	expected, _ := json.Marshal(f.request)
+	var actualRequest, expectedRequest map[string]any
+	if err != nil || json.Unmarshal(guard, &actualRequest) != nil || json.Unmarshal(expected, &expectedRequest) != nil ||
+		!reflect.DeepEqual(actualRequest, expectedRequest) {
+		t.Fatal("recovery guards changed", string(guard), string(expected), err)
+	}
+	result := f.call(t, f.f.f.writer, "original-repair")
 	if result.Code != 200 {
 		t.Fatalf("%d %s", result.Code, result.Body)
 	}
@@ -123,23 +134,23 @@ func TestTerminalHostedRecoveryOriginalEvidenceAndReplay(t *testing.T) {
 	if err := os.Rename(path, path+".held"); err != nil {
 		t.Fatal(err)
 	}
-	replay := f.call(t, f.f.f.admin, "original-repair")
+	replay := f.call(t, f.f.f.writer, "original-repair")
 	if replay.Code != 200 || replay.Body.String() != result.Body.String() || recoveryRuntimeCount(t, f.f.f, "events") != events {
 		t.Fatal("non-idempotent replay", replay.Code, replay.Body)
 	}
 	f.request["capture_sha256"] = strings.Repeat("f", 64)
-	if changed := f.call(t, f.f.f.admin, "original-repair"); changed.Code != 409 {
+	if changed := f.call(t, f.f.f.writer, "original-repair"); changed.Code != 409 {
 		t.Fatal("changed replay accepted", changed.Code, changed.Body)
 	}
 }
 func TestTerminalHostedRecoveryRefusesWithoutMutation(t *testing.T) {
-	for _, kind := range []string{"worker", "wrong revision", "wrong operation", "wrong head", "wrong capture", "wrong capability", "missing release", "wrong release capture", "wrong release trigger", "wrong transition", "corrupt capture", "corrupt baseline", "missing baseline", "latest source mismatch", "orphan reservation", "pending replacement", "unsupported inventory", "event rollback", "projection rollback", "missing current metadata"} {
+	for _, kind := range []string{"reader", "wrong revision", "wrong operation", "wrong head", "wrong capture", "wrong capability", "missing release", "wrong release capture", "wrong release trigger", "wrong transition", "corrupt capture", "corrupt baseline", "missing baseline", "latest source mismatch", "orphan reservation", "pending replacement", "unsupported inventory", "event rollback", "projection rollback", "missing current metadata"} {
 		t.Run(kind, func(t *testing.T) {
 			f := terminalHostedFixture(t)
 			token := f.f.f.admin
 			switch kind {
-			case "worker":
-				token = f.f.f.writer
+			case "reader":
+				token = f.f.f.reader
 			case "wrong revision":
 				f.request["expected_revision"] = int64(99)
 			case "wrong operation":

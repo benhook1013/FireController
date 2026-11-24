@@ -13,9 +13,9 @@ import (
 type Service struct{ store *core.Store }
 
 func New(store *core.Store) *Service { return &Service{store: store} }
-func administrative(scope core.Scope) error {
-	if !scope.Administrative() || scope.WorkerID == "" {
-		return core.Fail("forbidden", "Administrative worker permission is required.", 403)
+func requireImportWorker(scope core.Scope) error {
+	if scope.WorkerID == "" {
+		return core.Fail("forbidden", "Project worker attribution is required.", 403)
 	}
 	return nil
 }
@@ -68,7 +68,7 @@ func admit(ctx context.Context, tx *sql.Tx, scope core.Scope, b m.Batch) ([]m.Ob
 	return added, nil
 }
 func (s *Service) Preview(ctx context.Context, scope core.Scope, input m.Batch) (m.Preview, error) {
-	if err := administrative(scope); err != nil {
+	if err := requireImportWorker(scope); err != nil {
 		return m.Preview{}, err
 	}
 	b, body, err := NormalizeBatch(input)
@@ -76,7 +76,7 @@ func (s *Service) Preview(ctx context.Context, scope core.Scope, input m.Batch) 
 		return m.Preview{}, err
 	}
 	var added []m.Obligation
-	err = s.store.Read(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
+	err = s.store.ReadForWrite(ctx, scope, func(ctx context.Context, tx *sql.Tx) error {
 		var err error
 		added, err = admit(ctx, tx, scope, b)
 		return err
@@ -87,7 +87,7 @@ func (s *Service) Preview(ctx context.Context, scope core.Scope, input m.Batch) 
 	return preview(s.store, scope, b, body, len(added)), nil
 }
 func (s *Service) Apply(ctx context.Context, scope core.Scope, key string, input m.ApplyRequest) (json.RawMessage, error) {
-	if err := administrative(scope); err != nil {
+	if err := requireImportWorker(scope); err != nil {
 		return nil, err
 	}
 	b, body, err := NormalizeBatch(input.Batch)
@@ -160,7 +160,7 @@ func (s *Service) Resolve(ctx context.Context, scope core.Scope, id, key string,
 		return nil, core.Fail("forbidden", "Project worker attribution is required.", 403)
 	}
 	// Mutate rechecks project write authority before both first writes and
-	// retained receipt replay; import itself remains administrator-only.
+	// retained receipt replay.
 	if !identifier.MatchString(id) {
 		return nil, invalid()
 	}

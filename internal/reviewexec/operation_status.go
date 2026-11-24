@@ -16,25 +16,26 @@ import (
 
 // OperationStatus is a compact read projection, never execution or coverage authority.
 type OperationStatus struct {
-	SettlementTarget   *SettlementTarget     `json:"settlement_target,omitempty"`
-	Observer           *HostedObserverStatus `json:"observer,omitempty"`
-	Wait               *OperationWait        `json:"wait,omitempty"`
-	SourceRefusal      *SourceRefusal        `json:"source_refusal,omitempty"`
-	PendingEvidence    *PendingEvidence      `json:"pending_evidence,omitempty"`
-	ID                 string                `json:"id"`
-	PullNumber         int64                 `json:"pull_number"`
-	Channel            string                `json:"channel"`
-	State              string                `json:"state"`
-	Revision           int64                 `json:"revision"`
-	Stage              string                `json:"stage"`
-	Reason             string                `json:"reason"`
-	AttemptID          string                `json:"attempt_id"`
-	EvidenceID         string                `json:"evidence_id,omitempty"`
-	ReviewFinishedAt   string                `json:"review_finished_at,omitempty"`
-	EvidenceRecordedAt string                `json:"evidence_recorded_at,omitempty"`
-	RetryNotBefore     string                `json:"retry_not_before,omitempty"`
-	UpdatedAt          string                `json:"updated_at"`
-	NextAction         string                `json:"next_action"`
+	HostedRecoveryTarget *hostedRetainedRequest `json:"hosted_recovery_target,omitempty"`
+	SettlementTarget     *SettlementTarget      `json:"settlement_target,omitempty"`
+	Observer             *HostedObserverStatus  `json:"observer,omitempty"`
+	Wait                 *OperationWait         `json:"wait,omitempty"`
+	SourceRefusal        *SourceRefusal         `json:"source_refusal,omitempty"`
+	PendingEvidence      *PendingEvidence       `json:"pending_evidence,omitempty"`
+	ID                   string                 `json:"id"`
+	PullNumber           int64                  `json:"pull_number"`
+	Channel              string                 `json:"channel"`
+	State                string                 `json:"state"`
+	Revision             int64                  `json:"revision"`
+	Stage                string                 `json:"stage"`
+	Reason               string                 `json:"reason"`
+	AttemptID            string                 `json:"attempt_id"`
+	EvidenceID           string                 `json:"evidence_id,omitempty"`
+	ReviewFinishedAt     string                 `json:"review_finished_at,omitempty"`
+	EvidenceRecordedAt   string                 `json:"evidence_recorded_at,omitempty"`
+	RetryNotBefore       string                 `json:"retry_not_before,omitempty"`
+	UpdatedAt            string                 `json:"updated_at"`
+	NextAction           string                 `json:"next_action"`
 }
 
 // SettlementTarget contains original-attempt guards, not settlement eligibility
@@ -107,6 +108,13 @@ func (e *Engine) ReadOperationStatus(ctx context.Context, scope core.Scope, id s
 			result.Reason = facts.CLIFailureReason
 		}
 		result.SettlementTarget = facts.SettlementTarget
+		if e.hostedRetainedDecoder != nil && o.Channel == "hosted" && o.State == "failed" &&
+			o.Reason == HostedFinishedIncompleteReason && facts.ID == "" && facts.SettlementTarget != nil {
+			result.HostedRecoveryTarget, err = hostedRecoveryTarget(ctx, tx, o, *facts.SettlementTarget)
+			if err != nil {
+				return err
+			}
+		}
 		result.Wait = currentOperationWait(o)
 		result.Observer = e.observerStatus(o)
 		result.SourceRefusal, err = readSourceRefusal(ctx, tx, o)

@@ -44,11 +44,8 @@ func TestReviewSchedulingClientActualHTTPControlsDoNotStartWork(t *testing.T) {
 		sum := sha256.Sum256([]byte(token))
 		return f.call(t, "POST", "/api/v1/projects/"+f.project+"/credentials", f.admin, f.sender, map[string]any{"token_sha256": hex.EncodeToString(sum[:]), "permissions": permissions})["id"].(string)
 	}
-	const ownerToken = "synthetic-scheduling-owner"
-	ownerID := grant(ownerToken, []string{"manage"})
-	grant("synthetic-scheduling-writer", []string{"read", "write"})
+	writerID := grant("synthetic-scheduling-writer", []string{"read", "write"})
 	grant("synthetic-scheduling-reader", []string{"read"})
-	owner := f.newClient(t, ownerToken, f.sender, service.URL)
 	writer := f.newClient(t, "synthetic-scheduling-writer", f.sender, service.URL)
 	reader := f.newClient(t, "synthetic-scheduling-reader", f.sender, service.URL)
 	providerCalls := f.providerCalls.Load()
@@ -85,17 +82,17 @@ func TestReviewSchedulingClientActualHTTPControlsDoNotStartWork(t *testing.T) {
 		t.Fatal("project GET lost queue-filtered pauses or added per-PR requests", filtered, err)
 	}
 	enable := client.ConfigureReviewSchedulingRequest{AutomaticHosted: true}
-	_, err = writer.ConfigureReviewScheduling(t.Context(), "writer-enable", enable)
+	_, err = reader.ConfigureReviewScheduling(t.Context(), "reader-enable", enable)
 	checkError(t, err, "forbidden")
-	enabled, err := owner.ConfigureReviewScheduling(t.Context(), "owner-enable", enable)
+	enabled, err := writer.ConfigureReviewScheduling(t.Context(), "writer-enable", enable)
 	if err != nil || enabled.ID != f.project || enabled.Revision != 1 {
 		t.Fatal(enabled, err)
 	}
-	again, err := owner.ConfigureReviewScheduling(t.Context(), "owner-enable", enable)
+	again, err := writer.ConfigureReviewScheduling(t.Context(), "writer-enable", enable)
 	if err != nil || !reflect.DeepEqual(enabled, again) {
 		t.Fatal("enable replay changed", again, err)
 	}
-	_, err = owner.ConfigureReviewScheduling(t.Context(), "stale-enable", enable)
+	_, err = writer.ConfigureReviewScheduling(t.Context(), "stale-enable", enable)
 	checkError(t, err, "review_conflict")
 	current, err := reader.ReviewScheduling(t.Context())
 	if err != nil || !current.AutomaticHosted || current.Revision != 1 || current.AuthorizingWorkerID != f.sender || current.Reason != "" {
@@ -109,14 +106,14 @@ func TestReviewSchedulingClientActualHTTPControlsDoNotStartWork(t *testing.T) {
 	if err != nil || resumed.Paused || resumed.Revision != 2 || resumed.Reason != "" {
 		t.Fatal(resumed, err)
 	}
-	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id=?`, ownerID); err != nil {
+	if _, err := f.store.DB().Exec(`UPDATE credentials SET revoked=1 WHERE id=?`, writerID); err != nil {
 		t.Fatal(err)
 	}
 	withdrawn, err := reader.ReviewScheduling(t.Context())
 	if err != nil || !withdrawn.AutomaticHosted || withdrawn.Reason != "authorizer_unavailable" || withdrawn.AuthorizingWorkerID != f.sender || len(withdrawn.PausedPulls) != 0 {
 		t.Fatal("withdrawn original authorization was not reported truthfully", withdrawn, err)
 	}
-	_, err = owner.ConfigureReviewScheduling(t.Context(), "owner-enable", enable)
+	_, err = writer.ConfigureReviewScheduling(t.Context(), "writer-enable", enable)
 	checkError(t, err, "unauthorized")
 	for _, table := range []string{"review_operations", "review_execution_attempts", "review_execution_reservations", "review_execution_evidence", "review_round_completions", "review_selections", "review_automatic_selections"} {
 		var count int

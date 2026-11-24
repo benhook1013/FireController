@@ -17,7 +17,7 @@ import (
 // Register exposes project-scoped execution controls and retained evidence.
 // Provider work always runs outside these request handlers.
 func (e *Engine) Register(mux apiroutes.Registrar) {
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/retained-recovery", e.recoverHostedRetainedHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/retained-recovery", e.recoverHostedRetainedHTTP)
 	e.registerFollowingHTTP(mux)
 	e.registerCIWatchHTTP(mux)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/actions-liveness/observe", e.actionsDiagnosticHTTP)
@@ -31,8 +31,8 @@ func (e *Engine) Register(mux apiroutes.Registrar) {
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/fronts", e.readFrontsHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/selections", e.enqueueRunHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/selections/{selection_id}", e.readRunHTTP)
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/adoption/preview", e.previewRoundAdoptionHTTP)
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/adoption/apply", e.applyRoundAdoptionHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/adoption/preview", e.previewRoundAdoptionHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/adoption/apply", e.applyRoundAdoptionHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/rounds/progress", e.readRoundProgressHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/rounds/{pull_number}/{channel}", e.readRoundControlHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/rounds/{pull_number}/{channel}", e.configureRoundControlHTTP)
@@ -50,13 +50,13 @@ func (e *Engine) Register(mux apiroutes.Registrar) {
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/source-refreshes/{refresh_id}", e.readSourceRefreshHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/policy", e.readSourcePolicyAssessmentHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/source/{pull_number}/ci", e.readSourceCIAssessmentHTTP)
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/settlement", e.settleAttemptHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/attempts/{attempt_id}/settlement", e.settleAttemptHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/policy", e.readPolicyHTTP)
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/policy", e.configurePolicyHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/policy", e.configurePolicyHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/queue-sorting", e.queueSortingHTTP)
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/queue-sorting", e.queueSortingHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/queue-sorting", e.queueSortingHTTP)
 	apiroutes.Client(mux).HandleFunc("GET /api/v1/projects/{project_id}/reviews/execution/configuration", e.readExecutionConfigurationHTTP)
-	apiroutes.Private(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
+	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/configuration", e.configureHTTP)
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/add", e.changeQueueHTTP("add"))
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/remove", e.changeQueueHTTP("remove"))
 	apiroutes.Client(mux).HandleFunc("POST /api/v1/projects/{project_id}/reviews/execution/queue/move", e.changeQueueHTTP("move"))
@@ -81,7 +81,7 @@ func (e *Engine) Register(mux apiroutes.Registrar) {
 }
 
 func (e *Engine) configureHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.AdminScope(r)
+	scope, err := e.store.Scope(r, "write")
 	if err != nil {
 		core.WriteError(w, err)
 		return

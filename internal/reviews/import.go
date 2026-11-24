@@ -44,7 +44,7 @@ type ImportApplyRequest struct {
 
 func previewImport(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, err := store.AdminScope(r)
+		scope, err := store.Scope(r, "write")
 		if err != nil {
 			core.WriteError(w, err)
 			return
@@ -64,7 +64,7 @@ func previewImport(store *core.Store) http.HandlerFunc {
 			return
 		}
 		var response ImportPreview
-		err = store.Read(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
+		err = store.ReadForWrite(r.Context(), scope, func(ctx context.Context, tx *sql.Tx) error {
 			if _, err := admitObservation(ctx, tx, scope.ProjectID, req); err != nil {
 				return err
 			}
@@ -82,7 +82,7 @@ func previewImport(store *core.Store) http.HandlerFunc {
 
 func applyImport(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, err := store.AdminScope(r)
+		scope, err := store.Scope(r, "write")
 		if err != nil {
 			core.WriteError(w, err)
 			return
