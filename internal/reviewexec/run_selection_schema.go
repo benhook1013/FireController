@@ -51,6 +51,7 @@ func requireUnquarantinedSelectionLink(ctx context.Context, q EvidenceQuery, pro
 	  (o.id IS NULL OR (o.project_id=s.project_id AND o.actor_id=s.actor_id AND o.worker_id=s.worker_id AND
 	     o.channel=s.channel AND o.configuration_revision=s.configuration_revision AND o.policy_revision=s.policy_revision AND
 	     o.capability_fingerprint=s.capability_fingerprint AND (s.expected_pull_number=0 OR s.expected_pull_number=o.pull_number)))
+	  AND NOT EXISTS(SELECT 1 FROM review_selections live WHERE live.operation_id=d.original_operation_id)
 	  AND NOT EXISTS(SELECT 1 FROM review_automatic_selections a WHERE a.selection_id=s.id AND
 	    (a.project_id<>s.project_id OR a.actor_id<>s.actor_id OR a.worker_id<>s.worker_id OR
 	     typeof(a.pull_number)<>'integer' OR a.pull_number<0 OR a.pull_number>2147483647 OR

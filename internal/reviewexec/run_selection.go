@@ -235,7 +235,10 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 		return c, 0, "repository_changed", nil
 	}
 	var busy bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations o
+ WHERE o.project_id=? AND o.channel=? AND o.state IN ('queued','preparing','posting','active','uncertain')
+ AND NOT (o.channel='hosted' AND o.state='queued' AND EXISTS(SELECT 1 FROM review_pull_scheduling p
+   WHERE p.project_id=o.project_id AND p.pull_number=o.pull_number AND typeof(p.paused)='integer' AND p.paused=1)))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
 	}
 	if busy {

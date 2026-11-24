@@ -89,10 +89,10 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 	var superseded bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(
  SELECT 1 FROM review_selections s WHERE s.project_id=? AND s.channel=? AND s.id<>?
- AND julianday(s.created_at)>=julianday(?)
+ AND (julianday(s.created_at) IS NULL OR julianday(s.created_at)>=julianday(?))
  AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.id AND e.event_type='review.selection_requested' AND e.revision=1)
 ) OR EXISTS(
- SELECT 1 FROM review_operations o WHERE o.project_id=? AND o.channel=? AND julianday(o.created_at)>=julianday(?)
+ SELECT 1 FROM review_operations o WHERE o.project_id=? AND o.channel=? AND (julianday(o.created_at) IS NULL OR julianday(o.created_at)>=julianday(?))
  AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=o.project_id AND e.resource_id=o.id AND e.event_type='review.requested' AND e.revision=1)
 ) OR EXISTS(
  SELECT 1 FROM events e JOIN review_selections s ON s.project_id=e.project_id AND s.id=e.resource_id
