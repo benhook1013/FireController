@@ -329,6 +329,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 	fenceLength := 0
 	comment, inRecent := false, false
 	var markerCommentTail string
+	rawHistoricalOwner := false
 	inStatus, statusSeen, statusClaim := false, false, false
 	starts, ends := 0, 0
 	risk := standingRiskParser{}
@@ -336,6 +337,9 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)
+		if strings.TrimSpace(line) == "" {
+			rawHistoricalOwner = false
+		}
 		// A separately published status is proof only at its exact visible root
 		// position. Inside it, no markup, example or extra claim is skippable.
 		if inStatus {
@@ -366,6 +370,22 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 		pre := len(stack) > 0 && stack[len(stack)-1] == "pre"
 		if !comment && !pre {
 			if indent > 3 || strings.HasPrefix(trimmed, "\t") || strings.HasPrefix(trimmed, ">") {
+				// Before the first blank line of the recognized raw owner,
+				// indentation does not protect an actual owner closing tag.
+				// Reject conservatively without accepting an indented transition.
+				if rawHistoricalOwner && !strings.HasPrefix(trimmed, ">") {
+					inComment := false
+					visible := findingCommentVisible(trimmed, &inComment)
+					for _, token := range hostedComparisonTokens.FindAllString(visible, -1) {
+						match := hostedComparisonTag.FindStringSubmatch(token)
+						if strings.HasPrefix(token, "</") && match != nil {
+							switch strings.ToLower(match[1]) {
+							case "dd", "dl", "details":
+								historical.invalid = true
+							}
+						}
+					}
+				}
 				continue
 			}
 			if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
@@ -381,7 +401,11 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 		}
 		if historical != nil && !pre {
 			if !comment {
+				openingOwner := historical.phase == 4 && line == "<dd>"
 				historical.line(line, stack, index, inRecent)
+				if openingOwner && !historical.invalid {
+					rawHistoricalOwner = true
+				}
 			} else {
 				// A continued comment cannot supply a valid transition, but
 				// its content still invalidates a reserved marker duplicate.
@@ -429,7 +453,9 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				continue
 			}
 		}
-		for _, token := range hostedComparisonTokens.FindAllString(line, -1) {
+		beganPreformatted := pre
+		for _, span := range hostedComparisonTokens.FindAllStringIndex(line, -1) {
+			token := line[span[0]:span[1]]
 			if comment {
 				if token == "-->" {
 					comment = false
@@ -442,6 +468,12 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				continue
 			}
 			if token == "<!--" {
+				if beganPreformatted && historical != nil {
+					// Only the current visible comment after the closing
+					// pre tag participates; later code can reopen pre.
+					fragment, _, _ := strings.Cut(line[span[1]:], "-->")
+					historical.scanMarkerComment("", fragment)
+				}
 				comment = true
 				continue
 			}
@@ -465,6 +497,9 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				}
 				if historical != nil {
 					historical.close(len(stack))
+					if len(stack) <= 3 {
+						rawHistoricalOwner = false
+					}
 				}
 				stack = stack[:len(stack)-1]
 			} else if !strings.HasSuffix(token, "/>") {
@@ -619,7 +654,9 @@ func standingConfigurationHead(value, kind string) (string, bool) {
 func standingInventoryContradictsZero(lines []findingLine, historical *standingHistoricalParser) bool {
 	var projectedLine, paragraph, preformatted strings.Builder
 	claimsCount := func(text string) bool {
-		return hasSubmittedActionableClaim(text) || hasSubmittedActionableProjection(text, standingFindingClaim.MatchString)
+		return hasSubmittedActionableClaim(text) || hasSubmittedActionableProjection(text, func(visible string) bool {
+			return standingFindingClaim.MatchString(submittedCountWhitespace(visible))
+		})
 	}
 	for index, line := range lines {
 		preformatted.WriteString(line.preCountText)
@@ -650,6 +687,24 @@ func standingInventoryContradictsZero(lines []findingLine, historical *standingH
 			continue
 		}
 		rendered := projectedLine.String()
+		// An explicit paragraph boundary is not a Markdown soft break.
+		// Inspect each fragment without joining it to a separate HTML paragraph.
+		lastParagraph := 0
+		for _, span := range submittedCountDecoration.FindAllStringIndex(rendered, -1) {
+			tag := rendered[span[0]:span[1]]
+			match := submittedCountTagName.FindStringSubmatch(tag)
+			if match == nil || !strings.EqualFold(match[1], "p") {
+				continue
+			}
+			paragraph.WriteString(rendered[lastParagraph:span[0]])
+			if claimsCount(paragraph.String()) {
+				return true
+			}
+			paragraph.Reset()
+			// Offsets are relative to the original rendered line.
+			lastParagraph = span[1]
+		}
+		rendered = rendered[lastParagraph:]
 		if claimsCount(rendered) {
 			return true
 		}

@@ -162,7 +162,8 @@ func TestDaemonExplicitCLICatalogStartsAndStopsWithoutProviderWork(t *testing.T)
 	case <-stdout.ready:
 	case code := <-done:
 		t.Fatalf("native startup failed: %d %s", code, stderr.String())
-	case <-time.After(5 * time.Second):
+	// Cold SQLite schema initialization can exceed five seconds under -race.
+	case <-time.After(20 * time.Second):
 		t.Fatal("native startup deadline")
 	}
 	var started map[string]string

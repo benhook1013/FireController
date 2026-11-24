@@ -131,7 +131,7 @@ func findingLines(body string) ([]findingLine, bool) {
 					pre++
 				}
 			}
-		} else if indent > 3 || strings.HasPrefix(trimmed, "\t") {
+		} else if !comment && (indent > 3 || strings.HasPrefix(trimmed, "\t")) {
 			l.hidden = true
 		} else if comment {
 			l.hidden = true
