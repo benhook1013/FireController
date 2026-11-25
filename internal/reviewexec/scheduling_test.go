@@ -1537,13 +1537,17 @@ func TestValidateSchedulingSnapshotRejectsStaleProjectProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	schedulingEnable(t, f, 1, false)
-	// Retained events for another project or resource must not advance this
-	// projection's revision.
-	for _, identity := range [][2]string{{otherAttemptProject, attemptProject}, {attemptProject, otherAttemptProject}} {
-		admissionSQL(t, f, `INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
-			SELECT ?,event_type,?,revision+1,actor_id,payload_json,created_at FROM events
-			WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision=2`,
-			identity[0], identity[1], attemptProject, attemptProject)
+	// A newer, genuine event for a separate project must not advance this projection.
+	f.configure(t, otherAttemptProject, "test-capability", 0, false)
+	admissionSQL(t, f, `UPDATE grants SET can_manage=1 WHERE credential_id='exec-other-cred' AND project_id=?`, otherAttemptProject)
+	otherScope := selectionScope(t, f, otherAttemptProject, f.other, "write")
+	for i, enabled := range []bool{true, false, true} {
+		revision := int64(i)
+		if _, err := f.e.ConfigureScheduling(t.Context(), otherScope, core.NewID("other-scheduling"), SchedulingRequest{
+			ExpectedRevision: &revision, AutomaticHosted: &enabled,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
 		t.Fatalf("healthy rev-2 projection rejected: %v", err)

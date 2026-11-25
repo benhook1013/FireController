@@ -89,6 +89,9 @@ func automaticSelectionBinding(ctx context.Context, tx *sql.Tx, r Run) (automati
 	if err != nil {
 		return automaticSelectionAttribution{}, err
 	}
+	if r.ExpectedPullNumber != 0 && event.sequence == 0 {
+		return automaticSelectionAttribution{}, schedulingUnavailable()
+	}
 	attribution, err := readAutomaticSelectionAttribution(ctx, tx, r)
 	if !errors.Is(err, sql.ErrNoRows) && err != nil {
 		return automaticSelectionAttribution{}, err
