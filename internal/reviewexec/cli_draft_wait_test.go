@@ -768,14 +768,15 @@ func TestCLIDraftProbeReadFailuresAreBoundedAndSafe(t *testing.T) {
 
 type draftHistoryQuery struct {
 	EvidenceQuery
-	second string
-	calls  int
+	second  string
+	matches int
+	calls   int
 }
 
 func (q *draftHistoryQuery) QueryRowContext(ctx context.Context, _ string, _ ...any) *sql.Row {
 	q.calls++
 	if q.calls == 1 {
-		return q.EvidenceQuery.QueryRowContext(ctx, `SELECT 'cli_draft_wait'`)
+		return q.EvidenceQuery.QueryRowContext(ctx, `SELECT 'cli_draft_wait', ?`, q.matches)
 	}
 	return q.EvidenceQuery.QueryRowContext(ctx, q.second)
 }
@@ -787,14 +788,16 @@ func TestHistoricalCLIDraftSeparatesLookupFailureFromInvalidHistory(t *testing.T
 	for _, tc := range []struct {
 		name, query     string
 		noRows, invalid bool
+		matches         int
 	}{
-		{"missing", `SELECT 1 WHERE 0`, true, false},
-		{"storage", `SELECT * FROM nonexistent_draft_history`, false, false},
-		{"invalid-time", `SELECT 'invalid', 'invalid', 0`, false, true},
-		{"occupied", `SELECT '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1`, false, true},
+		{"missing", `SELECT 1 WHERE 0`, true, false, 1},
+		{"storage", `SELECT * FROM nonexistent_draft_history`, false, false, 1},
+		{"invalid-time", `SELECT 'invalid', 'invalid', 0`, false, true, 1},
+		{"occupied", `SELECT '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1`, false, true, 1},
+		{"ambiguous-terminal", `SELECT 'unused second lookup'`, false, true, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			q := &draftHistoryQuery{EvidenceQuery: f.store.DB(), second: tc.query}
+			q := &draftHistoryQuery{EvidenceQuery: f.store.DB(), second: tc.query, matches: tc.matches}
 			_, draft, err := historicalCLIDraftOperation(t.Context(), q, o, a)
 			if draft || err == nil {
 				t.Fatal("invalid lookup became retained history", draft, err)
@@ -804,6 +807,9 @@ func TestHistoricalCLIDraftSeparatesLookupFailureFromInvalidHistory(t *testing.T
 			}
 			if tc.invalid && err.Error() != waitUnavailable().Error() {
 				t.Fatal("invalid history lost its classification", err)
+			}
+			if tc.matches != 1 && q.calls != 1 {
+				t.Fatal("ambiguous terminal lookup continued to older history")
 			}
 			if tc.name == "storage" && !strings.Contains(err.Error(), "nonexistent_draft_history") {
 				t.Fatal("storage error was rewritten as invalid history", err)
