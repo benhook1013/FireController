@@ -3,6 +3,7 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"github.com/benhook1013/FireController/internal/core"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
@@ -513,9 +514,10 @@ func (e *Engine) StartReviewRuns(ctx context.Context, readers map[string]TargetR
 }
 
 type runCandidateCursor struct {
-	priority  int64
-	createdAt any
-	id        any
+	priority             int64
+	accountAt, accountID any
+	createdAt            any
+	id                   any
 }
 
 func (e *Engine) runNext(ctx context.Context, readers map[string]TargetReader) (bool, error) {
@@ -542,6 +544,20 @@ func (e *Engine) runNextCandidate(ctx context.Context, readers map[string]Target
 	var project, id string
 	var nativeProject, nativeID, nativeCreatedAt any
 	var candidatePriority int64
+	var accountAt, accountID any
+	accounts := make(map[string]string)
+	for _, capability := range e.capabilities {
+		if capability.Fingerprint == "" || capability.Provider == "" || capability.Account == "" {
+			continue
+		}
+		account := automaticAccountKey(capability)
+		if prior, exists := accounts[capability.Fingerprint]; exists && prior != account {
+			accounts[capability.Fingerprint] = ""
+			continue
+		}
+		accounts[capability.Fingerprint] = account
+	}
+	accountJSON, _ := json.Marshal(accounts) // map[string]string is always JSON encodable.
 	var quarantined bool
 	var expected int64
 	err := retryRunSelectionLocal(ctx, func() error {
@@ -553,16 +569,29 @@ func (e *Engine) runNextCandidate(ctx context.Context, readers map[string]Target
 			// both selection workers or repeatedly reacquire provider facts.
 			// A linked selection with a non-native key cannot prove custody.
 			// Leave it intact and allow unrelated selections to proceed.
-			err := tx.QueryRowContext(ctx, `WITH candidates AS (
- SELECT s.*,CASE WHEN s.channel='cli' AND (SELECT lower(repository) FROM projects WHERE id=s.project_id)=? THEN 0 ELSE 1 END AS run_priority
- FROM review_selections s)
- SELECT s.project_id,s.id,`+selectionClaimRevision+`,s.created_at,s.run_priority FROM candidates s
+			err := tx.QueryRowContext(ctx, `WITH eligible AS (
+ SELECT s.*,a.value AS installed_account,
+ CASE WHEN a.value<>'' AND lower(p.repository)=? THEN 0 ELSE 1 END AS run_priority
+ FROM review_selections s LEFT JOIN projects p ON p.id=s.project_id
+ LEFT JOIN json_each(?) a ON s.channel='cli' AND a.key=s.capability_fingerprint AND a.value<>''
  WHERE s.state='queued'
- AND (? IS NULL OR (s.run_priority,s.created_at,s.id)>(?,?,?))
  AND (s.operation_id IS NULL OR (typeof(s.project_id)='text' AND typeof(s.id)='text'))
  AND (SELECT count(*) FROM review_operations WHERE state IN ('queued','preparing','posting','active','uncertain'))<?
  AND (SELECT count(*) FROM review_operations o WHERE o.project_id=s.project_id AND o.state IN ('queued','preparing','posting','active','uncertain'))<?
- ORDER BY s.run_priority,s.created_at,s.id LIMIT 1`, preferredCLIRepository, cursor.id, cursor.priority, cursor.createdAt, cursor.id, requestGlobalCapacity, requestProjectCapacity).Scan(&nativeProject, &nativeID, &expected, &nativeCreatedAt, &candidatePriority)
+ ), candidates AS (
+ SELECT *,
+ FIRST_VALUE(created_at) OVER account_order AS account_at,
+ FIRST_VALUE(id) OVER account_order AS account_id
+ FROM eligible
+ WINDOW account_order AS (
+ PARTITION BY installed_account, CASE WHEN installed_account IS NULL THEN id END ORDER BY created_at,id
+ )
+ )
+ SELECT s.project_id,s.id,`+selectionClaimRevision+`,s.created_at,s.run_priority,s.account_at,s.account_id FROM candidates s
+ WHERE (? IS NULL OR (s.account_at,s.account_id,s.run_priority,s.created_at,s.id)>(?,?,?,?,?))
+ ORDER BY s.account_at,s.account_id,s.run_priority,s.created_at,s.id LIMIT 1`, preferredCLIRepository, string(accountJSON), requestGlobalCapacity, requestProjectCapacity,
+				cursor.id, cursor.accountAt, cursor.accountID, cursor.priority, cursor.createdAt, cursor.id).
+				Scan(&nativeProject, &nativeID, &expected, &nativeCreatedAt, &candidatePriority, &accountAt, &accountID)
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
@@ -573,6 +602,7 @@ func (e *Engine) runNextCandidate(ctx context.Context, readers map[string]Target
 		return false, err
 	}
 	cursor.priority, cursor.createdAt, cursor.id = candidatePriority, nativeCreatedAt, nativeID
+	cursor.accountAt, cursor.accountID = accountAt, accountID
 	var projectOK, idOK bool
 	project, projectOK = nativeProject.(string)
 	id, idOK = nativeID.(string)

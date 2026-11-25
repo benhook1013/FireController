@@ -96,9 +96,8 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 		if err != nil {
 			var failure *core.Error
 			if errors.As(err, &failure) && failure.Code == "overloaded" && ctx.Err() == nil {
-				// Preserve this account's turn for the next pass while
-				// allowing other accounts to plan independent requests.
-				selectedAccounts[account] = true
+				// No intent was accepted. Other projects on the same
+				// account can still make progress during this bounded pass.
 				continue
 			}
 			return generated, err

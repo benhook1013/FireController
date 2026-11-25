@@ -107,7 +107,18 @@ candidates:
 			return false, err
 		}
 		if valid {
-			return true, nil
+			// A queued request cannot reserve priority when its exact
+			// target is already occupied, including by another account.
+			var busy bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1
+	FROM review_execution_reservations r JOIN projects p ON p.github_repository_id=r.repository_id
+	WHERE p.id=? AND r.provider=? AND r.action_class='cli' AND r.pull_number=?)`,
+				earlier.ProjectID, priorCapability.Provider, earlier.PullNumber).Scan(&busy); err != nil {
+				return false, err
+			}
+			if !busy {
+				return true, nil
+			}
 		}
 	}
 	return e.preferredCLISelection(ctx, tx, o, capability)
