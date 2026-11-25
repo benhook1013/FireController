@@ -45,13 +45,17 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 	expected := revision
 	for rows.Next() {
 		var retainedRevision any
-		var actor string
+		var storedActor any
 		var payload sql.NullString
-		if err = rows.Scan(&retainedRevision, &actor, &payload); err != nil {
+		if err = rows.Scan(&retainedRevision, &storedActor, &payload); err != nil {
 			return false, err
 		}
 		recorded, validRevision := retainedRevision.(int64)
-		if !validRevision || recorded != expected || recorded == revision && actor != originalActor || recorded == current.Revision && actor != current.actor {
+		actor, nativeText := storedActor.(string)
+		selectedChild := r.State == "selected" && r.OperationID != ""
+		if !validRevision || !nativeText || !identifier.MatchString(actor) || recorded != expected ||
+			(!selectedChild || recorded == revision) && actor != originalActor ||
+			recorded == current.Revision && actor != current.actor {
 			return false, nil
 		}
 		var settings schedulingEvent

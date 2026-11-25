@@ -45,8 +45,5 @@ func (s *Store) ProjectAutomationScope(ctx context.Context, tx *sql.Tx, project,
 	if err := s.authorize(ctx, tx, scope, "admin"); err != nil {
 		return Scope{}, err
 	}
-	if err := CheckActiveWorker(ctx, tx, project, worker); err != nil {
-		return Scope{}, err
-	}
 	return scope, nil
 }

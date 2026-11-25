@@ -75,6 +75,10 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	}
 	scheduling, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
 	if err != nil {
+		var pullState *pullSchedulingStateError
+		if errors.As(err, &pullState) && pullState.project == r.ProjectID && pullState.pull == plan.Pull.Number {
+			return evaluatedFront{state: "held", reason: "automatic_scheduling_unavailable", plan: plan}, nil
+		}
 		return evaluatedFront{}, err
 	}
 	if scheduling.Paused {
