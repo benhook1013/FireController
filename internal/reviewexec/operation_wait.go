@@ -175,8 +175,12 @@ func operationPreference(r *http.Request, defaultSeconds int) (int, error) {
 	return seconds, nil
 }
 
+func operationResultWriteDeadline(seconds int) time.Time {
+	return time.Now().Add(time.Duration(seconds+5) * time.Second)
+}
+
 func operationResponseDeadline(w http.ResponseWriter, seconds int) error {
-	return operationResponseDeadlineAt(w, time.Now().Add(time.Duration(seconds+5)*time.Second))
+	return operationResponseDeadlineAt(w, operationResultWriteDeadline(seconds))
 }
 
 func operationResponseDeadlineAt(w http.ResponseWriter, deadline time.Time) error {

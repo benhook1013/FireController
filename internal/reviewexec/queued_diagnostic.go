@@ -27,14 +27,31 @@ type queuedReservation struct {
 // admission authority. Drift or unavailable facts omit the header, not the
 // original response/receipt. The exact operation is reauthorized and compared
 // with the response revision before consulting any current scheduling facts.
+const queuedDiagnosticBudget = 250 * time.Millisecond
+
 func (e *Engine) queuedResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, id, state, channel string, revision int64) {
+	e.queuedResponseHeaderBefore(w, r, scope, id, state, channel, revision, time.Time{})
+}
+
+func (e *Engine) queuedResponseHeaderBefore(w http.ResponseWriter, r *http.Request, scope core.Scope, id, state, channel string, revision int64, responseDeadline time.Time) {
 	if state != "queued" {
 		return
 	}
 	// Optional diagnostics must not consume another two-second Store read
 	// after the two required selection/operation reads in the five-second
 	// response budget. Leave headroom for encoding and network writes.
-	ctx, cancel := context.WithTimeout(r.Context(), 250*time.Millisecond)
+	deadline := time.Now().Add(queuedDiagnosticBudget)
+	if !responseDeadline.IsZero() {
+		// SetWriteDeadline bounds the socket, not the request context.
+		// Leave a separate window for encoding and writing the retained result.
+		if latest := responseDeadline.Add(-queuedDiagnosticBudget); latest.Before(deadline) {
+			deadline = latest
+		}
+	}
+	if !deadline.After(time.Now()) {
+		return
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), deadline)
 	defer cancel()
 	cause, reservation := e.queuedDiagnosticDetails(ctx, scope, id, revision)
 	if cause == "queue_order" && channel == "cli" && r.Header.Get(operationWaitHeader) != "2" && r.Header.Get(operationWaitHeader) != "3" && r.Header.Get(operationWaitHeader) != "4" && r.Header.Get(operationWaitHeader) != "5" {
@@ -214,9 +231,9 @@ func queuedReservationHolder(ctx context.Context, tx *sql.Tx, waiting Operation,
 func reservationLiveState(state string) bool {
 	return state == "preparing" || state == "posting" || state == "active" || state == "uncertain"
 }
-func (e *Engine) queuedRunResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, state RunState) {
+func (e *Engine) queuedRunResponseHeader(w http.ResponseWriter, r *http.Request, scope core.Scope, state RunState, responseDeadline time.Time) {
 	if state.Operation != nil {
 		o := state.Operation
-		e.queuedResponseHeader(w, r, scope, o.ID, o.State, o.Channel, o.Revision)
+		e.queuedResponseHeaderBefore(w, r, scope, o.ID, o.State, o.Channel, o.Revision, responseDeadline)
 	}
 }
