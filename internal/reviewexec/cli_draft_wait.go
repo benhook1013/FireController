@@ -224,8 +224,12 @@ func historicalCLIDraftOperation(ctx context.Context, q EvidenceQuery, o Operati
 // holds without inventing provider evidence or changing the current operation.
 func historicalUnusedPreparationOperation(ctx context.Context, q EvidenceQuery, o Operation, a Attempt, scheduling bool) (Operation, bool, error) {
 	var reason string
-	if err := q.QueryRowContext(ctx, `SELECT reason FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason); err != nil {
+	var matching int64
+	if err := q.QueryRowContext(ctx, `SELECT reason,count(*) OVER () FROM review_execution_transitions WHERE attempt_id=? AND revision=?`, a.ID, a.Revision).Scan(&reason, &matching); err != nil {
 		return Operation{}, false, err
+	}
+	if matching != 1 {
+		return Operation{}, false, waitUnavailable()
 	}
 	draft := reason == cliDraftWait
 	if !draft && !(scheduling && (reason == "pull_scheduling_paused" || reason == "automation_authorization_changed" || reason == "automatic_scheduling_unavailable")) {
