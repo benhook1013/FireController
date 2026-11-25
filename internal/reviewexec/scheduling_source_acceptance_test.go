@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 )
 
 func TestInitialAutomaticSourceAcceptanceRequiresCanonicalEvidence(t *testing.T) {
@@ -30,6 +31,36 @@ func TestInitialAutomaticSourceAcceptanceRequiresCanonicalEvidence(t *testing.T)
 		other := selection
 		other.WorkerID = "different-test-worker"
 		check(other, false, true)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A valid restart's retained revision order follows journal append order.
+func TestInitialAutomaticSourceAcceptsOrderedRestartJournal(t *testing.T) {
+	f := selectionFixture(t)
+	accepted, _ := selectionEnqueue(t, f, "restart-journal-order", "hosted", nil)
+	selection := selectionRead(t, f, accepted.ID)
+	err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		for _, state := range []string{"selecting", "queued", "selecting"} {
+			run, err := readRun(ctx, tx, selection.ProjectID, accepted.ID)
+			if err != nil {
+				return err
+			}
+			if err := updateRunAt(ctx, tx, run, state, "", "", time.Now()); err != nil {
+				return err
+			}
+		}
+		run, err := readRun(ctx, tx, selection.ProjectID, accepted.ID)
+		if err != nil {
+			return err
+		}
+		valid, err := automaticSourceInitialRead(ctx, tx, run)
+		if !valid || err != nil {
+			t.Fatalf("classify canonical restart journal: got %v (%v), want true", valid, err)
+		}
 		return nil
 	})
 	if err != nil {

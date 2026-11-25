@@ -1098,7 +1098,7 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		// produced durable controls. Dropping tables cannot erase that history.
 		var used bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE event_type IN ('review.scheduling_updated','review.pull_scheduling_updated'))`).Scan(&used); err != nil {
-			return err
+			return unavailable()
 		}
 		if used {
 			return invalid()

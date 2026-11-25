@@ -164,13 +164,14 @@ func (r *runReads) ParentPull(ctx context.Context, repository, branch string) (r
 }
 
 type runChoice struct {
-	state, reason          string
-	sourceReason           string
-	prefix                 []SourcePlan
-	number                 int64
-	head                   string
-	automaticQueueLimit    *int
-	automaticBasisRevision int64
+	state, reason           string
+	sourceReason            string
+	prefix                  []SourcePlan
+	number                  int64
+	head                    string
+	automaticQueueLimit     *int
+	automaticBasisRevision  int64
+	automaticPullScheduling []int64
 }
 
 // retryRunSelectionLocal retains completed source reads while only retrying
@@ -215,6 +216,24 @@ func retryRunSelectionRead(ctx context.Context, local func() error) error {
 	})
 }
 
+// The source hold must not settle PR-local revisions that were not read.
+func readAutomaticPullSchedulingRevisions(ctx context.Context, tx *sql.Tx, project string, pulls []int64) ([]int64, error) {
+	revisions := make([]int64, 0, len(pulls))
+	for _, pull := range pulls {
+		current, err := readPullScheduling(ctx, tx, project, pull)
+		if err != nil {
+			var local *pullSchedulingStateError
+			if !errors.As(err, &local) {
+				return nil, err
+			}
+			revisions = append(revisions, -1)
+			continue
+		}
+		revisions = append(revisions, current.Revision)
+	}
+	return revisions, nil
+}
+
 func (e *Engine) chooseRun(ctx context.Context, r Run, repo int64, c Configuration, reader TargetReader) (runChoice, error) {
 	return e.chooseRunWithSourceBudget(ctx, r, repo, c, reader, e.runSourceBudget)
 }
@@ -223,9 +242,11 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	var automaticQueueLimit *int
 
 	var basisRevision int64
+	var pullScheduling []int64
 	defer func() {
 		result.automaticQueueLimit = automaticQueueLimit
 		result.automaticBasisRevision = basisRevision
+		result.automaticPullScheduling = pullScheduling
 	}()
 	// Bound source work before metadata lookahead. Local suppression still
 	// rechecks the live prefix at admission if queued work changes afterward.
@@ -233,6 +254,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 	err := retryRunSelectionRead(ctx, func() error {
 		// An expired snapshot must not shorten a later retry's input.
 		limit, automatic, basisRevision = len(c.Queue), false, 0
+		pullScheduling = nil
 		return e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			attribution, err := automaticSelectionBinding(ctx, tx, r)
 			if err != nil {
@@ -250,6 +272,10 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 				return schedulingUnavailable()
 			}
 			basisRevision, err = automaticChannelBasisRevision(ctx, tx, r.ProjectID, r.Channel)
+			if err != nil {
+				return err
+			}
+			pullScheduling, err = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, c.Queue[:limit])
 			return err
 		})
 	})
@@ -685,6 +711,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				return err
 			}
 			bindingValidated := false
+			var boundPrefix []int64
 			defer func() {
 				if resultErr == nil && bindingValidated {
 					var pull int64
@@ -694,12 +721,17 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						return
 					}
 					settle := state != "queued" && reason != "selection_changed"
-					if settle && pull == 0 && choice.automaticBasisRevision != 0 {
+					if settle && pull == 0 && choice.automaticQueueLimit != nil && choice.automaticBasisRevision != 0 {
 						var currentBasis int64
 						currentBasis, resultErr = automaticChannelBasisRevision(ctx, tx, r.ProjectID, r.Channel)
 						// An old no-child result is still retained as history, but
 						// it cannot suppress the source read of a newly rearmed lane.
 						settle = resultErr == nil && currentBasis == choice.automaticBasisRevision
+						if settle {
+							var revisions []int64
+							revisions, resultErr = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, boundPrefix)
+							settle = resultErr == nil && slices.Equal(revisions, choice.automaticPullScheduling)
+						}
 					}
 					if settle {
 						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
@@ -749,6 +781,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				if limit != *choice.automaticQueueLimit {
 					return updateRun(ctx, tx, current, "held", "selection_changed", "")
 				}
+				boundPrefix = c.Queue[:limit]
 			}
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
 				return err

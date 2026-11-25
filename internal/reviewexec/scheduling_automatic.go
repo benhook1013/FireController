@@ -140,11 +140,13 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 }
 
 type automaticBasisRead struct {
-	prefix    []byte
-	revision  int64
-	workspace bool
-	frame     frontFrame
-	hasFrame  bool
+	prefix        []byte
+	revision      int64
+	workspace     bool
+	frame         frontFrame
+	hasFrame      bool
+	parentFacts   map[int64][]any
+	frontByNumber map[int64]frontPull
 }
 
 // The channel semantic revision is independent of unrelated control edits.
@@ -187,6 +189,10 @@ func readAutomaticBasis(ctx context.Context, tx *sql.Tx, project, channel string
 		}
 	}
 	out.prefix = prefix.Bytes()
+	if out.hasFrame {
+		out.parentFacts = make(map[int64][]any)
+		out.frontByNumber = frontPullIndex(out.frame)
+	}
 	return out, nil
 }
 
@@ -328,7 +334,7 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 			return "", err
 		}
 	}
-	dependencies, err := automaticDependenciesWithFrame(ctx, tx, project, pull, channel, shared.frame, shared.hasFrame)
+	dependencies, err := automaticDependenciesWithFrame(ctx, tx, project, pull, channel, shared.frame, shared.hasFrame, shared.frontByNumber, shared.parentFacts)
 	if err != nil {
 		return "", err
 	}
@@ -352,17 +358,24 @@ func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project strin
 	if err != nil {
 		return nil, err
 	}
-	return automaticDependenciesWithFrame(ctx, tx, project, pull, channel, frame, found)
+	return automaticDependenciesWithFrame(ctx, tx, project, pull, channel, frame, found, nil, nil)
 }
 
-func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, frame frontFrame, found bool) ([]any, error) {
+func frontPullIndex(frame frontFrame) map[int64]frontPull {
+	byNumber := make(map[int64]frontPull, len(frame.prefix))
+	for _, p := range frame.prefix {
+		byNumber[p.Number] = p
+	}
+	return byNumber
+}
+
+func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, frame frontFrame, found bool, byNumber map[int64]frontPull, parentFacts map[int64][]any) ([]any, error) {
 	out := []any{}
 	if !found {
 		return out, nil
 	}
-	byNumber := make(map[int64]frontPull, len(frame.prefix))
-	for _, p := range frame.prefix {
-		byNumber[p.Number] = p
+	if byNumber == nil {
+		byNumber = frontPullIndex(frame)
 	}
 	current, found := byNumber[pull]
 	if !found {
@@ -378,6 +391,13 @@ func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project str
 		if !exists {
 			out = append(out, []any{parent, "source_prefix_incomplete"})
 			break
+		}
+		// One planning snapshot owns this memo and immutable frame. Never
+		// cache an error or skip the current pull's own chain/cycle checks.
+		if facts, present := parentFacts[parent]; present {
+			out = append(out, facts)
+			parent = p.ParentPullNumber
+			continue
 		}
 		progress, err := channelProgress(ctx, tx, project, frame.repository, parent, channel)
 		if err != nil {
@@ -399,7 +419,11 @@ func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project str
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
 			return nil, err
 		}
-		out = append(out, []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes})
+		facts := []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes}
+		if parentFacts != nil {
+			parentFacts[parent] = facts
+		}
+		out = append(out, facts)
 		parent = p.ParentPullNumber
 	}
 	return out, nil
