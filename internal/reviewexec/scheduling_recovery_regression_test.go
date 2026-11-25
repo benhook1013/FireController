@@ -350,6 +350,9 @@ func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 					admissionSQL(t, f, `CREATE TABLE review_finding_routes(project_id TEXT,id TEXT,revision INTEGER,state TEXT,disposition TEXT,has_fix INTEGER,source_pull_number INTEGER,target_pull_number INTEGER)`)
 					admissionSQL(t, f, `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10001) INSERT INTO review_finding_routes SELECT ?,printf('route-%d',x),1,'active','accepted',0,2,4 FROM n`, attemptProject)
 				case "retry-selection":
+					if before := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections WHERE project_id=?`, otherAttemptProject); before != 0 {
+						t.Fatal("healthy project was selected before retry fixture", before)
+					}
 					if worked, err := generate(t.Context(), readers); err != nil || !worked {
 						t.Fatal(worked, err)
 					}
@@ -357,6 +360,12 @@ func TestAutomaticCoordinatorIsolatesProjectState(t *testing.T) {
 						return reviewprovider.Repository{}, context.DeadlineExceeded
 					}})
 					r := schedulingLatest(t, f)
+					if r.ProjectID != attemptProject || r.State != "held" || r.Channel != channel {
+						t.Fatalf("retry fixture targeted another project or was not held: %+v", r)
+					}
+					if before := attemptCount(t, f.store, `SELECT count(*) FROM review_automatic_selections WHERE project_id=?`, otherAttemptProject); before != 0 {
+						t.Fatal("healthy project already has an intent", before)
+					}
 					admissionSQL(t, f, `UPDATE review_selections SET updated_at='malformed' WHERE id=?`, r.ID)
 					// Ensure the bad project is considered before the healthy one again.
 					f.e.automaticCursor, f.e.automaticCLICursor = "", ""
@@ -578,8 +587,10 @@ func TestAutomaticSelectionSettlementRefusalIsAtomicAndLocal(t *testing.T) {
 			_, err = f.e.finishRunChoice(ctx, r, 801, nil, choice)
 			fatal := fault == "sql-after-child" || fault == "hold-write"
 			if fatal {
-				if err == nil || automaticProjectRefused(err) {
-					t.Fatal("real persistence failure suppressed", err)
+				var wrapped *core.Error
+				if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil ||
+					!errors.As(err, &wrapped) || wrapped.Code != "storage_unavailable" || wrapped.Status != 500 || automaticProjectRefused(err) {
+					t.Fatal("expected normalized injected storage failure, not a retry timeout", err)
 				}
 			} else if err != nil {
 				t.Fatal("local basis refusal escaped or retried", err)

@@ -152,9 +152,20 @@ func TestSelectionQuarantineRefusesEqualNonTextActors(t *testing.T) {
 		if _, err := tx.ExecContext(ctx, `PRAGMA ignore_check_constraints=OFF`); err != nil {
 			return err
 		}
+		const selectionState = `SELECT json_array(quote(id),quote(project_id),quote(actor_id),quote(worker_id),quote(channel),quote(configuration_revision),quote(policy_revision),quote(capability_fingerprint),quote(expected_pull_number),quote(state),quote(reason),quote(revision),quote(operation_id),quote(created_at),quote(updated_at)) FROM review_selections WHERE project_id=? AND id=?`
+		var before, after string
+		if err := tx.QueryRowContext(ctx, selectionState, r.ProjectID, r.ID).Scan(&before); err != nil {
+			return err
+		}
 		moved, err := quarantineNativeSelection(ctx, tx, r.ProjectID, r.ID, "selecting", r.Revision)
 		if moved || !selectionCustodyUnproved(err) {
 			t.Fatalf("malformed retained actors proved custody: moved=%t err=%v", moved, err)
+		}
+		if err := tx.QueryRowContext(ctx, selectionState, r.ProjectID, r.ID).Scan(&after); err != nil {
+			return err
+		}
+		if before != after {
+			t.Fatal("refused quarantine changed the original selection or child link")
 		}
 		return nil
 	})

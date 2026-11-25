@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 )
@@ -77,7 +78,7 @@ candidates:
 		if earlier.Wait != nil && earlier.Wait.Paused {
 			continue
 		}
-		priorConfig, _, err := readConfiguration(ctx, tx, id.project)
+		priorConfig, revision, err := readConfiguration(ctx, tx, id.project)
 		if err != nil {
 			if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
 				continue candidates
@@ -116,7 +117,21 @@ candidates:
 				earlier.ProjectID, priorCapability.Provider, earlier.PullNumber).Scan(&busy); err != nil {
 				return false, err
 			}
-			if !busy {
+			if busy {
+				continue candidates
+			}
+			dependency, err := e.earlierQueuedReviewIntentWithWitness(ctx, tx, earlier, priorConfig, revision, nil, nil, false)
+			if err != nil {
+				if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) || isStoredUnavailable(err, storedRoundHistory) || selectionCustodyUnproved(err) {
+					continue candidates
+				}
+				var preflight *queuePriorityPreflight
+				if errors.As(err, &preflight) {
+					continue candidates // Priority does not collect or fabricate a witness.
+				}
+				return false, err
+			}
+			if dependency == nil {
 				return true, nil
 			}
 		}
