@@ -672,7 +672,7 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id<>? AND pull_number=? AND pull_basis_sha256=?)`, r.ProjectID, r.ID, pull, basis).Scan(&seen)
 	return seen, err
 }
-func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pull int64) error {
+func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pull int64, acceptedOnly bool) error {
 	attribution, err := automaticSelectionBinding(ctx, tx, r)
 	if err != nil || attribution.revision == 0 {
 		return err
@@ -692,7 +692,13 @@ func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pu
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE review_automatic_selections SET settled_basis_sha256=?,pull_number=?,pull_basis_sha256=? WHERE selection_id=? AND project_id=?`, basis, pull, pullBasis, r.ID, r.ProjectID)
+	if acceptedOnly {
+		// A repository mismatch proves no new source facts. Retain the
+		// original suppression only if the same basis is still current.
+		_, err = tx.ExecContext(ctx, `UPDATE review_automatic_selections SET settled_basis_sha256=basis_sha256 WHERE selection_id=? AND project_id=? AND basis_sha256=?`, r.ID, r.ProjectID, basis)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE review_automatic_selections SET settled_basis_sha256=?,pull_number=?,pull_basis_sha256=? WHERE selection_id=? AND project_id=?`, basis, pull, pullBasis, r.ID, r.ProjectID)
+	}
 	return err
 }
 
