@@ -67,8 +67,8 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	var ahead bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events e
 		LEFT JOIN review_scheduling s ON s.project_id=e.project_id
-		WHERE e.event_type='review.scheduling_updated' AND e.resource_id=e.project_id
-		AND (s.project_id IS NULL OR e.revision>s.revision))`).Scan(&ahead)
+		WHERE e.event_type='review.scheduling_updated'
+		AND (typeof(e.resource_id)<>'text' OR e.resource_id<>e.project_id OR s.project_id IS NULL OR e.revision>s.revision))`).Scan(&ahead)
 	if err != nil {
 		return err
 	}

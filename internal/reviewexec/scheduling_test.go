@@ -1484,14 +1484,6 @@ func TestValidateSchedulingSnapshotRejectsStaleProjectProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	schedulingEnable(t, f, 1, false)
-	// Retained events for another project or resource must not advance this
-	// projection's revision.
-	for _, identity := range [][2]string{{otherAttemptProject, attemptProject}, {attemptProject, otherAttemptProject}} {
-		admissionSQL(t, f, `INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
-			SELECT ?,event_type,?,revision+1,actor_id,payload_json,created_at FROM events
-			WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision=2`,
-			identity[0], identity[1], attemptProject, attemptProject)
-	}
 	if err := validateSchedulingSnapshotForTest(t, f); err != nil {
 		t.Fatalf("healthy rev-2 projection rejected: %v", err)
 	}
