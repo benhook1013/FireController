@@ -1098,8 +1098,9 @@ try {
   const hostedReturned = {...activityAttempt('hosted'),state:'completed',finished_at:finished,source_run_id:run.source_run_id};
   const reasonCode = 'hosted_finished_inventory_unproven';
   const uncertainAt = new Date(Date.parse(finished) + 1000).toISOString();
-  const reasonText = 'Finished response could not be verified';
-  const reasonPillText = `The finished review could not be verified. The provider outcome is unconfirmed. Reconcile it before retrying. Retained attempt: uncertain (${reasonCode}). See Attempts in review details.`;
+  const importIncompleteLabel = 'Import incomplete';
+  const reasonText = 'CodeRabbit finished. FireController could not verify all findings.';
+  const reasonPillText = `${reasonText} Reconcile the attempt before retrying. Retained attempt: uncertain (${reasonCode}). See Attempts in review details.`;
   const uncertainAttempt = {source_attempt_id:'live-hosted-uncertain',channel:'hosted',head_sha:open.head_sha,state:'uncertain',started_at:uncertainAt,finished_at:'',duration_seconds:null,source_run_id:'',trigger_id:'',provider_review_id:'',reason:reasonCode};
   checkpoint = 'updated-observation';
   await write('POST', '/reviews/observations', observation(3, [merged, {...open, title:'Live review updated', runs:[run,partial],attempts:[hostedReturned,cliReturned,uncertainAttempt]}]), 201);
@@ -1164,13 +1165,13 @@ try {
   const reasonPills = [queueHosted.locator('.review-attempt-state'),heroHosted.locator('.review-attempt-state')];
   for (const pill of reasonPills) {
     await expect(pill).toHaveCount(1);
-    await expect(pill).toHaveText('Check attempt');
+    await expect(pill).toHaveText(importIncompleteLabel);
     await expect(pill).toHaveAttribute('title',reasonPillText);
-    await expect(pill).toHaveAttribute('aria-label',`hosted execution: Check attempt. ${reasonPillText}`);
+    await expect(pill).toHaveAttribute('aria-label',`hosted execution: ${importIncompleteLabel}. ${reasonPillText}`);
   }
   checkpoint = 'attempt-visible-reason';
   for (const lane of [queueHosted, heroHosted]) {
-    await expect(lane).not.toContainText('The finished review could not be verified');
+    await expect(lane).not.toContainText(reasonText);
   }
   checkpoint = 'queue-jump-link';
   const jump = hero.getByRole('link', {name:'Jump to review queue', exact:true});
@@ -1236,7 +1237,7 @@ try {
   await captureLayouts('delivery-populated', [1440, 390, 320], async () => {
     for (const pill of reasonPills) {
       checkpoint = 'layout-reason-text';
-      await expect(pill).toHaveText('Check attempt');
+      await expect(pill).toHaveText(importIncompleteLabel);
       const geometry = await pill.evaluate(element => {
         const lane = element.closest('.review-lane');
         const round = lane.querySelector('.review-round-pill');
