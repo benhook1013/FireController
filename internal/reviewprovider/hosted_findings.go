@@ -68,6 +68,16 @@ func findingLines(body string) ([]findingLine, bool) {
 	var fence byte
 	fenceLength, fenceQuote, pre := 0, 0, 0
 	comment, preComment := false, false
+	// Keep the provider's exact terminal status footer separate from the
+	// preformatted count projection. Its delimiter cannot make a standalone
+	// literal opener in an example consume the review trailer.
+	const statusFooter = "<!-- This is an auto-generated comment by CodeRabbit for review status -->"
+	preceding := body
+	if at := strings.LastIndex(body, statusFooter); at >= 0 && (at == 0 || body[at-1] == '\n') &&
+		strings.TrimSpace(body[at+len(statusFooter):]) == "" {
+		preceding = body[:at]
+	}
+	lastCommentClose := strings.LastIndex(preceding, "-->")
 	for offset := 0; offset < len(body); {
 		end := strings.IndexByte(body[offset:], '\n')
 		next := len(body)
@@ -91,16 +101,19 @@ func findingLines(body string) ([]findingLine, bool) {
 		trimmed := strings.TrimLeft(text, " ")
 		indent := len(text) - len(trimmed)
 		wasPre := pre > 0
+		visiblePre := false
+		if !comment && indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed) {
+			commentProbe := false
+			visiblePre = findingPre.MatchString(findingCommentVisible(trimmed, &commentProbe))
+		}
 		// Preformatted text stays hidden for retained markers and inventory.
 		// Capture only rendered text for the additional-only count check.
-		if quote <= 1 && fence == 0 && !comment && (wasPre || indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed)) {
+		if quote <= 1 && fence == 0 && !comment && (wasPre || visiblePre) {
 			if wasPre && preComment && strings.EqualFold(strings.TrimSpace(trimmed), "</pre>") {
 				// An unmatched opener can be a literal preformatted example.
 				// Preserve the standalone closing tag only if there is no
-				// matching close before another comment begins.
-				tail := body[next:]
-				closeAt, openAt := strings.Index(tail, "-->"), strings.Index(tail, "<!--")
-				if closeAt < 0 || openAt >= 0 && openAt < closeAt {
+				// later matching close. HTML comments do not nest.
+				if lastCommentClose < next {
 					preComment = false
 				}
 			}
@@ -119,7 +132,7 @@ func findingLines(body string) ([]findingLine, bool) {
 			if quote == fenceQuote && indent <= 3 && n >= fenceLength && strings.TrimSpace(trimmed[n:]) == "" {
 				fence = 0
 			}
-		} else if wasPre || !comment && indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed) {
+		} else if wasPre || visiblePre {
 			l.hidden = true
 			l.countBreak = true
 			for _, tag := range findingPre.FindAllString(l.preCountText, -1) {

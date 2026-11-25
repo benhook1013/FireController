@@ -40,6 +40,9 @@ func (p *submittedReviewParser) additionalOnly() bool {
 // the phrase in ordinary finding prose is not a declaration.
 var submittedActionableClaim = regexp.MustCompile(`(?i)\bactionable[ \t]+comments[ \t]+posted(?:[ \t]*:|[ \t]+[0-9]+\b)`)
 
+// Only a nonempty ordered item starting at one can interrupt a CommonMark paragraph.
+var submittedOrderedParagraphInterrupt = regexp.MustCompile(`^1[.)][ \t]+\S`)
+
 // Complete provider collections independently prove the absence of attached or
 // in-window orphan roots before this check. The positive counted category must
 // decode in full, and every additional finding must name a selected file. These
@@ -66,7 +69,8 @@ func submittedAdditionalInventory(review HostedReview, selected map[string]bool)
 		}
 		// A genuinely blank visible line ends a Markdown paragraph. A
 		// comment-hidden boundary does not, and cannot evade the refusal check.
-		if line.countBreak || line.text == "" && !line.hidden && !line.countContinues {
+		orderedInterrupt := !line.hidden && submittedOrderedParagraphInterrupt.MatchString(line.countText)
+		if line.countBreak || orderedInterrupt || line.text == "" && !line.hidden && !line.countContinues {
 			if hasSubmittedActionableClaim(visibleParagraph.String()) || hasBareSubmittedActionableLabel(visibleParagraph.String()) {
 				return false
 			}

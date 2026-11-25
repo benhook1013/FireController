@@ -188,6 +188,37 @@ func standingHasReleaseMarkerComment(line string) bool {
 	}
 }
 
+// A balanced preformatted example cannot reserve a release marker. Tags
+// inside HTML comments never change whether a marker is in preformatted text.
+func standingHasReleaseMarkerOutsidePre(line string) bool {
+	pre, commentAt := false, -1
+	for _, span := range hostedComparisonTokens.FindAllStringIndex(line, -1) {
+		token := line[span[0]:span[1]]
+		if commentAt >= 0 {
+			if token == "-->" {
+				if standingHasReleaseMarkerComment(line[commentAt:span[1]]) {
+					return true
+				}
+				commentAt = -1
+			}
+			continue
+		}
+		tag := hostedComparisonTag.FindStringSubmatch(token)
+		if pre {
+			if tag != nil && strings.EqualFold(tag[1], "pre") && strings.HasPrefix(token, "</") {
+				pre = false
+			}
+			continue
+		}
+		if token == "<!--" {
+			commentAt = span[0]
+		} else if tag != nil && strings.EqualFold(tag[1], "pre") && !strings.HasPrefix(token, "</") && !strings.HasSuffix(token, "/>") {
+			pre = true
+		}
+	}
+	return commentAt >= 0 && standingHasReleaseMarkerComment(line[commentAt:])
+}
+
 // Continued comments are never structural markers. Retain just enough visible
 // wording to reject a reserved marker split across physical comment lines.
 func (p *standingHistoricalParser) scanMarkerComment(tail, fragment string) string {
@@ -235,7 +266,7 @@ func (p *standingHistoricalParser) line(line string, stack []string, index int, 
 		p.phase = 7
 		return
 	}
-	if strings.Contains(line, "<!-- walkthrough_") || standingHasReleaseMarkerComment(line) {
+	if strings.Contains(line, "<!-- walkthrough_") || standingHasReleaseMarkerOutsidePre(line) {
 		p.invalid = true
 	}
 	if p.phase == 0 || p.phase == 11 {
@@ -374,6 +405,9 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				// indentation does not protect an actual owner closing tag.
 				// Reject conservatively without accepting an indented transition.
 				if rawHistoricalOwner && !strings.HasPrefix(trimmed, ">") {
+					if standingHasReleaseMarkerOutsidePre(trimmed) {
+						historical.invalid = true
+					}
 					inComment := false
 					visible := findingCommentVisible(trimmed, &inComment)
 					for _, token := range hostedComparisonTokens.FindAllString(visible, -1) {
