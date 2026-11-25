@@ -208,7 +208,9 @@ const orphanPullSchedulingSQL = `WITH orphan AS (
 		SELECT e.project_id,e.resource_id,e.revision,e.sequence,
 			CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END AS payload,
 			ROW_NUMBER() OVER (PARTITION BY e.project_id,e.resource_id ORDER BY e.revision DESC,e.sequence DESC) AS newest,
-			COUNT(*) OVER (PARTITION BY e.project_id,e.resource_id,e.revision) AS matches
+			COUNT(*) OVER (PARTITION BY e.project_id,e.resource_id,e.revision) AS matches,
+			MAX(CASE WHEN typeof(e.revision)<>'integer' OR e.revision<1 THEN 1 ELSE 0 END)
+			  OVER (PARTITION BY e.project_id,e.resource_id) AS bad_revision
 		FROM events e LEFT JOIN review_pull_scheduling s
 			ON s.project_id=e.project_id AND s.pull_number=CAST(e.resource_id AS INTEGER)
 			AND CAST(s.pull_number AS TEXT)=e.resource_id
@@ -222,7 +224,7 @@ const latestOrphanPullResumesSQL = `
 func validateOrphanPullSchedulingEvents(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, orphanPullSchedulingSQL+`
 	SELECT CASE WHEN typeof(o.project_id)='text' THEN o.project_id END,o.resource_id,
-		CASE WHEN typeof(o.revision)='integer' THEN o.revision END,o.payload,o.matches,
+		CASE WHEN o.bad_revision=0 THEN o.revision END,o.payload,o.matches,
 		CASE WHEN typeof(e.actor_id)='text' AND length(CAST(e.actor_id AS BLOB))<=128 THEN e.actor_id END,
 		CASE WHEN typeof(e.created_at)='text' AND length(CAST(e.created_at AS BLOB))<=64 THEN e.created_at END`+latestOrphanPullResumesSQL)
 	if err != nil {
@@ -313,7 +315,7 @@ const pullSchedulingSnapshotEventsSQL = `SELECT s.project_id,s.pull_number,s.rev
 	FROM events e CROSS JOIN review_pull_scheduling s
 	WHERE e.event_type='review.pull_scheduling_updated' AND s.project_id=e.project_id
 	AND s.pull_number=CAST(e.resource_id AS INTEGER) AND CAST(s.pull_number AS TEXT)=e.resource_id
-	AND e.revision>=s.revision
+	AND (typeof(e.revision)<>'integer' OR e.revision<1 OR e.revision>=s.revision)
 	ORDER BY s.project_id,s.pull_number`
 
 func validatePullSchedulingEvents(ctx context.Context, tx *sql.Tx, controls int) error {

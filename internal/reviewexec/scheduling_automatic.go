@@ -83,6 +83,13 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 	}
 	return err
 }
+
+// operationSelectionBindingStateError identifies a malformed, directly
+// observed selection-to-operation link, not a missing or unreadable history.
+type operationSelectionBindingStateError struct{ error }
+
+func (e *operationSelectionBindingStateError) Unwrap() error { return e.error }
+
 func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Operation) error {
 	if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
 		return err
@@ -97,14 +104,14 @@ func (e *Engine) requireAutomaticOperation(ctx context.Context, tx *sql.Tx, o Op
 	}
 	id, validID := selection.(string)
 	if project != o.ProjectID || !validID || !validRunID(id) {
-		return schedulingUnavailable()
+		return &operationSelectionBindingStateError{schedulingUnavailable()}
 	}
 	r, err := readRun(ctx, tx, o.ProjectID, id)
 	if err != nil {
 		return err
 	}
 	if r.OperationID != o.ID || r.ActorID != o.ActorID || r.WorkerID != o.WorkerID || r.Channel != o.Channel {
-		return schedulingUnavailable()
+		return &operationSelectionBindingStateError{schedulingUnavailable()}
 	}
 	return e.requireAutomaticRun(ctx, tx, r)
 }

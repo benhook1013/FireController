@@ -37,7 +37,14 @@ func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T)
 		}
 	}
 	before := attemptState(t, f, busy)
-	operations, err := f.e.pending(context.Background())
+	// This test proves traversal ordering and the row cap, not that a race
+	// instrumented SQLite fixture processes 300 rows in the worker budget.
+	scan := func() ([]Operation, error) {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		return f.e.scanPendingForWorker(ctx, true, 256)
+	}
+	operations, err := scan()
 	if err != nil || len(operations) != 2 {
 		t.Fatalf("busy prefix hid eligible account/channel: count=%d err=%v", len(operations), err)
 	}
@@ -51,7 +58,7 @@ func TestSupervisorPendingSkipsBusyBeforeLimitAndWakesAfterRelease(t *testing.T)
 	if _, err := f.e.Advance(context.Background(), attemptProject, busy.ID, busy.Revision, "cancelled", "synthetic_release", ""); err != nil {
 		t.Fatal(err)
 	}
-	operations, err = f.e.pending(context.Background())
+	operations, err = scan()
 	// The scan may return a partial batch when its snapshot deadline expires,
 	// especially under the race detector. The contract is bounded eligible
 	// work after release, not filling the batch within a wall-clock budget.

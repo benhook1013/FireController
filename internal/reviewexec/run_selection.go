@@ -89,7 +89,7 @@ func readRun(ctx context.Context, q EvidenceQuery, project, id string) (Run, err
 			return Run{}, err
 		}
 		if child.ActorID != r.ActorID || child.WorkerID != r.WorkerID || child.Channel != r.Channel || child.ConfigurationRevision != r.ConfigurationRevision || child.PolicyRevision != r.PolicyRevision || child.CapabilityFingerprint != r.CapabilityFingerprint || r.ExpectedPullNumber != 0 && child.PullNumber != r.ExpectedPullNumber {
-			return Run{}, runUnavailable()
+			return Run{}, &operationSelectionBindingStateError{runUnavailable()}
 		}
 	}
 	return r, nil
