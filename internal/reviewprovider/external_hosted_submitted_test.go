@@ -9,6 +9,30 @@ import (
 
 const externalZeroRun = "77777777-7777-4777-8777-777777777777"
 
+func TestHostedCurrentSubmittedReviewDecodesCountedMinorGroup(t *testing.T) {
+	f := submittedCurrentFixture(t)
+	review := &f.snapshot.Reviews[0]
+	clientDetail := "<details>\n<summary>Scope note</summary>\n<dl>\n<dd>\n<br>\n\nThe sample applies only to this file.\n\n</dd>\n</dl>\n</details>\n\n"
+	item := strings.Replace(minorTestItem(4), "<details>", clientDetail+"<details>", 1)
+	group := minorTestCategory(1, minorTestGroup("engine/queue.go", 1, item))
+	review.Body = strings.Replace(externalCurrentSubmission(review.HeadSHA, false), "\n---", "\n"+group+"\n\n---", 1)
+	got := hfWant(t, f, true, 2)
+	if got.Findings[1].Kind != "minor" || !strings.Contains(got.Findings[1].Detail, "The sample applies only to this file.") {
+		t.Fatal("lost the retained minor finding and its scope note")
+	}
+	original := review.Body
+	for _, bad := range []struct{ old, replacement string }{
+		{"Minor comments: 1", "Minor comments: 2"},
+		{"engine/queue.go: 1", "engine/foreign.go: 1"},
+		{"The sample applies only to this file.", "The sample applies only to this file.\n" + hfMarker(987)},
+	} {
+		review.Body = strings.Replace(original, bad.old, bad.replacement, 1)
+		if f.extract(t).Complete {
+			t.Fatalf("accepted unsupported minor inventory after changing %q", bad.old)
+		}
+	}
+}
+
 func externalCurrentSubmission(head string, omitted bool) string {
 	body := submittedCurrentBody(head)
 	start, end := strings.Index(body, "> [!CAUTION]"), strings.Index(body, "\n---")

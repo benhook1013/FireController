@@ -45,6 +45,20 @@ func TestHostedAdditionalMultipleItemsAndGroups(t *testing.T) {
 		}
 	}
 }
+
+func TestHostedAdditionalFileOnlyGroupUsesEachItemsRange(t *testing.T) {
+	item := hfAdditionalItem("24-26", "Preserve this file-scoped observation.")
+	group := minorTestGroup("source/file.go", 1, item)
+	f := hfNew(t, nil, hfAdditionalCategory(1, group))
+	got := hfWant(t, f, true, 1).Findings[0]
+	if got.Path != "source/file.go" || got.StartLine == nil || *got.StartLine != 24 || got.EndLine == nil || *got.EndLine != 26 {
+		t.Fatalf("lost finding location: %+v", got)
+	}
+	f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "file.go: 1", "file.go: 2", 1)
+	if f.extract(t).Complete {
+		t.Fatal("file-only group waived its finding count")
+	}
+}
 func TestHostedAdditionalRejectsMalformedAndUnprovenInventory(t *testing.T) {
 	item := hfAdditionalItem("24-24", "Preserve this boundary.")
 	group := hfAdditionalGroup("source/file.go", "24-24", 1, item)

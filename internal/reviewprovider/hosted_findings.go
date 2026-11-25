@@ -675,11 +675,23 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 				if !countOK || !rangeOK || !validRepoPath(path) {
 					d.fail("finding_location_invalid")
 				}
+			} else if m := findingMinorGroup.FindStringSubmatch(l.text); m != nil && kind == "additional" {
+				path = m[1]
+				var ok bool
+				expected, ok = findingCount(m[2])
+				if !ok || !validRepoPath(path) {
+					d.fail("finding_location_invalid")
+				}
 			}
 		}
 		if kind == "minor" && depth == 1 && quotes == 1 && itemStart >= 0 && l.text == "<details>" {
 			p := submittedReviewParser{lines: lines[:end+1], at: i}
 			if p.fencedPrompt(body, true) {
+				i = p.at - 1
+				continue
+			}
+			p.at = i
+			if p.minorScopeNote() {
 				i = p.at - 1
 				continue
 			}
@@ -706,7 +718,7 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 				if !ok {
 					d.fail("finding_location_invalid")
 				}
-				if kind == "additional" && (headerStart == nil || headerEnd == nil || a == nil || b == nil || *a < *headerStart || *b > *headerEnd) {
+				if kind == "additional" && (a == nil || b == nil || headerStart != nil && headerEnd != nil && (*a < *headerStart || *b > *headerEnd)) {
 					d.fail("finding_location_invalid")
 				}
 				fields = findingFields{path: path, start: a, end: b}

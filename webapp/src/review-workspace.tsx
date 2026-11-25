@@ -554,7 +554,7 @@ function ReviewLane({ number, channel, title, runs, attempts, snapshot, head, lo
   const finishedUncaptured = !historical && !returned && attempt?.channel === 'hosted' &&
     attempt.state === 'uncertain' && attempt.reason === 'hosted_finished_inventory_unproven' && /^[1-9]\d*$/.test(attempt.trigger_id);
   const submission = progress?.submission_evidence;
-  const submittedAt = finishedUncaptured && submission && validSubmissionEvidence(submission) &&
+  const submittedAt = !historical && status?.text === 'Import incomplete' && submission && validSubmissionEvidence(submission) &&
     submission.attempt_id === attempt?.source_attempt_id && submission.head_sha === attempt.head_sha && submission.trigger_id === attempt.trigger_id
     ? submission.submitted_at : undefined;
   const attemptPill = !!holder || !!running || finishedUncaptured;
@@ -597,7 +597,7 @@ function ReviewLane({ number, channel, title, runs, attempts, snapshot, head, lo
       : `The Hosted attempt on #${hostedHold.pull_number} still holds the lane.`}</span></ReviewLaneDetailsBadge> : badge && <span data-lane-label-tone={label?.tone}>
       {queueDetails
         ? <ReviewLaneDetailsBadge channel={channel} text={label?.text ?? badge.text}><span>{queueDetails}</span></ReviewLaneDetailsBadge>
-        : <ReviewAttemptBadge channel={channel} status={{ ...badge, text: label?.text ?? badge.text }} />}
+        : <ReviewAttemptBadge channel={channel} status={{ ...badge, text: label?.text ?? badge.text }} submittedAt={badge.text === 'Import incomplete' ? submittedAt : undefined} />}
     </span>}
   </span>;
   const slots = capacity - Number(attemptPill);

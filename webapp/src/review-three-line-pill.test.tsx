@@ -374,3 +374,17 @@ it('prefers a clearly estimated matched request submission over unknown time, ne
  const observed=markup([],[proven],{...current,activity_evidence:signal});
  expect(observed).toContain(`dateTime="${signal.observed_at}"`); expect(observed).not.toContain('Estimated start');
 });
+
+it('dates the incomplete-import label from the exact request after the Hosted slot is released',()=>{
+ const released={...attempt,channel:'hosted' as const,state:'failed' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_incomplete'};
+ const submitted='2026-11-15T05:35:10Z';
+ const submission={attempt_id:released.source_attempt_id,head_sha:head,trigger_id:'42',submitted_at:submitted};
+ const current={...progress,channel:'hosted' as const,submission_evidence:submission};
+ const html=markup([],[released],current);
+ expect(html).toContain('Import incomplete');
+ expect(html).toContain('Request acknowledged');
+ expect(html).toContain(`dateTime="${submitted}"`);
+ expect(html).toContain('0 runs');
+ expect(html).not.toContain('review-pill-running');
+ expect(markup([],[released],{...current,submission_evidence:{...submission,trigger_id:'43'}})).not.toContain('<time');
+});

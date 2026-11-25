@@ -13,6 +13,16 @@ func hostedPresentationCaption(caption string) bool {
 	return strings.TrimSpace(caption) != "" && !strings.ContainsAny(caption, "<>\r\n") && validPlainText(caption, 512)
 }
 
+// A scope note is part of the already located finding's original detail.
+// Only one plain paragraph inside its balanced presentation wrapper is opaque.
+func (p *submittedReviewParser) minorScopeNote() bool {
+	if !p.take("<details>", false) || !p.take("<summary>Scope note</summary>", false) || !p.take("<dl>", true) || !p.take("<dd>", true) || !p.take("<br>", true) {
+		return false
+	}
+	prose, ok := p.text()
+	return ok && hostedPresentationCaption(prose) && !strings.HasPrefix(prose, "#") && !findingRange.MatchString(prose) && p.take("</dd>", true) && p.take("</dl>", true) && p.take("</details>", false)
+}
+
 // The current provider presentation contains one opaque fenced prompt. It
 // cannot supply inventory, status, or run identity.
 func (p *submittedReviewParser) fencedPrompt(body string, projected bool) bool {

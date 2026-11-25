@@ -141,6 +141,30 @@ func legacySubmittedPrompt(lines []findingLine, start int) (int, bool) {
 	return end, complete && visible && (header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header))
 }
 
+func (p *submittedReviewParser) submittedMinor(body string) ([]HostedFinding, bool) {
+	start := p.at
+	if !p.take("<details>", false) {
+		return nil, false
+	}
+	header, ok := p.text()
+	if !ok || !findingMinorHeader.MatchString(header) {
+		return nil, false
+	}
+	end, closed := findingBlock(p.lines, start, 0)
+	if !closed {
+		return nil, false
+	}
+	lines, valid := findingAdditionalLayout(p.lines, start, end)
+	if !valid {
+		return nil, false
+	}
+	inv := HostedFindingInventory{Complete: true}
+	d := findingDecoder{inventory: &inv, seen: map[string]bool{}}
+	d.groupedSummary(body, lines, start, end, 1, "minor", findingMinorHeader)
+	p.at = end + 1
+	return inv.Findings, inv.Complete && len(inv.Findings) > 0
+}
+
 func parseSubmittedReview(body, head string) (run string, count int, selected map[string]bool, ok bool) {
 	return parseSubmittedReviewEnvelope(body, head, false, false)
 }
@@ -158,6 +182,7 @@ func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly
 		return
 	}
 	p := submittedReviewParser{lines: lines}
+	var minor []HostedFinding
 	if !p.take("<!-- coderabbit-ai-generated:v1 -->", true) {
 		return
 	}
@@ -174,6 +199,13 @@ func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly
 			}
 			count, _ = strconv.Atoi(match[1])
 			if count < 1 || count > 200 || !p.caution(body) {
+				return
+			}
+		}
+		if line, _ := p.next(); current && count > 0 && line.text == "<details>" {
+			var valid bool
+			minor, valid = p.submittedMinor(body)
+			if !valid {
 				return
 			}
 		}
@@ -291,6 +323,11 @@ func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly
 	}
 	for path := range selected {
 		if ignored[path] {
+			return
+		}
+	}
+	for _, finding := range minor {
+		if !selected[finding.Path] {
 			return
 		}
 	}

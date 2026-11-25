@@ -64,6 +64,17 @@ func TestFinishedHostedReleaseGraceAndExactReservation(t *testing.T) {
 	if _, err := f.e.ReadHostedRecovery(t.Context(), attemptProject, a.ID, "test-capability"); err != nil {
 		t.Fatal("original recovery identity unavailable", err)
 	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, readErr := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted")
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if readErr != nil || submission == nil || submission.AttemptID != a.ID || submission.TriggerID != "101" || submission.SubmittedAt == first.Add(HostedIncompleteGrace).UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("released attempt lost its original request time: %+v %v", submission, readErr)
+	}
 	started := f.start(t, attemptProject, next)
 	if started.Anchor != nil || started.Intent != "" || started.ExternalID != "" {
 		t.Fatal("release authorized an external post", started)

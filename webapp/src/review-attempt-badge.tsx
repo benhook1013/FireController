@@ -1,12 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { ReviewAttemptStatus } from './review-attempt-status';
+import { RelativeTime } from './relative-time';
 
-export function ReviewAttemptBadge({ channel, status }: { channel: string; status: ReviewAttemptStatus }) {
+export function ReviewAttemptBadge({ channel, status, submittedAt }: { channel: string; status: ReviewAttemptStatus; submittedAt?: string }) {
   const className = status.kind ? `badge review-channel-position review-attempt-state review-attempt-${status.kind}` : 'badge review-channel-position';
   if (!status.activity) {
     const cause = status.cause && !/[.!?]$/u.test(status.cause) ? `${status.cause}.` : status.cause;
-    const description = [cause, status.description].filter(Boolean).join(' ') || undefined;
-    return <span className={className} title={description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${description ?? ''}` : undefined}>{status.text}</span>;
+    const requestTime = submittedAt ? `Request acknowledged ${new Date(submittedAt).toLocaleString()}.` : undefined;
+    const description = [cause, requestTime, status.description].filter(Boolean).join(' ') || undefined;
+    return <span className={className} title={description} aria-label={status.kind ? `${channel} execution: ${status.text}. ${description ?? ''}` : undefined}>{status.text}{submittedAt && <> · <RelativeTime value={submittedAt} label="Request acknowledged" /></>}</span>;
   }
   const activity = status.activity;
   const evidence = activity.evidence;
