@@ -45,7 +45,6 @@ var findingRange = regexp.MustCompile("^`([0-9]+)-([0-9]+)`: (.+)$")
 // Asterisks outside code and unbalanced delimiters cannot supply title metadata.
 var findingTitle = regexp.MustCompile("^\\*\\*((?:[^*`\\r\\n]|`[^`\\r\\n]+`)+)\\*\\*$")
 var findingHTML = regexp.MustCompile(`</?(?:details|blockquote)>`)
-var findingPre = regexp.MustCompile(`(?i)</?pre(?:[ \t/>]|$)`)
 var findingQuotedHTML = regexp.MustCompile(`(?i)</?blockquote(?:[ \t][^<>]*)?>`)
 var findingConfirmation = regexp.MustCompile(`^✅ Confirmed as addressed by @[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 
@@ -102,9 +101,9 @@ func findingLines(body string) ([]findingLine, bool) {
 		indent := len(text) - len(trimmed)
 		wasPre := pre > 0
 		visiblePre := false
-		if !comment && indent <= 3 && !strings.HasPrefix(trimmed, "\t") && findingPre.MatchString(trimmed) {
+		if !comment && indent <= 3 && !strings.HasPrefix(trimmed, "\t") {
 			commentProbe := false
-			visiblePre = findingPre.MatchString(findingCommentVisible(trimmed, &commentProbe))
+			visiblePre = len(submittedPreTags(findingCommentVisible(trimmed, &commentProbe))) > 0
 		}
 		// Preformatted text stays hidden for retained markers and inventory.
 		// Capture only rendered text for the additional-only count check.
@@ -135,14 +134,8 @@ func findingLines(body string) ([]findingLine, bool) {
 		} else if wasPre || visiblePre {
 			l.hidden = true
 			l.countBreak = true
-			for _, tag := range findingPre.FindAllString(l.preCountText, -1) {
-				if strings.HasPrefix(tag, "</") {
-					if pre > 0 {
-						pre--
-					}
-				} else {
-					pre++
-				}
+			for _, tag := range submittedPreTags(l.preCountText) {
+				pre = max(0, pre+tag[2])
 			}
 		} else if !comment && (indent > 3 || strings.HasPrefix(trimmed, "\t")) {
 			l.hidden = true
@@ -188,7 +181,8 @@ func findingLines(body string) ([]findingLine, bool) {
 func findingLastUnfencedCommentClose(body string) int {
 	last, offset := -1, 0
 	var fence byte
-	length, fenceQuote := 0, 0
+	length, fenceQuote, pre := 0, 0, 0
+	comment := false
 	for rest := body; rest != ""; {
 		line, tail, hasNext := strings.Cut(rest, "\n")
 		consumed := len(line)
@@ -208,7 +202,7 @@ func findingLastUnfencedCommentClose(body string) int {
 		}
 		trimmed := strings.TrimLeft(text, " ")
 		indent := len(text) - len(trimmed)
-		if quote <= 1 && indent <= 3 && (strings.HasPrefix(trimmed, "`") || strings.HasPrefix(trimmed, "~")) {
+		if pre == 0 && !comment && quote <= 1 && indent <= 3 && (strings.HasPrefix(trimmed, "`") || strings.HasPrefix(trimmed, "~")) {
 			marker := trimmed[0]
 			n := 0
 			for n < len(trimmed) && trimmed[n] == marker {
@@ -227,9 +221,16 @@ func findingLastUnfencedCommentClose(body string) int {
 				}
 			}
 		}
-		if fence == 0 && quote <= 1 && indent <= 3 && !strings.HasPrefix(trimmed, "\t") {
+		if fence == 0 && quote <= 1 && (pre > 0 || indent <= 3 && !strings.HasPrefix(trimmed, "\t")) {
 			if close := strings.LastIndex(line, "-->"); close >= 0 {
-				last = offset + close
+				// Indentation inside an active raw pre comment does not stop
+				// its delimiter. Separate indented examples remain inert.
+				if indent <= 3 && !strings.HasPrefix(trimmed, "\t") || comment {
+					last = offset + close
+				}
+			}
+			for _, tag := range submittedPreTags(findingCommentVisible(trimmed, &comment)) {
+				pre = max(0, pre+tag[2])
 			}
 		}
 		offset += consumed
@@ -244,7 +245,12 @@ func findingPreEndBeforeEditorialComment(text string) bool {
 	}
 	// At this point the visible scanner has already proved the pre stack
 	// returned to zero. Only transfer an unmatched post-close opener.
-	return submittedPreEnd.MatchString(text[:start])
+	for _, tag := range submittedPreTags(text[:start]) {
+		if tag[2] < 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Keep comment-adjacent visible text available to count refusal checks without

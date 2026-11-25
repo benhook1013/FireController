@@ -136,7 +136,7 @@ var submittedCountDecoration = regexp.MustCompile(`(?s)</?[A-Za-z](?:[^<>"']|"[^
 
 // A formatted label without a value belongs to the line-level grammar only.
 // The same formatted phrase inside a normal sentence is not metadata.
-var bareSubmittedActionableLabel = regexp.MustCompile(`(?i)^\s*(?:(?:[-+]|#{1,6})\s+)?(?:\*\*\s*actionable\s+comments\s+posted\s*\*\*|__\s*actionable\s+comments\s+posted\s*__)\s*$`)
+var bareSubmittedActionableLabel = regexp.MustCompile(`(?i)^\s*(?:(?:[-+*]|#{1,6})\s+)?(?:\*\*\s*actionable\s+comments\s+posted\s*\*\*|__\s*actionable\s+comments\s+posted\s*__)\s*$`)
 
 func hasBareSubmittedActionableLabel(line string) bool {
 	return bareSubmittedActionableLabel.MatchString(submittedRenderedCountText(line))
@@ -144,24 +144,42 @@ func hasBareSubmittedActionableLabel(line string) bool {
 
 // HTML layout breaks separate words, while inline style tags do not. This
 // projection can refuse count metadata but cannot supply structure or offsets.
-var submittedPreEnd = regexp.MustCompile(`(?i)</pre[ \t]*>`)
+// The tag spans are quote-aware; an angle bracket inside an attribute is
+// neither a pre boundary nor a separate token.
+func submittedPreTags(text string) [][3]int {
+	var tags [][3]int
+	for _, span := range submittedCountDecoration.FindAllStringIndex(text, -1) {
+		tag := text[span[0]:span[1]]
+		name := submittedCountTagName.FindStringSubmatch(tag)
+		if name == nil || !strings.EqualFold(name[1], "pre") {
+			continue
+		}
+		change := 1
+		if strings.HasPrefix(tag, "</") {
+			change = -1
+		}
+		tags = append(tags, [3]int{span[0], span[1], change})
+	}
+	return tags
+}
 
 // A closing pre tag finishes the current count fragment even if another block
 // begins on the same source line. This rendering never changes retained text.
 func splitSubmittedPreCounts(text string, count *strings.Builder, check func(string) bool) bool {
-	for {
-		end := submittedPreEnd.FindStringIndex(text)
-		if end == nil {
-			count.WriteString(text)
-			return false
+	begin := 0
+	for _, tag := range submittedPreTags(text) {
+		if tag[2] > 0 {
+			continue
 		}
-		count.WriteString(text[:end[0]])
+		count.WriteString(text[begin:tag[0]])
 		if check(submittedRenderedCountText(count.String())) {
 			return true
 		}
 		count.Reset()
-		text = text[end[1]:]
+		begin = tag[1]
 	}
+	count.WriteString(text[begin:])
+	return false
 }
 
 func submittedCountParagraphEdges(text string) [][]int {

@@ -768,7 +768,13 @@ func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string
 }
 
 func (e *Engine) coordinateAutomaticHosted(ctx context.Context, readers map[string]TargetReader) (bool, error) {
-	e.automaticMu.Lock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// Leave the other selection worker available for accepted intents.
+	if !e.automaticMu.TryLock() {
+		return false, ctx.Err()
+	}
 	defer e.automaticMu.Unlock()
 	if ctx.Err() != nil {
 		return false, ctx.Err()

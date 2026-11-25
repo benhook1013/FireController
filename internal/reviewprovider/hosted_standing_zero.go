@@ -353,6 +353,19 @@ func (p *standingHistoricalParser) allows(index int) bool {
 
 var standingRawHTMLBlockStart = regexp.MustCompile(`(?i)^</?(?:address|article|aside|blockquote|dd|details|dialog|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hgroup|hr|main|menu|nav|ol|p|pre|section|summary|table|ul)(?:[ \t/>]|$)`)
 
+// A new description item ends the active item in the same list.
+func standingImplicitSummaryClose(stack []string, name string) bool {
+	if (name != "dd" && name != "dt") || len(stack) < 3 || stack[2] != "dd" {
+		return false
+	}
+	for _, ancestor := range stack[3:] {
+		if ancestor == "dl" {
+			return false
+		}
+	}
+	return true
+}
+
 // standingSections requires visible root recent metadata and the specifically
 // labelled Merge Risk coverage envelope. Other HTML containers and examples
 // cannot supply protocol proof. Recent metadata has its own closed grammar.
@@ -413,12 +426,23 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 					if standingHasReleaseMarkerOutsidePre(trimmed) {
 						historical.invalid = true
 					}
-					inComment := false
-					visible := findingCommentVisible(trimmed, &inComment)
+					visible := findingCommentVisible(trimmed, &comment)
+					if comment {
+						if start := strings.LastIndex(trimmed, "<!--"); start >= 0 {
+							markerCommentTail = historical.scanMarkerComment("", trimmed[start+4:])
+						}
+					}
 					for _, token := range hostedComparisonTokens.FindAllString(visible, -1) {
 						match := hostedComparisonTag.FindStringSubmatch(token)
-						if strings.HasPrefix(token, "</") && match != nil {
-							switch strings.ToLower(match[1]) {
+						if match == nil {
+							continue
+						}
+						tag := strings.ToLower(match[1])
+						if !strings.HasPrefix(token, "</") && standingImplicitSummaryClose(stack, tag) {
+							historical.invalid = true
+						}
+						if strings.HasPrefix(token, "</") {
+							switch tag {
 							case "dd", "dl", "details":
 								historical.invalid = true
 							}
@@ -542,6 +566,9 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				}
 				stack = stack[:len(stack)-1]
 			} else if !strings.HasSuffix(token, "/>") {
+				if rawHistoricalOwner && rawHTMLBlock && standingImplicitSummaryClose(stack, tag) {
+					historical.invalid = true
+				}
 				stack = append(stack, tag)
 			}
 		}

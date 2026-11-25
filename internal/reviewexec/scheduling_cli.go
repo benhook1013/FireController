@@ -33,7 +33,31 @@ func automaticCLIProjects(ctx context.Context, tx *sql.Tx, preferred bool, curso
 	return projects, rows.Close()
 }
 
+func (e *Engine) automaticCLIAccount(ctx context.Context, project string) (string, error) {
+	var account string
+	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		c, _, err := readConfiguration(ctx, tx, project)
+		if err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
+				return nil
+			}
+			return err
+		}
+		capability, ok := e.capabilities[c.CapabilityID]
+		if ok {
+			account = automaticAccountKey(capability)
+		}
+		return nil
+	})
+	return account, err
+}
+
 func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+	return e.generateAutomaticCLIWithAccountLookup(ctx, readers, e.automaticCLIAccount)
+}
+
+func (e *Engine) generateAutomaticCLIWithAccountLookup(ctx context.Context, readers map[string]TargetReader, lookupAccount func(context.Context, string) (string, error)) (bool, error) {
 	var preferred, other []string
 	if err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		const half = automaticCLITraversalLimit / 2
@@ -64,26 +88,15 @@ func (e *Engine) generateAutomaticCLI(ctx context.Context, readers map[string]Ta
 		} else {
 			e.automaticCLIOtherCursor = project
 		}
-		var account string
-		err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			c, _, err := readConfiguration(ctx, tx, project)
-			if err != nil {
-				var failure *core.Error
-				if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
-					return nil
-				}
-				return err
-			}
-			capability, ok := e.capabilities[c.CapabilityID]
-			if ok {
-				account = automaticAccountKey(capability)
-			}
-			return nil
-		})
+		account, err := lookupAccount(ctx, project)
 		if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) {
 			continue
 		}
 		if err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Code == "overloaded" && ctx.Err() == nil {
+				continue // Bounded local lookup; no account turn was consumed.
+			}
 			return generated, err
 		}
 		if account == "" || selectedAccounts[account] {

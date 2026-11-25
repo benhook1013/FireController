@@ -260,11 +260,11 @@ func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key 
 		if input.AutomaticCLI != nil {
 			automaticCLI = *input.AutomaticCLI
 		}
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
+			return nil, err
+		}
 		credential := ""
 		if *input.AutomaticHosted || automaticCLI {
-			if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
-				return nil, err
-			}
 			credential, err = e.store.AuthenticatedCredentialID(ctx, tx, scope)
 			if err != nil {
 				return nil, err
