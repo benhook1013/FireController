@@ -216,13 +216,13 @@ func retryRunSelectionRead(ctx context.Context, local func() error) error {
 }
 
 // The source hold must not settle PR-local revisions that were not read.
-func readAutomaticPullSchedulingRevisions(ctx context.Context, tx *sql.Tx, project string, pulls []int64) ([]int64, error) {
+func readAutomaticPullSchedulingRevisions(ctx context.Context, tx *sql.Tx, project string, pulls []int64, tolerateUnreadable bool) ([]int64, error) {
 	revisions := make([]int64, 0, len(pulls))
 	for _, pull := range pulls {
 		current, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
 			var local *pullSchedulingStateError
-			if !errors.As(err, &local) {
+			if !tolerateUnreadable || !errors.As(err, &local) {
 				return nil, err
 			}
 			revisions = append(revisions, -1)
@@ -274,7 +274,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 			if err != nil {
 				return err
 			}
-			pullScheduling, err = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, c.Queue[:limit])
+			pullScheduling, err = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, c.Queue[:limit], true)
 			return err
 		})
 	})
@@ -744,7 +744,9 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						settle = resultErr == nil && currentBasis == choice.automaticBasisRevision
 						if settle {
 							var revisions []int64
-							revisions, resultErr = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, boundPrefix)
+							// A newly unreadable row must roll back the provisional
+							// front frame; it is not equivalent to an ordinary revision change.
+							revisions, resultErr = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, boundPrefix, false)
 							settle = resultErr == nil && slices.Equal(revisions, choice.automaticPullScheduling)
 						}
 					}

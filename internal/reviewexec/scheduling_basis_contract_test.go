@@ -14,7 +14,7 @@ func TestPlanningSnapshotPinsOrdinaryPullPauseRevisions(t *testing.T) {
 		var got []int64
 		err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 			var err error
-			got, err = readAutomaticPullSchedulingRevisions(ctx, tx, attemptProject, []int64{2, 4})
+			got, err = readAutomaticPullSchedulingRevisions(ctx, tx, attemptProject, []int64{2, 4}, false)
 			return err
 		})
 		if err != nil {
