@@ -147,6 +147,7 @@ type RunSummary struct {
 	CurrentAccepted     *int64            `json:"current_accepted,omitempty"`
 	CurrentPendingFixes *int64            `json:"current_pending_fixes,omitempty"`
 	DisplayStartAt      string            `json:"display_start_at,omitempty"`
+	DisplayRequestAt    string            `json:"display_request_at,omitempty"`
 	RetainedUndecided   *int64            `json:"retained_undecided,omitempty"`
 	AcceptedSeverity    *AcceptedSeverity `json:"accepted_severity,omitempty"`
 	Source              string            `json:"source"`

@@ -80,7 +80,8 @@ func (e *Engine) recoverHostedRetainedHTTP(w http.ResponseWriter, r *http.Reques
 		core.WriteError(w, err)
 		return
 	}
-	if _, err = core.QueryKeys(r, "validation_failed"); err != nil {
+	query, err := core.QueryKeys(r, "validation_failed", "request_time_only")
+	if err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -97,6 +98,14 @@ func (e *Engine) recoverHostedRetainedHTTP(w http.ResponseWriter, r *http.Reques
 	key, err := core.IdempotencyKey(r, "idempotency_key_required")
 	if err != nil {
 		core.WriteError(w, err)
+		return
+	}
+	if query.Has("request_time_only") {
+		if query.Get("request_time_only") != "true" {
+			core.WriteError(w, invalid())
+			return
+		}
+		e.recordHostedRequestTimeHTTP(w, r, scope, id, key, request)
 		return
 	}
 	mutation := core.Mutation{Operation: "reviews.hosted.retained-recovery", Target: id, Key: key, Request: request}

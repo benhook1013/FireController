@@ -244,6 +244,10 @@ describe('honest review-start labels',()=>{
   expect(html).toContain('Start time unknown');
   expect(html).not.toContain(`<time`);
   expect(html).not.toContain('Assumed start');
+  const requested = '2026-11-15T05:34:00Z';
+  const matched = markup([{...run,display_request_at:requested}]);
+  expect(matched).toContain(`dateTime="${requested}" title="Assumed start (review requested): `);
+  expect(matched).not.toContain(`dateTime="${run.finished_at}"`);
  });
 });
 

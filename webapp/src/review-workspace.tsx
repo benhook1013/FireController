@@ -467,7 +467,7 @@ export function ReviewPullView() {
   </>}</ReadState></article>;
 }
 function reviewStart(run: ReviewRunSummary): { value: string; label: string } | undefined {
-  if (run.source === 'github-hosted-observer') return undefined;
+  if (run.source === 'github-hosted-observer') return run.display_request_at ? { value: run.display_request_at, label: 'Assumed start (review requested)' } : undefined;
   if (run.display_start_at) return { value: run.display_start_at, label: run.channel === 'hosted' ? 'Assumed start (CodeRabbit activity seen)' : 'Started' };
   if (!run.started_at) return undefined;
   return { value: run.started_at, label: run.source === 'native-executor' && run.channel === 'hosted' ? 'Assumed start (review requested)' : 'Started' };

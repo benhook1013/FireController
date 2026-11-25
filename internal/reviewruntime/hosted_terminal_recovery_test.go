@@ -17,6 +17,7 @@ import (
 
 	"github.com/benhook1013/FireController/internal/reviewexec"
 	"github.com/benhook1013/FireController/internal/reviewprovider"
+	"github.com/benhook1013/FireController/internal/reviews"
 )
 
 type terminalRecoveryFixture struct {
@@ -77,14 +78,70 @@ func terminalHostedFixture(t *testing.T) terminalRecoveryFixture {
 	return terminalRecoveryFixture{f, record, ref, req, mux}
 }
 func (f terminalRecoveryFixture) call(t *testing.T, token, key string) *httptest.ResponseRecorder {
+	return f.callWithQuery(t, token, key, "")
+}
+
+func (f terminalRecoveryFixture) callWithQuery(t *testing.T, token, key, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, _ := json.Marshal(f.request)
-	r := httptest.NewRequest("POST", "/api/v1/projects/"+f.f.f.project+"/reviews/attempts/"+f.f.a.ID+"/retained-recovery", bytes.NewReader(body))
+	r := httptest.NewRequest("POST", "/api/v1/projects/"+f.f.f.project+"/reviews/attempts/"+f.f.a.ID+"/retained-recovery"+query, bytes.NewReader(body))
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Idempotency-Key", key)
 	w := httptest.NewRecorder()
 	f.mux.ServeHTTP(w, r)
 	return w
+}
+
+func TestTerminalHostedRequestTimeUsesOriginalCaptureWithoutRecovery(t *testing.T) {
+	f := terminalHostedFixture(t)
+	ctx := t.Context()
+	engine, store, project := f.f.f.engine, f.f.f.store, f.f.f.project
+	input, err := HostedRetainedDecoder(f.f.captures)(ctx, engine, project, f.f.a.ID, "runtime-capability", f.ref.SHA256)
+	if err != nil || input.Hosted.StandingSummary == nil {
+		t.Fatalf("synthetic original source could not decode: %v", err)
+	}
+	source := "run:" + input.Hosted.StandingSummary.ProviderRunID
+	anchor := input.ExpectedAnchor
+	scope := f.f.f.scopeWithAccess(t, f.f.f.writer, false, "write")
+	err = store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := reviews.InitializeExternalHostedFrontier(ctx, tx, project, anchor.RepositoryID, anchor.PullNumber); err != nil {
+			return err
+		}
+		_, _, err := reviews.PublishExternalHosted(ctx, tx, scope, anchor.RepositoryID, anchor.PullNumber, []reviews.RunInput{{
+			SourceRunID: source, Channel: "hosted", HeadSHA: anchor.CandidateSHA, Reviewer: "CodeRabbit", Scope: "external hosted publication",
+			Outcome: "completed", Complete: true, Attributable: true, StartedAt: input.FinishedAt, FinishedAt: input.FinishedAt,
+			Findings: []reviews.Finding{}, CoverageLimits: []string{},
+		}})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denied := f.callWithQuery(t, f.f.f.reader, "display-read-denied", "?request_time_only=true"); denied.Code != http.StatusForbidden {
+		t.Fatalf("read-only credential could write request time: %d", denied.Code)
+	}
+	result := f.callWithQuery(t, f.f.f.writer, "display-time", "?request_time_only=true")
+	if result.Code != 200 || !strings.Contains(result.Body.String(), input.StartedAt) {
+		t.Fatalf("request time was not retained: %d %s", result.Code, result.Body)
+	}
+	replay := f.callWithQuery(t, f.f.f.writer, "display-time", "?request_time_only=true")
+	if replay.Body.String() != result.Body.String() || recoveryRuntimeCount(t, f.f.f, "review_execution_evidence") != 0 || recoveryRuntimeCount(t, f.f.f, "review_round_completions") != 0 {
+		t.Fatal("display annotation changed credit or execution evidence")
+	}
+	runID := reviews.ExternalHostedRunID(project, source)
+	readMux := http.NewServeMux()
+	reviews.Register(readMux, store)
+	for _, version := range []string{"v1", "v2"} {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+project+"/reviews/runs/"+runID, nil)
+		r.Header.Set("Authorization", "Bearer "+f.f.f.reader)
+		r.Header.Set("X-FC-Review-Start", version)
+		w := httptest.NewRecorder()
+		readMux.ServeHTTP(w, r)
+		var detail reviews.RunDetailResponse
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Run.StartedAt != input.FinishedAt || (detail.Run.DisplayRequestAt == input.StartedAt) != (version == "v2") {
+			t.Fatalf("display projection %s changed stored chronology or returned wrong request time: %d %+v", version, w.Code, detail.Run)
+		}
+	}
 }
 func TestTerminalHostedRecoveryOriginalEvidenceAndReplay(t *testing.T) {
 	f := terminalHostedFixture(t)

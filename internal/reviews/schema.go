@@ -18,6 +18,9 @@ func EnsureSchema(ctx context.Context, store *core.Store) error {
 	if err := store.EnsureSchema(ctx, "review_retention_indexes", SnapshotReferenceIndexSchemaSQL()); err != nil {
 		return err
 	}
+	if err := store.EnsureSchema(ctx, "review_hosted_request_times", HostedRequestTimeSchemaSQL()); err != nil {
+		return err
+	}
 	return EnsureNotificationSchema(ctx, store)
 }
 

@@ -62,7 +62,7 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 				core.WriteError(w, validationError("Use recent or merged for the queue view."))
 				return
 			}
-			response, err := readQueueWindow(r.Context(), store, scope, view, query.Get("cursor"), limit, r.Header.Get(displayStartHeader) == "v1", r.Header.Get("X-FC-Queue-Topology") == "v1", query.Get("include_merge_status") == "true")
+			response, err := readQueueWindow(displayTimingContext(r.Context(), r), store, scope, view, query.Get("cursor"), limit, displayTiming(r), r.Header.Get("X-FC-Queue-Topology") == "v1", query.Get("include_merge_status") == "true")
 			if err == nil {
 				err = attachObservationHealth(r.Context(), scope.ProjectID, &response, selectedHealth)
 			}
@@ -165,11 +165,11 @@ func queue(store *core.Store, health ...ObservationHealthReader) http.HandlerFun
 			if response.HasMore && lastPosition >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastPosition))
 			}
-			if r.Header.Get(displayStartHeader) == "v1" {
+			if displayTiming(r) {
 				if err := rows.Close(); err != nil {
 					return err
 				}
-				return attachQueueDisplayStarts(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
+				return attachQueueDisplayStarts(displayTimingContext(ctx, r), tx, scope.ProjectID, meta.SnapshotID, response.Items)
 			}
 			return nil
 		})
@@ -260,8 +260,8 @@ func pull(store *core.Store) http.HandlerFunc {
 			if err := strictStoredJSON(latestJSON, &response.Pull.LatestAttempts); err != nil {
 				return err
 			}
-			if r.Header.Get(displayStartHeader) == "v1" {
-				return attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Pull.RecentRuns)
+			if displayTiming(r) {
+				return attachRunDisplay(displayTimingContext(ctx, r), tx, scope.ProjectID, meta.SnapshotID, response.Pull.RecentRuns)
 			}
 			return nil
 		})
@@ -395,11 +395,11 @@ func runs(store *core.Store) http.HandlerFunc {
 			if response.HasMore && lastOrder >= 0 {
 				response.Cursor = store.Cursor(scope, filter, encodePosition(meta.SnapshotID, lastOrder))
 			}
-			if r.Header.Get(displayStartHeader) == "v1" {
+			if displayTiming(r) {
 				if err := rows.Close(); err != nil {
 					return err
 				}
-				return attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items)
+				return attachRunDisplay(displayTimingContext(ctx, r), tx, scope.ProjectID, meta.SnapshotID, response.Items)
 			}
 			return nil
 		})
@@ -450,11 +450,11 @@ func runDetail(store *core.Store) http.HandlerFunc {
 				return notFound("The review snapshot is unavailable.")
 			}
 			response, err = readRunDetail(ctx, tx, meta, runID)
-			if err != nil || r.Header.Get(displayStartHeader) != "v1" {
+			if err != nil || !displayTiming(r) {
 				return err
 			}
 			runs := []RunSummary{response.Run}
-			if err := attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, runs); err != nil {
+			if err := attachRunDisplay(displayTimingContext(ctx, r), tx, scope.ProjectID, meta.SnapshotID, runs); err != nil {
 				return err
 			}
 			response.Run = runs[0]

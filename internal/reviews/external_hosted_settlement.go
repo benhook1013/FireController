@@ -62,6 +62,14 @@ func PendingExternalHosted(ctx context.Context, q HistoryQuery, project string, 
 }
 
 func ExternalHostedSettlementRun(ctx context.Context, tx *sql.Tx, project string, repository, pull int64, id string) (RunDetailResponse, error) {
+	detail, err := externalHostedArchiveRun(ctx, tx, project, repository, pull, id)
+	if err == nil && detail.Run.Finalized {
+		return RunDetailResponse{}, nativeAdjudicationConflict()
+	}
+	return detail, err
+}
+
+func externalHostedArchiveRun(ctx context.Context, tx *sql.Tx, project string, repository, pull int64, id string) (RunDetailResponse, error) {
 	refused := notFound("The completed external Hosted run is unavailable for settlement on this PR.")
 	if !externalHostedRunID.MatchString(id) {
 		return RunDetailResponse{}, refused
@@ -91,9 +99,6 @@ func ExternalHostedSettlementRun(ctx context.Context, tx *sql.Tx, project string
 		!run.Complete || !run.Attributable || run.Outcome != "completed" ||
 		run.Found != int64(len(detail.Findings)) || ExternalHostedRunID(project, run.SourceRunID) != id {
 		return RunDetailResponse{}, refused
-	}
-	if run.Finalized {
-		return RunDetailResponse{}, nativeAdjudicationConflict()
 	}
 	return detail, nil
 }

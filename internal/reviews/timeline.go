@@ -134,8 +134,8 @@ func serveTimelineRuns(w http.ResponseWriter, r *http.Request, store *core.Store
 			b, _ := json.Marshal(last)
 			response.Cursor = store.Cursor(scope, filter, string(b))
 		}
-		if r.Header.Get(displayStartHeader) == "v1" {
-			if err := attachRunDisplay(ctx, tx, scope.ProjectID, meta.SnapshotID, response.Items); err != nil {
+		if displayTiming(r) {
+			if err := attachRunDisplay(displayTimingContext(ctx, r), tx, scope.ProjectID, meta.SnapshotID, response.Items); err != nil {
 				return err
 			}
 		}

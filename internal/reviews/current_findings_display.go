@@ -14,6 +14,9 @@ func attachRunDisplay(ctx context.Context, tx *sql.Tx, project, snapshot string,
 	if err := attachDisplayStarts(ctx, tx, project, groups...); err != nil {
 		return err
 	}
+	if err := attachHostedRequestTimes(ctx, tx, project, groups...); err != nil {
+		return err
+	}
 	runs := map[string][]*RunSummary{}
 	ids := []string{}
 	for _, group := range groups {
