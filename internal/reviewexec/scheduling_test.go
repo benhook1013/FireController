@@ -744,6 +744,14 @@ func TestSchedulingAncestorRoundChangesKeepOriginalChild(t *testing.T) {
 	if err != nil {
 		t.Fatal("ancestor round work stopped final child source verification", err)
 	}
+	intent, err := reviewprovider.HostedTriggerBody(reviewprovider.HostedTriggerIntent{OperationID: a.OperationID, AttemptID: a.ID, HeadSHA: anchor.CandidateSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = f.e.Admit(t.Context(), attemptProject, a.ID, a.Revision, anchor, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Change parent progress after the child has an admitted operation/attempt.
 	control := roundRead(t, f, 2, "hosted")
 	if _, err := f.e.ConfigureRoundControl(t.Context(), f.scope(t, attemptProject, f.admin, true), "close-parent-during-child", 2, "hosted", RoundControlRequest{ExpectedRevision: &control.Revision, Action: "close"}); err != nil {
@@ -757,6 +765,9 @@ func TestSchedulingAncestorRoundChangesKeepOriginalChild(t *testing.T) {
 	current, err := f.e.ReadOperation(t.Context(), selectionScope(t, f, attemptProject, f.writer, "read"), child.ID)
 	if err != nil || current.ID != child.ID || current.AttemptID != a.ID {
 		t.Fatal("ancestor progress replaced the child operation", current, err)
+	}
+	if err := f.e.VerifyAction(t.Context(), attemptProject, a.ID, a.Revision, parent); err != nil {
+		t.Fatal("ancestor progress blocked the original child at the final local dispatch guard", err)
 	}
 }
 

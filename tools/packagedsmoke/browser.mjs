@@ -258,12 +258,15 @@ try {
   await page.getByRole('link', {name:'Live review before', exact:true}).waitFor();
   await page.getByRole('link', {name:'Retained merged smoke PR', exact:true}).waitFor();
   checkpoint = 'round-grant';
-  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0, action:'grant', minimum:2, maximum:3});
-  const progress = page.getByLabel('Hosted current round progress', {exact:true});
+  const grant = await write('POST', '/reviews/rounds/32/hosted', {expected_revision:0, action:'grant', minimum:2, maximum:3});
+  need(grant.pull_number === 32);
+  const openRow = page.locator('.review-queue > li').filter({has:page.getByRole('link', {name:'Live review before', exact:true})});
+  const progress = openRow.getByLabel('Hosted current round progress', {exact:true});
   checkpoint = 'round-allowance';
   await expect(progress).toContainText('Up to 3 more reviews');
   checkpoint = 'round-close';
-  await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1, action:'close'});
+  const closed = await write('POST', '/reviews/rounds/32/hosted', {expected_revision:1, action:'close'});
+  need(closed.pull_number === 32);
   checkpoint = 'round-closed';
   await expect(progress).toContainText('Manually closed');
   checkpoint = 'round-observation-update';

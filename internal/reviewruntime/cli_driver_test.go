@@ -467,6 +467,7 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 				f.reader.pulls[3] = p
 				target := f.reader.pulls[4]
 				target.BaseRef, target.BaseSHA = p.HeadRef, p.HeadSHA
+				target.HeadSHA = cliDriverChildCommit(t, f)
 				f.reader.pulls[4] = target
 			}
 			op, a, c := f.start(t, 4, 2, "stack-driver")
@@ -475,8 +476,15 @@ func TestCLIDriverStackChecksFreshScopedPredecessors(t *testing.T) {
 				if err != nil {
 					t.Fatal("valid child comparison was held by ancestor review work", err)
 				}
-			} else if err == nil {
-				t.Fatal("closed source parent advanced")
+			} else {
+				var held *core.Error
+				if !errors.As(err, &held) || held.Code != "review_held" {
+					t.Fatal("expected closed-parent refusal", err)
+				}
+				details, _ := held.Details.(map[string]string)
+				if details["reason"] != "parent_unavailable" || f.fetches.Load() != 0 {
+					t.Fatal("closed parent must refuse before workspace fetch", err, f.fetches.Load())
+				}
 			}
 			if f.reader.repositoryCalls != 1 {
 				t.Fatal("repository was fetched repeatedly within phase")

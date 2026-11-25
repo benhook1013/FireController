@@ -77,7 +77,7 @@ func findingLines(body string) ([]findingLine, bool) {
 		strings.TrimSpace(body[at+len(statusFooter):]) == "" {
 		preceding = body[:at]
 	}
-	lastCommentClose := strings.LastIndex(preceding, "-->")
+	lastCommentClose := findingLastUnfencedCommentClose(preceding)
 	for offset := 0; offset < len(body); {
 		end := strings.IndexByte(body[offset:], '\n')
 		next := len(body)
@@ -168,6 +168,11 @@ func findingLines(body string) ([]findingLine, bool) {
 		}
 		l.preCountContinues = pre > 0
 		if !l.preCountContinues {
+			// A comment opened after the final rendered pre close belongs to
+			// the surrounding document, not to the completed code example.
+			if preComment && findingPreEndBeforeEditorialComment(trimmed) {
+				comment = true
+			}
 			preComment = false
 		}
 		l.countContinues = comment
@@ -175,6 +180,71 @@ func findingLines(body string) ([]findingLine, bool) {
 		offset = next
 	}
 	return lines, fence == 0 && pre == 0 && !comment
+}
+
+// This lookahead disambiguates a literal preformatted comment opener from
+// a real multiline comment. A delimiter in a separate Markdown example
+// cannot keep pre mode open. The raw body is never rewritten.
+func findingLastUnfencedCommentClose(body string) int {
+	last, offset := -1, 0
+	var fence byte
+	length, fenceQuote := 0, 0
+	for rest := body; rest != ""; {
+		line, tail, hasNext := strings.Cut(rest, "\n")
+		consumed := len(line)
+		if hasNext {
+			consumed++
+		}
+		rest = tail
+		line = strings.TrimSuffix(line, "\r")
+		text, quote := line, 0
+		for {
+			trimmed := strings.TrimLeft(text, " ")
+			if len(text)-len(trimmed) > 3 || !strings.HasPrefix(trimmed, ">") {
+				break
+			}
+			quote++
+			text = strings.TrimPrefix(trimmed[1:], " ")
+		}
+		trimmed := strings.TrimLeft(text, " ")
+		indent := len(text) - len(trimmed)
+		if quote <= 1 && indent <= 3 && (strings.HasPrefix(trimmed, "`") || strings.HasPrefix(trimmed, "~")) {
+			marker := trimmed[0]
+			n := 0
+			for n < len(trimmed) && trimmed[n] == marker {
+				n++
+			}
+			if n >= 3 {
+				if fence == 0 {
+					fence, length, fenceQuote = marker, n, quote
+					offset += consumed
+					continue
+				}
+				if marker == fence && quote == fenceQuote && n >= length && strings.TrimSpace(trimmed[n:]) == "" {
+					fence = 0
+					offset += consumed
+					continue
+				}
+			}
+		}
+		if fence == 0 && quote <= 1 && indent <= 3 && !strings.HasPrefix(trimmed, "\t") {
+			if close := strings.LastIndex(line, "-->"); close >= 0 {
+				last = offset + close
+			}
+		}
+		offset += consumed
+	}
+	return last
+}
+
+func findingPreEndBeforeEditorialComment(text string) bool {
+	start := strings.LastIndex(text, "<!--")
+	if start < 0 {
+		return false
+	}
+	// At this point the visible scanner has already proved the pre stack
+	// returned to zero. Only transfer an unmatched post-close opener.
+	return submittedPreEnd.MatchString(text[:start])
 }
 
 // Keep comment-adjacent visible text available to count refusal checks without
@@ -1060,9 +1130,12 @@ func publicationSummaryOnly(publication HostedPublication) bool {
 func publicationCountAbsent(publication HostedPublication) bool {
 	for _, review := range publication.EligibleReviews {
 		for _, line := range publicationVisibleLines(review.Body) {
-			if hasSubmittedLineActionableClaim(line) || hasBareSubmittedActionableLabel(line) {
+			if hasSubmittedLineActionableClaim(line) || hasSubmittedLabeledActionableCount(line) || hasBareSubmittedActionableLabel(line) {
 				return false
 			}
+		}
+		if hasSubmittedSoftWrappedCount(review.Body) {
+			return false
 		}
 	}
 	return true

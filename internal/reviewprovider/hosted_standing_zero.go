@@ -351,6 +351,8 @@ func (p *standingHistoricalParser) allows(index int) bool {
 	return !p.invalid && p.phase == 11 && p.claimLine == index+1
 }
 
+var standingRawHTMLBlockStart = regexp.MustCompile(`(?i)^</?(?:address|article|aside|blockquote|dd|details|dialog|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hgroup|hr|main|menu|nav|ol|p|pre|section|summary|table|ul)(?:[ \t/>]|$)`)
+
 // standingSections requires visible root recent metadata and the specifically
 // labelled Merge Risk coverage envelope. Other HTML containers and examples
 // cannot supply protocol proof. Recent metadata has its own closed grammar.
@@ -360,7 +362,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 	fenceLength := 0
 	comment, inRecent := false, false
 	var markerCommentTail string
-	rawHistoricalOwner := false
+	rawHistoricalOwner, rawHTMLBlock := false, false
 	inStatus, statusSeen, statusClaim := false, false, false
 	starts, ends := 0, 0
 	risk := standingRiskParser{}
@@ -369,7 +371,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)
 		if strings.TrimSpace(line) == "" {
-			rawHistoricalOwner = false
+			rawHTMLBlock = false
 		}
 		// A separately published status is proof only at its exact visible root
 		// position. Inside it, no markup, example or extra claim is skippable.
@@ -400,11 +402,14 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 		}
 		pre := len(stack) > 0 && stack[len(stack)-1] == "pre"
 		if !comment && !pre {
+			if rawHistoricalOwner && indent <= 3 && standingRawHTMLBlockStart.MatchString(trimmed) {
+				rawHTMLBlock = true
+			}
 			if indent > 3 || strings.HasPrefix(trimmed, "\t") || strings.HasPrefix(trimmed, ">") {
-				// Before the first blank line of the recognized raw owner,
-				// indentation does not protect an actual owner closing tag.
-				// Reject conservatively without accepting an indented transition.
-				if rawHistoricalOwner && !strings.HasPrefix(trimmed, ">") {
+				// A blank line ends the raw block, not the still-open owner.
+				// Inside any recognised raw block of that owner, indentation
+				// does not protect a rendered closing tag.
+				if rawHistoricalOwner && rawHTMLBlock && !strings.HasPrefix(trimmed, ">") {
 					if standingHasReleaseMarkerOutsidePre(trimmed) {
 						historical.invalid = true
 					}
@@ -422,7 +427,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				}
 				continue
 			}
-			if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
+			if !(rawHistoricalOwner && rawHTMLBlock) && len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
 				n := 0
 				for n < len(trimmed) && trimmed[n] == trimmed[0] {
 					n++
@@ -438,7 +443,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				openingOwner := historical.phase == 4 && line == "<dd>"
 				historical.line(line, stack, index, inRecent)
 				if openingOwner && !historical.invalid {
-					rawHistoricalOwner = true
+					rawHistoricalOwner, rawHTMLBlock = true, true
 				}
 			} else {
 				// A continued comment cannot supply a valid transition, but
@@ -532,7 +537,7 @@ func standingSections(body string, historical *standingHistoricalParser) (recent
 				if historical != nil {
 					historical.close(len(stack))
 					if len(stack) <= 3 {
-						rawHistoricalOwner = false
+						rawHistoricalOwner, rawHTMLBlock = false, false
 					}
 				}
 				stack = stack[:len(stack)-1]
@@ -693,7 +698,9 @@ func standingInventoryContradictsZero(lines []findingLine, historical *standingH
 		})
 	}
 	for index, line := range lines {
-		preformatted.WriteString(line.preCountText)
+		if splitSubmittedPreCounts(line.preCountText, &preformatted, claimsCount) {
+			return true
+		}
 		if preformatted.Len() != 0 && !line.preCommentContinues {
 			preformatted.WriteByte(' ')
 		}
@@ -715,6 +722,12 @@ func standingInventoryContradictsZero(lines []findingLine, historical *standingH
 			paragraph.Reset()
 			projectedLine.Reset()
 			continue
+		}
+		if submittedListInterrupt(line) {
+			if claimsCount(paragraph.String()) {
+				return true
+			}
+			paragraph.Reset()
 		}
 		projectedLine.WriteString(line.countText)
 		if line.countContinues {
