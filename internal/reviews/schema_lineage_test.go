@@ -76,6 +76,9 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 				if err := f.store.EnsureSchema(t.Context(), "review_retention_indexes", SnapshotReferenceIndexSchemaSQL()); err != nil {
 					t.Fatal(err)
 				}
+				if err := f.store.EnsureSchema(t.Context(), "review_hosted_request_times", HostedRequestTimeSchemaSQL()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var metadataBefore string
 			const metadataQuery = `SELECT group_concat(hex(metadata_json),'|') FROM (SELECT metadata_json FROM review_pull_versions ORDER BY project_id,number,version_revision)`
@@ -100,6 +103,9 @@ func TestReviewSchemaLineagesConvergeWithoutChangingRetainedData(t *testing.T) {
 			var version string
 			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:reviews'`).Scan(&version); err != nil || version != "13" {
 				t.Fatal(version, err)
+			}
+			if err := f.store.DB().QueryRow(`SELECT value FROM metadata WHERE key='schema:review_hosted_request_times'`).Scan(&version); err != nil || version != "1" {
+				t.Fatal("request-time schema was not installed", version, err)
 			}
 			var selected int
 			if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_pull_versions WHERE delivery_selected!=1`).Scan(&selected); err != nil || selected != wantUnselected {

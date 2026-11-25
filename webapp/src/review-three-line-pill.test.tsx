@@ -238,16 +238,28 @@ describe('honest review-start labels',()=>{
   expect(html).toContain('title="Started: ');
   expect(html).not.toContain('Assumed start');
  });
- it('does not turn observer publication timestamps into assumed execution starts',()=>{
-  const run={...completed,source:'github-hosted-observer',channel:'hosted' as const,started_at:completed.finished_at};
+ it('uses publication age when the returned Hosted findings have no start evidence',()=>{
+  const run={...completed,source:'github-hosted-observer',channel:'hosted' as const,started_at:completed.finished_at,finalized:false};
   const html=markup([run]);
+  expect(html).toContain('>Adjudicating</span>');
   expect(html).toContain('Start time unknown');
-  expect(html).not.toContain(`<time`);
+  expect(html).toContain(`dateTime="${run.finished_at}" title="Published (start unknown): `);
   expect(html).not.toContain('Assumed start');
   const requested = '2026-11-15T05:34:00Z';
   const matched = markup([{...run,display_request_at:requested}]);
   expect(matched).toContain(`dateTime="${requested}" title="Assumed start (review requested): `);
   expect(matched).not.toContain(`dateTime="${run.finished_at}"`);
+  const observed = '2026-11-15T05:35:00Z';
+  const started = markup([{...run,display_request_at:requested,display_start_at:observed}]);
+  expect(started).toContain(`dateTime="${observed}" title="Assumed start (CodeRabbit activity seen): `);
+ });
+ it('uses an explicitly labeled finish fallback and shows a dash if both times are missing',()=>{
+  const run={...completed,started_at:''};
+  const finished = markup([run]);
+  expect(finished).toContain(`dateTime="${run.finished_at}" title="Finished (start unknown): `);
+  const undated = markup([{...run,finished_at:''}]);
+  expect(undated).toContain('Start time unknown');
+  expect(undated).not.toContain('<time');
  });
 });
 

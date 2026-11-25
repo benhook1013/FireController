@@ -271,7 +271,7 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 			if err = rows.Scan(targets...); err != nil {
 				t.Fatal(err)
 			}
-			if table == "metadata" && (values[0] == "schema:reviews" || values[0] == "schema:review_notifications" || values[0] == "schema:review_retention_indexes") {
+			if table == "metadata" && (values[0] == "schema:reviews" || values[0] == "schema:review_notifications" || values[0] == "schema:review_retention_indexes" || values[0] == "schema:review_hosted_request_times") {
 				continue
 			}
 			var old []any
@@ -286,6 +286,11 @@ func metadataLegacyRows(t *testing.T, f *apiFixture) map[string]string {
 			t.Fatal(err)
 		}
 		rows.Close()
+		// An empty request-time table adds no historical evidence. Include it
+		// if migration unexpectedly writes timestamps into it.
+		if table == "review_hosted_request_times" && len(retained) == 0 {
+			continue
+		}
 		result[table] = mustJSON(retained)
 	}
 	return result
