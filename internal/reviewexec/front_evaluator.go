@@ -14,6 +14,7 @@ type evaluatedFront struct {
 	plan           *SourcePlan
 	blockingPull   int64
 	blockingReason string
+	localRefusal   error
 }
 
 func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan) (evaluatedFront, error) {
@@ -77,6 +78,10 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	}
 	scheduling, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
 	if err != nil {
+		var pullState *pullSchedulingStateError
+		if errors.As(err, &pullState) && pullState.project == r.ProjectID && pullState.pull == plan.Pull.Number {
+			return evaluatedFront{state: "held", reason: "automatic_scheduling_unavailable", plan: plan, localRefusal: err}, nil
+		}
 		return evaluatedFront{}, err
 	}
 	if scheduling.Paused {
@@ -98,10 +103,12 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 // evaluateCandidatePlan shares source-identity checks with lane diagnostics.
 // Ancestor review sufficiency is not permission to review a child's pinned diff.
 func (e *Engine) evaluateCandidatePlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan, byNumber map[int64]*SourcePlan) (evaluatedFront, error) {
-	return evaluateCandidateLocalState(plan, byNumber, func(p *SourcePlan) (evaluatedFront, error) { return e.evaluateFrontPlan(ctx, q, r, repo, p) })
+	return evaluateCandidateLocalState(plan, byNumber, func(p *SourcePlan) (evaluatedFront, error) {
+		return e.evaluateFrontPlan(ctx, q, r, repo, p)
+	}, func(parent int64) (string, error) { return pinnedParentSchedulingReason(ctx, q, r.ProjectID, parent) })
 }
 
-func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePlan, evaluate func(*SourcePlan) (evaluatedFront, error)) (evaluatedFront, error) {
+func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePlan, evaluate func(*SourcePlan) (evaluatedFront, error), parentScheduling func(int64) (string, error)) (evaluatedFront, error) {
 	result, err := evaluate(plan)
 	if err != nil || result.state != "ready" {
 		return result, err
@@ -125,6 +132,12 @@ func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePla
 		case parent.Pull.State != "open" || parent.Pull.Merged:
 			reason = "parent_unavailable"
 		}
+		if reason == "" && parentScheduling != nil {
+			reason, err = parentScheduling(parentNumber)
+			if err != nil {
+				return evaluatedFront{}, err
+			}
+		}
 		if reason != "" {
 			return evaluatedFront{state: "held", reason: "predecessor_unfinished", plan: plan, blockingPull: parentNumber, blockingReason: reason}, nil
 		}
@@ -134,6 +147,17 @@ func evaluateCandidateLocalState(plan *SourcePlan, byNumber map[int64]*SourcePla
 		parentNumber, parentSHA = parent.ParentPullNumber, parent.ParentSHA
 	}
 	return result, nil
+}
+
+// A valid pause is not source invalidation. Unreadable retained scheduling
+// for this exact ancestor cannot support a dependent eligibility decision.
+func pinnedParentSchedulingReason(ctx context.Context, q *sql.Tx, project string, pull int64) (string, error) {
+	_, err := readPullScheduling(ctx, q, project, pull)
+	var state *pullSchedulingStateError
+	if errors.As(err, &state) && state.project == project && state.pull == pull {
+		return "automatic_scheduling_unavailable", nil
+	}
+	return "", err
 }
 
 func (e *Engine) evaluateFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan, complete bool) (evaluatedFront, error) {
@@ -180,7 +204,7 @@ func globalFrontHold(reason string) bool {
 }
 
 // runFront preserves existing admission semantics and its zero-on-hold result.
-func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan) (int64, string, error) {
+func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan, finalPrefix bool) (int64, string, error) {
 	result, err := e.evaluateFront(ctx, q, r, repo, prefix, true)
 	if err != nil {
 		return 0, "", err
@@ -190,6 +214,17 @@ func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, pre
 	}
 	if result.state == "complete" {
 		return 0, "", nil
+	}
+	if finalPrefix && result.localRefusal != nil {
+		// Keep the refusal local during traversal, but preserve explicit
+		// selection attribution and finish rollback when it is the final hold.
+		reason, err := selectionLocalHoldReason(ctx, q, r)
+		if err != nil {
+			return 0, "", err
+		}
+		if reason == "local_read_unavailable" {
+			return 0, "", result.localRefusal
+		}
 	}
 	return 0, result.reason, nil
 }

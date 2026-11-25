@@ -111,11 +111,22 @@ func (e *Engine) ReadLaneDiagnostic(ctx context.Context, scope core.Scope, chann
 			}
 			return state, err
 		}
+		parentScheduling := map[int64]string{}
+		verifyParent := func(pull int64) (string, error) {
+			if reason, ok := parentScheduling[pull]; ok {
+				return reason, nil
+			}
+			reason, err := pinnedParentSchedulingReason(ctx, tx, scope.ProjectID, pull)
+			if err == nil {
+				parentScheduling[pull] = reason
+			}
+			return reason, err
+		}
 		for _, number := range c.Queue {
 			item := LaneCandidateDiagnostic{PullNumber: number, LocalState: "unknown", LocalReason: "source_not_observed"}
 			if plan := byNumber[number]; plan != nil {
 				item.HeadSHA, item.SourceObservedAt, item.ParentPullNumber = plan.Pull.HeadSHA, plan.ObservedAt, plan.ParentPullNumber
-				state, err := evaluateCandidateLocalState(plan, byNumber, evaluate)
+				state, err := evaluateCandidateLocalState(plan, byNumber, evaluate, verifyParent)
 				if err != nil {
 					return err
 				}

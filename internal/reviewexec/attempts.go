@@ -270,6 +270,13 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 			return err
 		}
 		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			// Only a proved malformed selection-to-operation link can
+			// release this unused preparation here. Other retained-state and
+			// custody refusals keep their original classification.
+			var binding *operationSelectionBindingStateError
+			if errors.As(err, &binding) {
+				return &schedulingStateError{err}
+			}
 			return err
 		}
 		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {

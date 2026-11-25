@@ -287,7 +287,7 @@ func TestSchedulingPausedFrontSkipsIndependentAndStackedReviews(t *testing.T) {
 			plans[i].Repository.ID = 801
 		}
 		plans[1].Pull.BaseSHA = head
-		front, reason, err := f.e.runFront(ctx, tx, Run{ProjectID: attemptProject, Channel: "hosted"}, 801, plans)
+		front, reason, err := f.e.runFront(ctx, tx, Run{ProjectID: attemptProject, Channel: "hosted"}, 801, plans, true)
 		if err != nil {
 			return err
 		}

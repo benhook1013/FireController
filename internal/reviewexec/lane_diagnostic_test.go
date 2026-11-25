@@ -63,7 +63,7 @@ func TestLaneDiagnosticIndependentAndStackedReviewProgress(t *testing.T) {
 			}
 			// The exact shared selector agrees, rather than a duplicated approximation.
 			err = f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-				got, reason, err := f.e.runFront(ctx, tx, Run{ProjectID: attemptProject, Channel: "cli"}, 801, []SourcePlan{p2, p4})
+				got, reason, err := f.e.runFront(ctx, tx, Run{ProjectID: attemptProject, Channel: "cli"}, 801, []SourcePlan{p2, p4}, true)
 				if err != nil {
 					return err
 				}
@@ -220,7 +220,7 @@ func TestStackReviewSourceIdentityRemainsRequired(t *testing.T) {
 					t.Fatal("ancestor review state was evaluated")
 				}
 				return evaluatedFront{state: "ready", plan: p}, nil
-			})
+			}, nil)
 			if err != nil || out.state != "held" || out.blockingReason != cause || calls != 1 {
 				t.Fatal("source identity was bypassed", out, calls, err)
 			}
