@@ -221,6 +221,12 @@ func automaticAdjudicationBasisSQL(channel string) string {
 	WHERE count IS NULL OR count>0 ORDER BY evidence_id LIMIT 10001`
 }
 
+// Only a known unreadable pull-local adjudication cell may degrade a pause
+// entry; database/query, authorization, and retained predecessor failures cannot.
+type automaticPullAdjudicationUnavailable struct{ error }
+
+func (e *automaticPullAdjudicationUnavailable) Unwrap() error { return e.error }
+
 func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channel string, basisRevision int64) func(string, bool, ...any) error {
 	return func(query string, pinJoins bool, args ...any) error {
 		if channel == "cli" {
@@ -262,7 +268,7 @@ func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channe
 				}
 			}
 			if adjudication && values[0] == nil {
-				return schedulingUnavailable()
+				return &automaticPullAdjudicationUnavailable{schedulingUnavailable()}
 			}
 			// Keep the original query label and JSON framing. Only the
 			// channel's semantic revision differs after a relevant write.
@@ -298,9 +304,14 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 		{`SELECT id,revision,state,disposition,has_fix FROM review_finding_routes WHERE project_id=? AND (source_pull_number=? OR target_pull_number=?) ORDER BY id LIMIT 10001`, []any{project, pull, pull}},
 		{`SELECT o.id,o.revision,o.status FROM review_adoption_targets t JOIN review_adoption_obligations o ON o.id=t.obligation_id AND o.project_id=t.project_id WHERE t.project_id=? AND t.pull_number=? ORDER BY o.id LIMIT 10001`, []any{project, pull}},
 	}
+	var unavailable error
 	for _, q := range queries {
 		if err := appendRows(q.sql, false, q.args...); err != nil {
-			return "", err
+			var local *automaticPullAdjudicationUnavailable
+			if !errors.As(err, &local) {
+				return "", err
+			}
+			unavailable = err
 		}
 	}
 	if shared.workspace {
@@ -317,6 +328,9 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 	dependencies, err := shared.dependencies.forPull(pull)
 	if err != nil {
 		return "", err
+	}
+	if unavailable != nil {
+		return "", unavailable
 	}
 	h.Write([]byte(encoded(dependencies)))
 
@@ -447,16 +461,26 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 	}
 	values := make([]any, 0, len(queue))
 	remaining := []int64{}
+	degraded := false
 	for _, pull := range queue {
-		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
-		if err != nil {
-			return "", false, err
-		}
-		values = append(values, []any{pull, basis})
 		p, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
 			return "", false, err
 		}
+		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
+		if err != nil {
+			var unreadable *automaticPullAdjudicationUnavailable
+			if !p.Paused || !errors.As(err, &unreadable) {
+				return "", false, err
+			}
+			// This is not a per-pull eligibility basis and it is never used
+			// for a selected pull. Keep the paused row and its revision in
+			// the degraded queue identity without pretending its hash exists.
+			values = append(values, []any{pull, nil, p.Revision})
+			degraded = true
+			continue
+		}
+		values = append(values, []any{pull, basis})
 		if p.Paused {
 			continue
 		}
@@ -475,8 +499,37 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 			remaining = append(remaining, pull)
 		}
 	}
-	sum := sha256.Sum256([]byte(encoded([]any{values, remaining})))
-	return hex.EncodeToString(sum[:]), len(remaining) > 0, nil
+	var digestInput any = []any{values, remaining}
+	if degraded {
+		// Version the encoding so it cannot be treated as an equivalent
+		// full-queue basis or rearm a full-digest-only historical intent.
+		digestInput = []any{"planning_basis_degraded_paused_v1", values, remaining}
+	}
+	sum := sha256.Sum256([]byte(encoded(digestInput)))
+	basis := hex.EncodeToString(sum[:])
+	if degraded && len(remaining) > 0 {
+		// The coordinator treats an unseen basis as a fresh automatic
+		// selection. An unresolved older lane hold without exact per-pull
+		// attribution is not proof that the remaining work is distinct.
+		var unresolved bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM review_automatic_selections a
+			JOIN review_selections s ON s.id=a.selection_id AND s.project_id=a.project_id
+			WHERE a.project_id=? AND s.channel=? AND a.selection_id<>?
+			  AND s.state='held' AND s.operation_id IS NULL
+			  AND (typeof(a.pull_number)<>'integer' OR a.pull_number NOT BETWEEN 1 AND 2147483647
+			       OR typeof(a.pull_basis_sha256)<>'text' OR length(a.pull_basis_sha256)<>64
+			       OR a.pull_basis_sha256 GLOB '*[^0-9a-f]*')
+			  AND a.basis_sha256<>? AND a.settled_basis_sha256<>?
+		)`, project, channel, ignoreSelection, basis, basis).Scan(&unresolved)
+		if err != nil {
+			return "", false, err
+		}
+		if unresolved {
+			return basis, false, nil
+		}
+	}
+	return basis, len(remaining) > 0, nil
 }
 
 // Legacy pre-child intents have only an opaque whole-queue digest. At a

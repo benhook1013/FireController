@@ -11,6 +11,8 @@ import (
 // without provider calls or current freshness checks. A wait row may remain as
 // immutable-history attribution after its current scheduling intent has ended.
 func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
+	// Discover unused detached attempts from their native ownership and shape;
+	// the journal proves a valid reason, but is not a prerequisite to visiting.
 	rows, err := tx.QueryContext(ctx, `SELECT coalesce(o.project_id,''),w.operation_id FROM review_operation_waits w LEFT JOIN review_operations o ON o.id=w.operation_id
 		UNION SELECT project_id,id FROM review_operations WHERE reason=?
 		UNION SELECT a.project_id,a.operation_id FROM review_execution_attempts a JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE t.reason=?
@@ -18,7 +20,12 @@ func ValidateOperationWaitsSnapshot(ctx context.Context, tx *sql.Tx) error {
 		LEFT JOIN review_operations o ON o.id=a.operation_id
 		JOIN review_execution_transitions t ON t.attempt_id=a.id
 		WHERE (o.id IS NULL OR o.attempt_id<>a.id) AND t.reason IN ('allowance_exhausted','hosted_allowance_cooldown')
-		UNION SELECT o.project_id,o.id FROM review_operations o JOIN review_execution_attempts a ON a.operation_id=o.id JOIN review_execution_transitions t ON t.attempt_id=a.id WHERE a.id<>o.attempt_id AND t.reason IN ('pull_scheduling_paused','automation_authorization_changed','automatic_scheduling_unavailable')
+		UNION SELECT a.project_id,a.operation_id FROM review_execution_attempts a
+		LEFT JOIN review_operations o ON o.id=a.operation_id
+		WHERE a.id IS NOT o.attempt_id AND (
+		  EXISTS(SELECT 1 FROM review_execution_transitions t WHERE t.attempt_id=a.id AND t.reason IN ('pull_scheduling_paused','automation_authorization_changed','automatic_scheduling_unavailable'))
+		  OR (a.state='held' AND a.revision=2 AND a.anchor_json='null' AND a.intent='' AND a.external_id='')
+		)
 		ORDER BY 2`, cliDraftWait, cliDraftWait)
 	if err != nil {
 		return err
