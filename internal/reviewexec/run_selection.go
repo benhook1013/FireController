@@ -553,9 +553,12 @@ func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any,
 		// record into a project where an unrelated operation could be held.
 		var inconsistent bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		  SELECT 1 FROM review_selections s
+		  WHERE s.id=? AND s.project_id=? AND typeof(s.actor_id)<>'text'
+		  UNION ALL
 		  SELECT 1 FROM review_selections s JOIN review_operations o ON o.id=s.operation_id
 		  WHERE s.id=? AND s.project_id=? AND
-		    (typeof(s.actor_id)<>'text' OR typeof(o.actor_id)<>'text' OR
+		    (typeof(o.actor_id)<>'text' OR
              o.project_id<>s.project_id OR o.actor_id<>s.actor_id OR o.worker_id<>s.worker_id OR
 		     o.channel<>s.channel OR o.configuration_revision<>s.configuration_revision OR
 		     o.policy_revision<>s.policy_revision OR o.capability_fingerprint<>s.capability_fingerprint OR
@@ -567,7 +570,7 @@ func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any,
 		     typeof(a.pull_number)<>'integer' OR a.pull_number<0 OR a.pull_number>2147483647 OR
 		     (a.pull_number<>0 AND (o.id IS NULL OR o.pull_number<>a.pull_number)) OR
 		     (a.pull_number=0 AND a.pull_basis_sha256<>''))
-		)`, sid, pid, sid, pid).Scan(&inconsistent); err != nil {
+		)`, sid, pid, sid, pid, sid, pid).Scan(&inconsistent); err != nil {
 			return false, err
 		}
 		if inconsistent {

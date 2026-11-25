@@ -435,6 +435,13 @@ func TestSelectionQuarantineInventoryRetainsAutomaticChildWithoutAuthority(t *te
 	if err := db.QueryRow(`SELECT original_operation_id FROM review_selection_quarantine WHERE selection_id=?`, selection).Scan(&got); err != nil || got != operation {
 		t.Fatal("original automatic operation identity was not retained", got, err)
 	}
+	var state, reason string
+	var heldRevision int64
+	var link sql.NullString
+	if err := db.QueryRow(`SELECT state,reason,revision,operation_id FROM review_selections WHERE id=? AND project_id=?`, selection, f.project).
+		Scan(&state, &reason, &heldRevision, &link); err != nil || state != "held" || reason != "linked_selection_quarantined" || heldRevision != revision+1 || link.Valid {
+		t.Fatal("restore changed the held, unlinked selection", state, reason, heldRevision, link.Valid, err)
+	}
 }
 
 func TestSelectionQuarantineInventoryRejectsDanglingEmptyV2Marker(t *testing.T) {

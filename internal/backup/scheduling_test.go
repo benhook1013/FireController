@@ -221,9 +221,11 @@ func TestSchedulingBackupHistoricalAuthorizersRemainHistory(t *testing.T) {
 			}
 			_, err = f.store.ProjectAutomationScope(t.Context(), tx, f.project, f.principal, f.worker, credential)
 			_ = tx.Rollback()
-			if err == nil {
-				t.Fatal("historical authorizer still authorized new automation")
+			want := "forbidden"
+			if kind == "retired" {
+				want = "worker_retired"
 			}
+			backupCode(t, err, want)
 			before := schedulingBackupRows(t, f.store.DB())
 			bundle := restoreBundle(t, f)
 			if _, err := Inspect(t.Context(), bundle.Path); err != nil {

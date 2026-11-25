@@ -50,11 +50,15 @@ func (e *Engine) preferredCLIQueued(ctx context.Context, tx *sql.Tx, o Operation
 	}
 	var ids []pendingCandidateID
 	for rows.Next() {
-		var id pendingCandidateID
-		if err = rows.Scan(&id.project, &id.operation); err != nil {
+		var rawProject, rawOperation any
+		if err = rows.Scan(&rawProject, &rawOperation); err != nil {
 			break
 		}
-		ids = append(ids, id)
+		project, projectOK := rawProject.(string)
+		operation, operationOK := rawOperation.(string)
+		if projectOK && operationOK {
+			ids = append(ids, pendingCandidateID{project, operation})
+		}
 	}
 	if err == nil {
 		err = rows.Err()
@@ -122,7 +126,7 @@ candidates:
 			}
 			dependency, err := e.earlierQueuedReviewIntentWithWitness(ctx, tx, earlier, priorConfig, revision, nil, nil, false)
 			if err != nil {
-				if automaticProjectRefused(err) || isStoredUnavailable(err, storedConfigurationHistory) || isStoredUnavailable(err, storedRoundHistory) || selectionCustodyUnproved(err) {
+				if automaticProjectRefused(err) || isRetainedOperationDecodeError(err) || isStoredUnavailable(err, storedConfigurationHistory) || isStoredUnavailable(err, storedRoundHistory) || selectionCustodyUnproved(err) {
 					continue candidates
 				}
 				var preflight *queuePriorityPreflight
