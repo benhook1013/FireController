@@ -18,7 +18,7 @@ type HostedSubmittedReview struct {
 var submittedIgnored = regexp.MustCompile(`^<summary>(?:⛔|` + standingPicture + `) Files ignored due to path filters: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedSelected = regexp.MustCompile(`^<summary>(?:📒|` + standingPicture + `) Files selected for processing: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedNoReviewable = regexp.MustCompile(`^<summary>(?:💤|` + standingPicture + `) Files with no reviewable changes: (0|[1-9][0-9]{0,4})</summary>$`)
-var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> (?:🪄 )?Fix comments: Fix CodeRabbit comments on this PR$`)
+var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> (?:(?:🪄 )?Fix comments: Fix CodeRabbit comments on this PR|Ask CodeRabbit to fix comments on this review)$`)
 var submittedDecorated = map[string]*regexp.Regexp{
 	"ℹ️ Review info":       findingReviewInfoIcon,
 	"⚙️ Run configuration": regexp.MustCompile(`^<summary>` + standingPicture + ` Run configuration</summary>$`),

@@ -57,5 +57,7 @@ func TestHostedMinorInventoryRejectsMalformed(t *testing.T) {
 	}
 }
 func TestHostedMinorMultipleGroups(t *testing.T) {
-	hfWant(t, hfNew(t, nil, minorTestCategory(2, minorTestGroup("source/one.go", 1, minorTestItem(3)), minorTestGroup("source/two.go", 1, minorTestItem(4)))), true, 2)
+	renamedPrompt := strings.Replace(minorTestItem(4), "Prompt for AI Agents", "Prompt to fix issue", 1)
+	summary := minorTestCategory(2, minorTestGroup("source/one.go", 1, minorTestItem(3)), minorTestGroup("source/two.go", 1, renamedPrompt))
+	hfWant(t, hfNew(t, nil, summary), true, 2)
 }

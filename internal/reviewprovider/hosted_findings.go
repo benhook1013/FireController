@@ -31,7 +31,7 @@ var findingAdditionalHeader = regexp.MustCompile(`^<summary>(?:🔇|` + standing
 
 // Minor groups retain provider fingerprints and explicit file/item counts.
 var findingMinorHeader = regexp.MustCompile(`^<summary>` + standingPicture + ` Minor comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
-var findingMinorPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt for AI Agents</summary>$`)
+var findingMinorPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` (?:Prompt for AI Agents|Prompt to fix issue)</summary>$`)
 var findingMinorGroup = regexp.MustCompile(`^<summary>([^<>]+): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingAdditionalGroup = regexp.MustCompile(`^<summary>([^<>]+)-([1-9][0-9]*)-([1-9][0-9]*): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)

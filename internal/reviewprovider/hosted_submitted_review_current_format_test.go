@@ -112,7 +112,7 @@ func submittedCurrentFixture(t *testing.T) hfFixture {
 }
 
 func TestHostedSubmittedReviewCurrentFormatRetainsBothInventories(t *testing.T) {
-	for _, mode := range []string{"current", "CRLF", "no caution", "no no-reviewable block", "decorated checkbox"} {
+	for _, mode := range []string{"current", "CRLF", "no caution", "no no-reviewable block", "decorated checkbox", "ask CodeRabbit checkbox"} {
 		t.Run(mode, func(t *testing.T) {
 			f := submittedCurrentFixture(t)
 			body := &f.snapshot.Reviews[0].Body
@@ -130,6 +130,8 @@ func TestHostedSubmittedReviewCurrentFormatRetainsBothInventories(t *testing.T) 
 				*body = (*body)[:start] + (*body)[end:]
 			case "decorated checkbox":
 				*body = strings.Replace(*body, " --> Fix comments:", " --> 🪄 Fix comments:", 1)
+			case "ask CodeRabbit checkbox":
+				*body = strings.Replace(*body, "Fix comments: Fix CodeRabbit comments on this PR", "Ask CodeRabbit to fix comments on this review", 1)
 			}
 			before := fixtureJSON(t, f)
 			got := f.extract(t)
