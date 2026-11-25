@@ -766,7 +766,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					// A repository mismatch never proves the sampled comparison.
 					// Keep the accepted basis only; do not stamp any later round
 					// grant or planning facts as served by this read.
-					if pull == 0 && (reason == "local_read_unavailable" || reason == "repository_changed") {
+					if pull == 0 && reason == "local_read_unavailable" {
 						settle = false
 					}
 					if settle && pull == 0 && choice.automaticQueueLimit != nil && choice.automaticBasisRevision != 0 {
@@ -784,7 +784,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						}
 					}
 					if settle {
-						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull)
+						resultErr = e.settleAutomaticBasis(ctx, tx, r, pull, pull == 0 && reason == "repository_changed")
 					}
 				}
 				if automaticProjectRefused(resultErr) {
