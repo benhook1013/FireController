@@ -51,6 +51,12 @@ func TestFrontLocalSchedulingHoldPreservesIndependentAndStackedEligibility(t *te
 		if err != nil || got.state != "ready" || got.plan.Pull.Number != 4 {
 			t.Fatalf("unrelated ready candidate not available: %+v %v", got, err)
 		}
+		if target, reason, err := f.e.runFront(ctx, tx, r, 801, []SourcePlan{parent}, false); err != nil || target != 0 || reason != "automatic_scheduling_unavailable" {
+			t.Fatalf("the first prefix did not retain a traversable local hold: %d %q %v", target, reason, err)
+		}
+		if target, reason, err := f.e.runFront(ctx, tx, r, 801, []SourcePlan{parent, independent}, true); err != nil || target != 4 || reason != "" {
+			t.Fatalf("the final prefix did not select the independent candidate: %d %q %v", target, reason, err)
+		}
 		dependent := independent
 		dependent.ParentPullNumber, dependent.ParentSHA = 2, parent.Pull.HeadSHA
 		got, err = f.e.evaluateFront(ctx, tx, r, 801, []SourcePlan{parent, dependent}, true)
