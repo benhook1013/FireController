@@ -361,7 +361,7 @@ func (e *Engine) chooseRunWithSourceBudget(ctx context.Context, r Run, repo int6
 					bindingHeld = true
 					return nil
 				}
-				target, reason, err = e.runFront(ctx, tx, current, repo, choice.prefix)
+				target, reason, err = e.runFront(ctx, tx, current, repo, choice.prefix, i == len(queue)-1)
 				return err
 			})
 		})
@@ -778,7 +778,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					// settle that newer eligible basis behind a
 					// stale hold. A fresh ordinary selection must reacquire source
 					// facts rather than dispatch directly from this recheck.
-					_, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
+					_, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix, true)
 					if err != nil {
 						return err
 					}
@@ -788,7 +788,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 				}
 				return updateRun(ctx, tx, current, "held", choice.reason, "")
 			}
-			front, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix)
+			front, reason, err := e.runFront(ctx, tx, current, repo, choice.prefix, true)
 			if err != nil {
 				return err
 			}
