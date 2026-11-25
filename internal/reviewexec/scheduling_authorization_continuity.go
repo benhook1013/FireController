@@ -3,8 +3,6 @@ package reviewexec
 import (
 	"context"
 	"database/sql"
-
-	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
 // A configuration owner change governs new selections. It need not replace an
@@ -64,8 +62,8 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 			recorded == current.Revision && actor != current.actor {
 			return false, nil
 		}
-		var settings schedulingEvent
-		if !payload.Valid || strictjson.Decode([]byte(payload.String), &settings) != nil {
+		settings, _, _, valid := readSchedulingEventPayload(payload, recorded)
+		if !valid {
 			return false, nil
 		}
 		enabled := settings.Hosted

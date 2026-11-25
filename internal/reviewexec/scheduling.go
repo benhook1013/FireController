@@ -129,6 +129,22 @@ type schedulingEvent struct {
 	CLIBasis    json.RawMessage `json:"cli_basis_revision"`
 }
 
+// Decode the historical event at its own revision. A legacy event has a
+// Hosted bit and may omit both basis fields and the additive CLI bit.
+func readSchedulingEventPayload(payload sql.NullString, revision int64) (schedulingEvent, int64, int64, bool) {
+	var event schedulingEvent
+	if revision < 1 || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.Hosted == nil {
+		return event, 0, 0, false
+	}
+	hosted, cli := revision, revision
+	if len(event.HostedBasis) != 0 || len(event.CLIBasis) != 0 {
+		if json.Unmarshal(event.HostedBasis, &hosted) != nil || json.Unmarshal(event.CLIBasis, &cli) != nil || string(event.HostedBasis) == "null" || string(event.CLIBasis) == "null" || hosted < 1 || cli < 1 || hosted > revision || cli > revision {
+			return event, 0, 0, false
+		}
+	}
+	return event, hosted, cli, true
+}
+
 // Channel basis revisions are carried in the current scheduling event, not in
 // the authorization revision. Legacy events retain the shared revision verbatim:
 // deploying this change must not regenerate cancelled or failed intent digests.
@@ -149,17 +165,12 @@ func schedulingBasisRevisions(ctx context.Context, tx *sql.Tx, s schedulingRecor
 		if err = rows.Scan(&nativeActor, &payload); err != nil {
 			return 0, 0, err
 		}
-		var event schedulingEvent
+		event, eventHosted, eventCLI, valid := readSchedulingEventPayload(payload, s.Revision)
 		actor, textActor := nativeActor.(string)
-		if count != 1 || !textActor || actor != s.actor || !payload.Valid || strictjson.Decode([]byte(payload.String), &event) != nil || event.Hosted == nil || *event.Hosted != s.AutomaticHosted || event.CLI == nil && s.AutomaticCLI || event.CLI != nil && *event.CLI != s.AutomaticCLI {
+		if count != 1 || !textActor || actor != s.actor || !valid || *event.Hosted != s.AutomaticHosted || event.CLI == nil && s.AutomaticCLI || event.CLI != nil && *event.CLI != s.AutomaticCLI {
 			return 0, 0, schedulingUnavailable()
 		}
-		hosted, cli = s.Revision, s.Revision
-		if len(event.HostedBasis) != 0 || len(event.CLIBasis) != 0 {
-			if json.Unmarshal(event.HostedBasis, &hosted) != nil || json.Unmarshal(event.CLIBasis, &cli) != nil || string(event.HostedBasis) == "null" || string(event.CLIBasis) == "null" || hosted < 1 || cli < 1 || hosted > s.Revision || cli > s.Revision {
-				return 0, 0, schedulingUnavailable()
-			}
-		}
+		hosted, cli = eventHosted, eventCLI
 	}
 	if err = rows.Err(); err != nil {
 		return 0, 0, err

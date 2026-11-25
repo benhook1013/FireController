@@ -29,6 +29,9 @@ func TestHostedSnapshotRetainsUnusedSchedulingPreflight(t *testing.T) {
 				if err := ValidateAllowanceSnapshot(t.Context(), tx, 10); err != nil {
 					t.Fatalf("valid detached Hosted preflight refused: %v", err)
 				}
+				if err := ValidateOperationWaitsSnapshot(t.Context(), tx); err != nil {
+					t.Fatalf("valid detached Hosted preflight wait history refused: %v", err)
+				}
 				for i, table := range tables {
 					if after := snapshotTableThrough(t, tx, table); before[i] != after {
 						t.Fatalf("snapshot wrote to %s inside inspection", table)
