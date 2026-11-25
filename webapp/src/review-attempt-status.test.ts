@@ -63,8 +63,8 @@ describe('visible attempt reasons', () => {
   it.each([
     ['admission_changed', 'Review eligibility changed before start'],
     ['predecessor_unfinished', 'Waiting for earlier PR work'],
-    ['hosted_finished_inventory_unproven', 'The finished review could not be verified'],
-    ['hosted_finished_incomplete', 'Review output was incomplete; capacity released'],
+    ['hosted_finished_inventory_unproven', 'CodeRabbit finished. FireController could not verify all findings.'],
+    ['hosted_finished_incomplete', 'CodeRabbit finished. FireController could not verify all findings. The Hosted slot was released.'],
     ['allowance_exhausted', 'Included CLI quota was exhausted'],
     ['constructor', 'Constructor'],
     ['new_safe_reason', 'New safe reason'],

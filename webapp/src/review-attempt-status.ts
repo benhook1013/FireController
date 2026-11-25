@@ -47,8 +47,8 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
     workspace_changed: 'The prepared workspace changed before start',
     execution_binding_changed: 'The execution binding changed before start',
     preparation_missing: 'The prepared review is no longer available',
-    hosted_finished_inventory_unproven: 'The finished review could not be verified',
-    hosted_finished_incomplete: 'Review output was incomplete; capacity released',
+    hosted_finished_inventory_unproven: 'CodeRabbit finished. FireController could not verify all findings.',
+    hosted_finished_incomplete: 'CodeRabbit finished. FireController could not verify all findings. The Hosted slot was released.',
     hosted_allowance_cooldown: 'Hosted allowance stopped this attempt',
     allowance_exhausted: 'Included CLI quota was exhausted',
     allowance_unavailable: 'CLI quota could not be checked',
@@ -74,6 +74,11 @@ export function reviewAttemptCause(attempt: ReviewAttemptSummary): string {
   return attempt.state === 'uncertain' ? 'The provider outcome is unconfirmed' : 'No reason was recorded';
 }
 
+export function hostedImportIncomplete(attempt?: ReviewAttemptSummary): boolean {
+  return attempt?.channel === 'hosted' && (attempt.state === 'uncertain' && attempt.reason === 'hosted_finished_inventory_unproven' ||
+    attempt.state === 'failed' && attempt.reason === 'hosted_finished_incomplete');
+}
+
 // An attempt is an execution record, not a verdict on the PR. Only retained
 // pending work establishes recovery; queue eligibility alone never does.
 export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: ReviewRoundProgress, position?: ReviewChannelPosition, historical = false): ReviewAttemptStatus | undefined {
@@ -88,7 +93,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   // request or a closed grant exists. Do not present it as safe to retry.
   if (attempt?.state === 'uncertain') {
     const activity = activeAttemptStatus(attempt, progress).activity;
-    return { ...(activity?.evidence ? { activity } : {}), text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The provider outcome is unconfirmed. Reconcile it before retrying. ${diagnostic}` };
+    return { ...(activity?.evidence ? { activity } : {}), text: hostedImportIncomplete(attempt) ? 'Import incomplete' : 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `${hostedImportIncomplete(attempt) ? "Reconcile the attempt before retrying." : "The provider outcome is unconfirmed. Reconcile it before retrying."} ${diagnostic}` };
   }
   if (progress?.retained_adjudication_pending && !(attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state))) return { text: 'Needs adjudication', description: 'Retained partial findings need decisions. No completed review round is claimed.' };
   if (progress?.wait && !progress.closed && (!progress.source_retry || progress.wait.paused)) return undefined; // Render the actual retained wait badge.
@@ -122,6 +127,7 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
     if (githubHold) return { text: 'Needs agent attention', kind: 'attention', cause: githubRateLimit, description: 'See Attempts in review history.' };
     // A known admission hold is more useful than a generic process alert.
     if (attempt.state === 'held' && attempt.reason === 'predecessor_unfinished') return { text: 'Dependency hold', cause: reviewAttemptCause(attempt), description: `Predecessor work holds this attempt. No retry is confirmed. ${diagnostic}` };
+    if (hostedImportIncomplete(attempt)) return { text: 'Import incomplete', kind: 'attention', cause: reviewAttemptCause(attempt), description: diagnostic };
     return { text: 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `The review attempt stopped. This is a process issue, not a PR review verdict. ${progress ? 'No pending recovery is recorded.' : 'Current recovery status is unavailable.'} ${diagnostic}` };
   }
   if (attempt?.state === 'unknown') return { text: 'Status unknown', kind: 'attention', cause: reviewAttemptCause(attempt), description: diagnostic };

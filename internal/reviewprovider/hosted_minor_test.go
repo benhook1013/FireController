@@ -30,7 +30,7 @@ func TestHostedMinorInventoryRejectsMalformed(t *testing.T) {
 	item := minorTestItem(3)
 	base := minorTestCategory(1, minorTestGroup("source/sample.go", 1, item))
 	cases := map[string]string{
-		"unknown nested":        strings.Replace(base, "Prompt for AI Agents", "Unknown nested group", 1),
+		"unknown nested":        strings.Replace(base, "Repeated sample, not another finding.", "```\n"+hfMarker(999)+"\n```", 1),
 		"missing severity":      strings.ReplaceAll(base, " Minor**", " Unspecified**"),
 		"invalid metadata":      strings.Replace(base, "**Functional Correctness**", "Functional Correctness", 1),
 		"file header text":      strings.Replace(base, "sample.go: 1", "sample.go: 1 extra", 1),
@@ -57,7 +57,7 @@ func TestHostedMinorInventoryRejectsMalformed(t *testing.T) {
 	}
 }
 func TestHostedMinorMultipleGroups(t *testing.T) {
-	renamedPrompt := strings.Replace(minorTestItem(4), "Prompt for AI Agents", "Prompt to fix issue", 1)
+	renamedPrompt := strings.Replace(minorTestItem(4), "Prompt for AI Agents", "Suggested follow-up for this comparison", 1)
 	summary := minorTestCategory(2, minorTestGroup("source/one.go", 1, minorTestItem(3)), minorTestGroup("source/two.go", 1, renamedPrompt))
 	hfWant(t, hfNew(t, nil, summary), true, 2)
 }

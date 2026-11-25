@@ -58,8 +58,6 @@ export function reviewLabel(value: string): string {
 function reviewAttemptReason(attempt: ReviewAttemptSummary): string | undefined {
   if (!attempt.reason || !['held', 'uncertain', 'rate_limited', 'failed'].includes(attempt.state)) return undefined;
   const labels: Record<string, string> = {
-    hosted_finished_inventory_unproven: 'Finished response could not be verified',
-    hosted_finished_incomplete: 'Review output was incomplete; capacity released',
     hosted_allowance_cooldown: 'Waiting for hosted allowance',
     allowance_exhausted: 'CLI allowance exhausted',
   };
@@ -499,15 +497,15 @@ function CompactRunPill({ run, snapshot, head, highlights }: { run: ReviewRunSum
   const status = reviewRunPillStatus(run);
   return <ReviewRoundPillDisplay found={run.found} accepted={accepted} routed={routed} className={`review-pill-${partial ? "partial" : run.outcome} ${highlight}`} status={status === 'Needs adjudication' ? 'Adjudicating' : status} zeroAccepted={run.outcome === 'completed' && run.complete && run.attributable && run.finalized && run.accepted === 0 && run.current_accepted === 0 && run.current_pending_fixes === 0} title={description} label={`Open ${run.channel} run ${run.source_run_id}: ${description}`} wrap={content => <Link {...content} to={reviewLink(home, 'runs', run.id, snapshot)} />}>{start ? <RelativeTime value={start.value} label={start.label} /> : <span className="review-pill-age" aria-hidden="true">—</span>}</ReviewRoundPillDisplay>;
 }
-function RunningReviewPill({ evidence, attemptID, channel, attention, submittedAt, awaitingStart }: { evidence?: ReviewActivityEvidence; attemptID: string; channel: ReviewChannel; attention?: string; submittedAt?: string; awaitingStart?: boolean }) {
+function RunningReviewPill({ evidence, attemptID, channel, attention, submittedAt, awaitingStart, importIncomplete }: { evidence?: ReviewActivityEvidence; attemptID: string; channel: ReviewChannel; attention?: string; submittedAt?: string; awaitingStart?: boolean; importIncomplete?: boolean }) {
   const cli = evidence?.kind === 'cli_process_spawned';
   const date = evidence ? (evidence.kind === 'cli_process_spawned' ? evidence.process_started_at : evidence.observed_at) : submittedAt;
   const estimated = !evidence && !!submittedAt;
   const timing = !date ? 'Start time unknown' : estimated ? `Estimated start (request submission acknowledged) ${time(date)}` : cli ? `CLI started ${time(date)}` : `Assumed start (CodeRabbit activity seen) ${time(date)}`;
-  const description = `${channel === 'cli' ? 'CLI' : 'Hosted'} ${attention ? 'review needs attention. ' + attention : awaitingStart ? 'review requested. Waiting for a start signal.' : 'review running.'} Counts pending. ${timing}.`;
+  const description = importIncomplete ? `${attention} Finding count unverified. ${timing}.` : `${channel === 'cli' ? 'CLI' : 'Hosted'} ${attention ? 'review needs attention. ' + attention : awaitingStart ? 'review requested. Waiting for a start signal.' : 'review running.'} Counts pending. ${timing}.`;
   const instanceID = useId();
   const detailID = `review-attention-${attemptID}-${instanceID}`;
-  return <><ReviewRoundPillDisplay found="?" accepted="?" routed="?" className={attention ? "review-pill-partial" : awaitingStart ? undefined : "review-pill-running"} status={attention ? "Needs attention" : awaitingStart ? "Requested" : "Running"} title={description} label={description} wrap={content => attention ? <button {...content} type="button" popoverTarget={detailID} /> : <span {...content} role="img" />}>
+  return <><ReviewRoundPillDisplay found="?" accepted="?" routed="?" className={attention ? "review-pill-partial" : awaitingStart ? undefined : "review-pill-running"} status={importIncomplete ? "Import incomplete" : attention ? "Needs attention" : awaitingStart ? "Requested" : "Running"} title={description} label={description} wrap={content => attention ? <button {...content} type="button" popoverTarget={detailID} /> : <span {...content} role="img" />}>
     {date ? estimated ? <span className="review-pill-age">~ <RelativeTime value={date} label="Estimated start (request submission acknowledged)" /></span> : <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
   </ReviewRoundPillDisplay>{attention && <div id={detailID} popover="auto" className="review-attention-detail"><p>{description}</p><button type="button" popoverTarget={detailID} popoverTargetAction="hide">Close</button></div>}</>;
 }
@@ -521,6 +519,7 @@ const laneAttemptLabels: Partial<Record<string, { text?: string; tone?: 'active'
   'Dependency hold': { tone: 'alert' },
   Held: { tone: 'alert' },
   'Needs agent attention': { text: 'Check attempt', tone: 'alert' },
+  'Import incomplete': { tone: 'alert' },
   'Carried work': { tone: 'alert' },
   'Findings pending': { text: 'Routed findings', tone: 'alert' },
   'Manual results pending': { text: 'Manual review pending', tone: 'alert' },
@@ -567,7 +566,7 @@ function ReviewLane({ number, channel, title, runs, attempts, snapshot, head, lo
   // Terminal round controls already appear in the lane progress summary.
   // Keep actionable waits and unfinished work, not a duplicate unknown-count pill.
   const terminalStatus = status?.text === 'Closed' || status?.text === 'Cap reached';
-  const candidateBadge = (returned && status?.activity) || attemptPill || terminalStatus ? undefined : status;
+  const candidateBadge = (returned && (status?.activity || status?.text === 'Import incomplete')) || attemptPill || terminalStatus ? undefined : status;
   const waiting = historical || progress?.closed || (progress?.source_retry && !progress.wait?.paused) ? undefined : progress?.wait;
   const waitingForParent = parentBaseMoved && !historical && !activeAttempt && !waiting && !terminalStatus &&
     (!candidateBadge || ['Queued', 'Up next', 'Queue position', 'Source unverified'].includes(candidateBadge.text));
@@ -614,7 +613,7 @@ function ReviewLane({ number, channel, title, runs, attempts, snapshot, head, lo
     {visiblePills.length > 0 || attemptPill || placeholders > 0 ? <div className="review-round-pills review-recent-rounds">
       <ReviewRoundPlaceholders count={placeholders} />
       {visiblePills.map(({ run, snapshot }) => <CompactRunPill key={run.id} run={run} snapshot={snapshot} head={head} highlights={highlights} />)}
-      {attemptPill && attempt && <RunningReviewPill key={attempt.source_attempt_id} attemptID={attempt.source_attempt_id} evidence={running} submittedAt={submittedAt} channel={channel} attention={attention} awaitingStart={!!holder && !running && !attention} />}
+      {attemptPill && attempt && <RunningReviewPill key={attempt.source_attempt_id} attemptID={attempt.source_attempt_id} evidence={running} submittedAt={submittedAt} channel={channel} attention={attention} importIncomplete={status?.text === 'Import incomplete'} awaitingStart={!!holder && !running && !attention} />}
     </div> : loading ? <ReviewRoundsSkeleton count={total} /> : null}
     {(failed || !loading && !completed.length && returned?.outcome !== 'completed' && total > 0 && !notice) && <p className="review-lane-empty">Round history could not be loaded.</p>}
     {notice}

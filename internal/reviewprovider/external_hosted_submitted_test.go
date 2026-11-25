@@ -75,15 +75,17 @@ func TestHostedCurrentMarkedSummaryDecodesWithEitherAttributionPath(t *testing.T
 	f := submittedCurrentFixture(t)
 	review := &f.snapshot.Reviews[0]
 	review.Body = externalCurrentSubmission(review.HeadSHA, false) + "\n\n" + publicationTestMarker(1, 1)
-	for _, shape := range []string{"supported", "unwrapped prompt", "unknown prompt", "unclosed heading", "unrelated heading"} {
+	for _, shape := range []string{"supported", "unwrapped prompt", "renamed prompt", "prompt with visible prose", "unclosed heading", "unrelated heading"} {
 		t.Run(shape, func(t *testing.T) {
 			review := *review
 			switch shape {
 			case "unwrapped prompt":
 				review.Body = strings.Replace(review.Body, "</summary>\n<dl>\n<dd>\n\n```", "</summary>\n\n```", 1)
 				review.Body = strings.Replace(review.Body, "```\n\n</dd>\n</dl>\n</details>", "```\n\n</details>", 1)
-			case "unknown prompt":
+			case "renamed prompt":
 				review.Body = strings.Replace(review.Body, "Prompt to fix all issues", "Other prompt", 1)
+			case "prompt with visible prose":
+				review.Body = strings.Replace(review.Body, "Prompt to fix all issues</summary>", "Prompt to fix all issues</summary>\nUnclassified content.", 1)
 			case "unclosed heading":
 				review.Body = strings.Replace(review.Body, "</h6>", "", 1)
 			case "unrelated heading":
@@ -91,7 +93,7 @@ func TestHostedCurrentMarkedSummaryDecodesWithEitherAttributionPath(t *testing.T
 			}
 			f := f
 			f.snapshot.Reviews = []HostedReview{review}
-			supported := shape == "supported" || shape == "unwrapped prompt"
+			supported := shape == "supported" || shape == "unwrapped prompt" || shape == "renamed prompt"
 			got := externalDiscover(t, f)
 			if len(got) != 1 || got[0].Inventory.Complete != supported || len(got[0].Inventory.Findings) != 1 || got[0].Inventory.Publication.Batches[0].Body != review.Body {
 				t.Fatal("marked archive summary misclassified or rewrote source")
@@ -164,8 +166,8 @@ func TestExternalHostedOmittedCountRequiresCompleteTerminalEvidence(t *testing.T
 		{"unclassified finding section", func(f *hfFixture) {
 			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "</h6>", "</h6>\n\n## Unrecognized finding section\n"+hfMarker(3), 1)
 		}, false},
-		{"unknown prompt", func(f *hfFixture) {
-			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Prompt to fix all issues", "Unrecognized prompt", 1)
+		{"prompt with visible prose", func(f *hfFixture) {
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Prompt to fix all issues</summary>", "Prompt to fix all issues</summary>\nUnclassified content.", 1)
 		}, true},
 		{"empty acknowledgement review", func(f *hfFixture) { f.snapshot.Reviews[0].Body = "" }, true},
 	} {

@@ -313,7 +313,7 @@ it('keeps hosted uncertain evidence matched to its trigger and replaces it with 
  const uncertain={...attempt,channel:'hosted' as const,state:'uncertain' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};
  const current={...progress,channel:'hosted' as const,activity_evidence:signal};
  const html=markup([],[uncertain],current);
- expect(html).toContain('review-pill-partial'); expect(html).toContain('Needs attention');
+ expect(html).toContain('review-pill-partial'); expect(html).toContain('Import incomplete');
  expect(html).not.toContain('aria-label="hosted current review state"');
  const mismatched=markup([],[{...uncertain,trigger_id:'43'}],current);
  expect(mismatched).toContain('review-pill-partial');
@@ -330,8 +330,8 @@ it('shows an older Hosted capacity holder and identifies it from another waiting
  const newer: ReviewAttemptSummary = {...holder,source_attempt_id:`review_attempt_${'c'.repeat(32)}`,state:'completed',head_sha:head,
    reason:undefined,finished_at:'2026-11-15T06:00:00Z'};
  const blocked = markup([], [newer], current, undefined, {pull_number:78,attempt:holder});
- expect(blocked.match(/review-pill-status">Needs attention/g)).toHaveLength(1);
- expect(blocked).toContain('The finished review could not be verified');
+ expect(blocked.match(/review-pill-status">Import incomplete/g)).toHaveLength(1);
+ expect(blocked).toContain('CodeRabbit finished. FireController could not verify all findings.');
  expect(blocked).toContain('This attempt still holds the Hosted lane.');
  expect(blocked).toContain('Review head bbbbbbbb is older');
  expect(blocked).toContain('0 runs');
@@ -339,7 +339,7 @@ it('shows an older Hosted capacity holder and identifies it from another waiting
  const waiting = markup([], [], current, undefined, {pull_number:87,attempt:holder});
  expect(waiting).toContain('Waiting on #87');
  expect(waiting).toContain('CodeRabbit finished #87, but its results could not be verified.');
- expect(waiting).not.toContain('review-pill-status">Needs attention');
+ expect(waiting).not.toContain('review-pill-status">Import incomplete');
  expect(markup([], [], {...current,closed:true}, undefined, {pull_number:87,attempt:holder})).not.toContain('Waiting on #87');
  expect(markup([], [newer], current)).not.toContain('holds the Hosted lane');
 });
@@ -347,12 +347,14 @@ it('shows an older Hosted capacity holder and identifies it from another waiting
 it('shows proven finished Hosted capture without inventing a start or treating trigger-only attempts as reviews',()=>{
  const proven={...attempt,channel:'hosted' as const,state:'uncertain' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};
  const html=markup([],[proven]);
- expect(html).toContain('review-pill-partial'); expect(html).toContain('Needs attention'); expect(html).toContain('Start time unknown');
+ expect(html).toContain('review-pill-partial'); expect(html).toContain('Import incomplete'); expect(html).toContain('Start time unknown');
  expect(html).not.toContain('<time'); expect(html).not.toContain('aria-label="hosted current review state"');
  for(const change of [{trigger_id:''},{trigger_id:'0'},{trigger_id:'00'},{trigger_id:'invalid'},{state:'posting' as const},{reason:'provider_outcome_unknown'},{channel:'cli' as const}]){
   expect(markup([],[{...proven,...change}])).not.toContain('review-pill-partial');
  }
- expect(markup([{...completed,channel:'hosted'}],[{...proven,source_run_id:completed.source_run_id}])).not.toContain('review-pill-partial');
+ const recovered = markup([{...completed,channel:'hosted'}],[{...proven,source_run_id:completed.source_run_id}]);
+ expect(recovered).not.toContain('review-pill-partial');
+ expect(recovered).not.toContain('Import incomplete');
 });
 
 it('prefers a clearly estimated matched request submission over unknown time, never preparation',()=>{

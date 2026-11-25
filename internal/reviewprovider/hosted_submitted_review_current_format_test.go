@@ -112,7 +112,7 @@ func submittedCurrentFixture(t *testing.T) hfFixture {
 }
 
 func TestHostedSubmittedReviewCurrentFormatRetainsBothInventories(t *testing.T) {
-	for _, mode := range []string{"current", "CRLF", "no caution", "no no-reviewable block", "decorated checkbox", "ask CodeRabbit checkbox"} {
+	for _, mode := range []string{"current", "CRLF", "no caution", "no no-reviewable block", "decorated checkbox", "renamed presentation"} {
 		t.Run(mode, func(t *testing.T) {
 			f := submittedCurrentFixture(t)
 			body := &f.snapshot.Reviews[0].Body
@@ -130,8 +130,9 @@ func TestHostedSubmittedReviewCurrentFormatRetainsBothInventories(t *testing.T) 
 				*body = (*body)[:start] + (*body)[end:]
 			case "decorated checkbox":
 				*body = strings.Replace(*body, " --> Fix comments:", " --> 🪄 Fix comments:", 1)
-			case "ask CodeRabbit checkbox":
-				*body = strings.Replace(*body, "Fix comments: Fix CodeRabbit comments on this PR", "Ask CodeRabbit to fix comments on this review", 1)
+			case "renamed presentation":
+				*body = strings.Replace(*body, "Fix comments: Fix CodeRabbit comments on this PR", "Generate suggestions for this comparison", 1)
+				*body = strings.Replace(*body, "Prompt to fix review comments", "Instructions for the next pass", 1)
 			}
 			before := fixtureJSON(t, f)
 			got := f.extract(t)
@@ -197,8 +198,14 @@ func TestHostedSubmittedReviewCurrentFormatRejectsUnknownOrIncomplete(t *testing
 		"no-reviewable count mismatch": func(f *hfFixture) {
 			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Files with no reviewable changes: 1", "Files with no reviewable changes: 2", 1)
 		},
-		"unknown checkbox": func(f *hfFixture) {
-			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, " --> Fix comments:", " --> Unknown action:", 1)
+		"checkbox carries another marker": func(f *hfFixture) {
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, " --> Fix comments:", " --> "+hfMarker(100)+" Fix comments:", 1)
+		},
+		"wrong checkbox ID": func(f *hfFixture) {
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "44444444-4444-4444-8444-444444444444", "invalid", 1)
+		},
+		"prompt contains visible finding": func(f *hfFixture) {
+			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "Synthetic prompt is data, not inventory.", "Synthetic prompt is data, not inventory.\n```\n"+hfMarker(100)+"\n```", 1)
 		},
 		"quoted real run": func(f *hfFixture) {
 			f.snapshot.Reviews[0].Body = strings.Replace(f.snapshot.Reviews[0].Body, "- **Run ID**: `"+submittedTestRun+"`", "> - **Run ID**: `"+submittedTestRun+"`", 1)

@@ -31,7 +31,6 @@ var findingAdditionalHeader = regexp.MustCompile(`^<summary>(?:🔇|` + standing
 
 // Minor groups retain provider fingerprints and explicit file/item counts.
 var findingMinorHeader = regexp.MustCompile(`^<summary>` + standingPicture + ` Minor comments: (0|[1-9][0-9]*)</summary><blockquote>$`)
-var findingMinorPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` (?:Prompt for AI Agents|Prompt to fix issue)</summary>$`)
 var findingMinorGroup = regexp.MustCompile(`^<summary>([^<>]+): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingAdditionalGroup = regexp.MustCompile(`^<summary>([^<>]+)-([1-9][0-9]*)-([1-9][0-9]*): (0|[1-9][0-9]*)</summary><blockquote>$`)
 var findingDuplicateHeader = regexp.MustCompile(`^<summary>♻️ Duplicate comments \((0|[1-9][0-9]*)\)</summary><blockquote>$`)
@@ -678,8 +677,15 @@ func (d *findingDecoder) groupedFindings(body string, lines []findingLine, start
 				}
 			}
 		}
+		if kind == "minor" && depth == 1 && quotes == 1 && itemStart >= 0 && l.text == "<details>" {
+			p := submittedReviewParser{lines: lines[:end+1], at: i}
+			if p.fencedPrompt(body, true) {
+				i = p.at - 1
+				continue
+			}
+		}
 		if depth > 1 && strings.HasPrefix(l.text, "<summary>") {
-			knownNested = findingKnownNested(l.text) || kind == "minor" && findingMinorPrompt.MatchString(l.text)
+			knownNested = findingKnownNested(l.text)
 			if kind == "minor" && !knownNested {
 				d.fail("summary_format_unsupported")
 			}
@@ -962,10 +968,14 @@ func (d *findingDecoder) summary(review HostedReview, selected bool) {
 					d.reviewInfoCoverage(review.Body, lines, i, end)
 				}
 				known := header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header) || reviewInfo
-				if selected && currentSubmittedPrompt.MatchString(header) {
+				if selected && !known {
 					p := submittedReviewParser{lines: lines, at: i}
-					known = !currentPrompt && p.currentPrompt(review.Body) && p.at == end+1 && p.take("<h6>", false)
-					currentPrompt = currentPrompt || known
+					if !currentPrompt && p.fencedPrompt(review.Body, false) && p.at == end+1 {
+						p.next()
+						_, _, headedInfo := currentReviewInfoHeading(lines, p.at)
+						known = headedInfo || p.take("---", false) && p.block("ℹ️ Review info")
+						currentPrompt = known
+					}
 				}
 				if !known && selected {
 					d.fail("summary_format_unsupported")

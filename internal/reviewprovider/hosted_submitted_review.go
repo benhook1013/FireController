@@ -18,7 +18,7 @@ type HostedSubmittedReview struct {
 var submittedIgnored = regexp.MustCompile(`^<summary>(?:⛔|` + standingPicture + `) Files ignored due to path filters: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedSelected = regexp.MustCompile(`^<summary>(?:📒|` + standingPicture + `) Files selected for processing: (0|[1-9][0-9]{0,4})</summary>$`)
 var submittedNoReviewable = regexp.MustCompile(`^<summary>(?:💤|` + standingPicture + `) Files with no reviewable changes: (0|[1-9][0-9]{0,4})</summary>$`)
-var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> (?:(?:🪄 )?Fix comments: Fix CodeRabbit comments on this PR|Ask CodeRabbit to fix comments on this review)$`)
+var submittedAutofix = regexp.MustCompile(`^- \[ \] <!-- \{"checkboxId":"` + publicationUUID + `"\} --> (.+)$`)
 var submittedDecorated = map[string]*regexp.Regexp{
 	"ℹ️ Review info":       findingReviewInfoIcon,
 	"⚙️ Run configuration": regexp.MustCompile(`^<summary>` + standingPicture + ` Run configuration</summary>$`),
@@ -134,6 +134,13 @@ func (p *submittedReviewParser) filePaths(count int, entry *regexp.Regexp) (map[
 	return paths, len(paths) == count && p.close(wrapped)
 }
 
+func legacySubmittedPrompt(lines []findingLine, start int) (int, bool) {
+	end, complete := findingBlock(lines, start, 0)
+	label := submittedReviewParser{lines: lines, at: start + 1}
+	header, visible := label.text()
+	return end, complete && visible && (header == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header))
+}
+
 func parseSubmittedReview(body, head string) (run string, count int, selected map[string]bool, ok bool) {
 	return parseSubmittedReviewEnvelope(body, head, false, false)
 }
@@ -178,7 +185,8 @@ func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly
 				return
 			}
 			checkbox, found := p.next()
-			if !found || checkbox.quote != 0 || !checkbox.hidden || !submittedAutofix.MatchString(checkbox.text) {
+			match := submittedAutofix.FindStringSubmatch(checkbox.text)
+			if !found || checkbox.quote != 0 || !checkbox.hidden || match == nil || !hostedPresentationCaption(match[1]) {
 				return
 			}
 			p.at++
@@ -189,14 +197,17 @@ func parseSubmittedReviewKind(body, head string, current, marked, additionalOnly
 		// The optional prompt is opaque. findingBlock retains visibility across
 		// fences/quotes, so examples cannot close the prompt and become metadata.
 		if current {
-			if !p.currentPrompt(body) || !p.take("<h6>", false) {
+			if !p.fencedPrompt(body, false) || !p.take("<h6>", false) {
 				return
 			}
 		} else if line, found := p.next(); found && !line.hidden && line.quote == 0 && line.text == "<details>" {
-			end, complete := findingBlock(lines, p.at, 0)
-			label := submittedReviewParser{lines: lines, at: p.at + 1}
-			header, visible := label.next()
-			if complete && visible && !header.hidden && header.quote == 0 && (header.text == "<summary>🤖 Prompt to fix review comments</summary>" || findingPromptIcon.MatchString(header.text)) {
+			prompt := p
+			if prompt.fencedPrompt(body, false) {
+				p = prompt
+				if !p.take("---", false) {
+					return
+				}
+			} else if end, legacy := legacySubmittedPrompt(lines, p.at); legacy {
 				p.at = end + 1
 				if !p.take("---", false) {
 					return

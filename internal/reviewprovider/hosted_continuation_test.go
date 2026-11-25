@@ -49,6 +49,36 @@ func TestHostedContinuationPreservesCompleteFindingInventory(t *testing.T) {
 	}
 }
 
+func TestHostedContinuationJoinsOutOfOrderBatchesByIdentity(t *testing.T) {
+	f := continuationFixture(t)
+	item := strings.Replace(minorTestItem(108), "Prompt for AI Agents", "Potential next steps", 1)
+	f.snapshot.Reviews[1].Body += "\n\n" + minorTestCategory(1, minorTestGroup("engine/queue.go", 1, item))
+	f.snapshot.Reviews[0], f.snapshot.Reviews[1] = f.snapshot.Reviews[1], f.snapshot.Reviews[0]
+
+	got := hfWant(t, f, true, 44)
+	if len(got.Publication.Batches) != 2 || got.Publication.Batches[0].ID != 401 || got.Publication.Batches[1].ID != 402 {
+		t.Fatalf("batch identity changed: %+v", got.Publication.Batches)
+	}
+	minor := got.Findings[len(got.Findings)-1]
+	if minor.Kind != "minor" || minor.ReviewID != 402 || !strings.Contains(minor.Detail, "Potential next steps") {
+		t.Fatalf("lost original continuation finding: %+v", minor)
+	}
+}
+
+func TestHostedContinuationFinishedAcknowledgementCannotReplaceMissingBatch(t *testing.T) {
+	f := continuationFixture(t)
+	f.snapshot.Reviews = f.snapshot.Reviews[:1]
+	acknowledgement := submittedTestFixture(t).snapshot.IssueComments[1]
+	acknowledgement.Author = f.bot
+	acknowledgement.CreatedAt = f.snapshot.IssueComments[0].CreatedAt.Add(time.Second)
+	acknowledgement.UpdatedAt = f.snapshot.ObservedAt
+	f.snapshot.IssueComments = append(f.snapshot.IssueComments, acknowledgement)
+	got := f.extract(t)
+	if !got.Publication.CommandFinished || got.Complete || got.Reason != "missing_publication_batches" || len(got.Findings) != 0 {
+		t.Fatalf("missing finding coverage was not kept separate from command completion: finished=%v complete=%v reason=%q", got.Publication.CommandFinished, got.Complete, got.Reason)
+	}
+}
+
 func TestHostedContinuationCannotSupplyMissingInventory(t *testing.T) {
 	for _, mode := range []string{"missing-first", "missing-second", "root-count", "outside-count", "first-batch-heading", "repeated-heading", "unknown-prose", "wrong-ordinal", "wrong-publication", "quoted-heading"} {
 		t.Run(mode, func(t *testing.T) {

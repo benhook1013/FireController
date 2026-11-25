@@ -159,8 +159,8 @@ describe('merge-head recent review rounds', () => {
 describe('retained attempt diagnostics', () => {
   const attempt: ReviewAttemptItem = { source: 'native', source_attempt_id: 'attempt_one', channel: 'hosted', head_sha: 'head', state: 'uncertain', started_at: '', finished_at: '', duration_seconds: null, source_run_id: '', trigger_id: '', provider_review_id: '' };
   it.each([
-    ['uncertain', 'hosted_finished_inventory_unproven', 'Uncertain', 'Finished response could not be verified'],
-    ['failed', 'hosted_finished_incomplete', 'Failed', 'Review output was incomplete; capacity released'],
+    ['uncertain', 'hosted_finished_inventory_unproven', 'Uncertain', 'CodeRabbit finished. FireController could not verify all findings.'],
+    ['failed', 'hosted_finished_incomplete', 'Failed', 'CodeRabbit finished. FireController could not verify all findings. The Hosted slot was released.'],
     ['held', 'hosted_allowance_cooldown', 'Held', 'Waiting for hosted allowance'],
     ['rate_limited', 'allowance_exhausted', 'Cooldown', 'CLI allowance exhausted'],
     ['failed', 'another_safe_code', 'Failed', 'Another safe code'],
@@ -170,7 +170,7 @@ describe('retained attempt diagnostics', () => {
     archive.items = []; archive.hasMore = false;
     const compact = markup(true, [value]);
     expect(compact).toContain(`Retained attempt: ${state} (${reason})`);
-    expect(compact).toContain(`>Check attempt</span>`);
+    expect(compact).toContain(reason.startsWith('hosted_finished_') ? '>Import incomplete</span>' : '>Check attempt</span>');
     expect(compact).not.toContain(`>${label}</span>`);
     expect(compact.match(/class="badge review-channel-position review-attempt-state /gu)).toHaveLength(1);
     archive.items = [value];
@@ -190,7 +190,7 @@ describe('retained attempt diagnostics', () => {
     for (const state of ['active', 'completed'] as const) {
       const value = { ...attempt, state, reason: 'hosted_finished_inventory_unproven' };
       archive.items = [];
-      expect(markup(true, [value])).not.toContain('Finished response could not be verified');
+      expect(markup(true, [value])).not.toContain('CodeRabbit finished. FireController could not verify all findings.');
       archive.items = [value];
       expect(markup(false, [], true)).not.toContain('<small>Reason</small>');
     }

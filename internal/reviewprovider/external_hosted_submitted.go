@@ -7,20 +7,25 @@ import (
 	"time"
 )
 
-var currentSubmittedPrompt = regexp.MustCompile(`^<summary>` + standingPicture + ` Prompt to fix all issues</summary>$`)
+var hostedPromptSummary = regexp.MustCompile(`^<summary>` + standingPicture + ` ([^<>]+)</summary>$`)
+
+func hostedPresentationCaption(caption string) bool {
+	return strings.TrimSpace(caption) != "" && !strings.ContainsAny(caption, "<>\r\n") && validPlainText(caption, 512)
+}
 
 // The current provider presentation contains one opaque fenced prompt. It
 // cannot supply inventory, status, or run identity.
-func (p *submittedReviewParser) currentPrompt(body string) bool {
+func (p *submittedReviewParser) fencedPrompt(body string, projected bool) bool {
 	if !p.take("<details>", false) {
 		return false
 	}
 	header, ok := p.text()
-	if !ok || !currentSubmittedPrompt.MatchString(header) {
+	match := hostedPromptSummary.FindStringSubmatch(header)
+	if !ok || match == nil || !hostedPresentationCaption(match[1]) {
 		return false
 	}
-	wrapped := p.take("<dl>", false)
-	if wrapped && !p.take("<dd>", false) {
+	wrapped := p.take("<dl>", projected)
+	if wrapped && !p.take("<dd>", projected) {
 		return false
 	}
 	fence, ok := p.next()
@@ -30,7 +35,7 @@ func (p *submittedReviewParser) currentPrompt(body string) bool {
 	for line, ok := p.next(); ok && line.hidden; line, ok = p.next() {
 		p.at++
 		if line.quote == 0 && strings.TrimSuffix(body[line.start:line.end], "\r") == "```" {
-			return p.close(wrapped)
+			return (!wrapped || p.take("</dd>", projected) && p.take("</dl>", projected)) && p.take("</details>", false)
 		}
 	}
 	return false
