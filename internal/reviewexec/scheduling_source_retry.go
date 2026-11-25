@@ -35,8 +35,18 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 		return "automation_authorization_changed", nil
 	}
 	initial, err := automaticSourceInitialRead(ctx, tx, r)
-	if err != nil || initial {
+	if err != nil {
 		return "", err
+	}
+	if initial {
+		proved, err := verifiedInitialAutomaticSourceAcceptance(ctx, tx, r)
+		if err != nil {
+			return "", err
+		}
+		if !proved {
+			return "selection_superseded", nil
+		}
+		return "", nil
 	}
 	if accepted != current.Revision {
 		return "automation_authorization_changed", nil
@@ -49,6 +59,17 @@ func automaticSourceRecoveryFence(ctx context.Context, tx *sql.Tx, r Run) (strin
 		return "selection_superseded", nil
 	}
 	return "", nil
+}
+
+// An interrupted read can relax exact-revision continuity only when this
+// selection durably recorded its automatic acceptance. The common decoder
+// validates the unique revision-one event and binds its actor, worker and lane.
+func verifiedInitialAutomaticSourceAcceptance(ctx context.Context, q EvidenceQuery, r Run) (bool, error) {
+	event, err := readSelectionRequestedEvent(ctx, q, r)
+	if err != nil {
+		return false, err
+	}
+	return event.sequence > 0 && event.Origin == selectionOriginAutomatic, nil
 }
 
 // A revision alone cannot distinguish restart recovery from a completed hold.
