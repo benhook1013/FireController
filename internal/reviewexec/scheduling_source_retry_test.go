@@ -345,8 +345,10 @@ func TestAutomaticSourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 			ageSourceRetry(t, f, r.ID)
 			schedulingGenerate(t, f, true)
 			var once sync.Once
+			edited := false
 			reader := &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
 				once.Do(func() {
+					edited = true
 					switch mode {
 					case "cancelled-operation":
 						raw, err := f.e.Enqueue(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "during-source", Request{ExpectedConfigurationRevision: 1, PullNumber: 2, HeadSHA: strings.Repeat("a", 40), Channel: "hosted"})
@@ -372,8 +374,12 @@ func TestAutomaticSourceRetryRechecksFencesAfterSourceIO(t *testing.T) {
 				return reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, nil
 			}}
 			selectionNext(t, f, reader)
+			if !edited {
+				t.Fatal("Hosted retry never reached its repository callback")
+			}
+			want := map[string]string{"cancelled-operation": "selection_superseded", "scheduling": "automation_authorization_changed", "configuration": "configuration_changed", "policy": "policy_changed"}[mode]
 			got := selectionRead(t, f, r.ID)
-			if got.State != "held" || got.OperationID != "" {
+			if got.State != "held" || got.OperationID != "" || got.Reason != want {
 				t.Fatal("changed authority or cancelled successor ignored", got)
 			}
 			expected := 0
