@@ -763,7 +763,10 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 					// An exhausted local read did not verify the final front. Keep
 					// the accepted basis for unchanged-work suppression, but don't
 					// consume a new basis (e.g. a resumed PR) from this failed read.
-					if pull == 0 && reason == "local_read_unavailable" {
+					// A repository mismatch never proves the sampled comparison.
+					// Keep the accepted basis only; do not stamp any later round
+					// grant or planning facts as served by this read.
+					if pull == 0 && (reason == "local_read_unavailable" || reason == "repository_changed") {
 						settle = false
 					}
 					if settle && pull == 0 && choice.automaticQueueLimit != nil && choice.automaticBasisRevision != 0 {

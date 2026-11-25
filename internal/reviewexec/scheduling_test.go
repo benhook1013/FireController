@@ -1466,6 +1466,8 @@ func TestValidateSchedulingSnapshotAcceptsSupportedVersions(t *testing.T) {
 			schedulingEnable(t, f, 0, true)
 			if tc.legacyPhysical {
 				admissionSQL(t, f, `ALTER TABLE review_scheduling DROP COLUMN automatic_cli`)
+				admissionSQL(t, f, `UPDATE events SET payload_json='{"automatic_hosted":true}'
+				  WHERE project_id=? AND event_type='review.scheduling_updated' AND revision=1`, attemptProject)
 			}
 			admissionSQL(t, f, `UPDATE metadata SET value=? WHERE key='schema:review_scheduling'`, tc.version)
 			if err := validateSchedulingSnapshotForTest(t, f); err != nil {
