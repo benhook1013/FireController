@@ -64,6 +64,7 @@ type ReviewOperation struct {
 	queuedReservation     *queuedReservation
 	Observer              *ReviewHostedObserverStatus  `json:"observer,omitempty"`
 	HostedQuery           *ReviewHostedQueryDiagnostic `json:"hosted_query,omitempty"`
+	Intent                *ReviewIntentProgress        `json:"intent,omitempty"`
 	Wait                  *ReviewOperationWait         `json:"wait,omitempty"`
 	SourceRefusal         *ReviewSourceRefusal         `json:"source_refusal,omitempty"`
 	deploymentDraining    bool
@@ -88,6 +89,40 @@ type ReviewOperation struct {
 	CreatedAt             string                      `json:"created_at"`
 	UpdatedAt             string                      `json:"updated_at"`
 	Allowance             *ReviewAllowanceObservation `json:"allowance,omitempty"`
+}
+
+// ReviewIntentProgress describes retained scheduling lineage. The attempt's
+// original comparison still determines what was actually reviewed.
+type ReviewIntentProgress struct {
+	RootOperationID string `json:"root_operation_id"`
+	PredecessorID   string `json:"predecessor_operation_id,omitempty"`
+	SuccessorID     string `json:"successor_operation_id,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	NotBefore       string `json:"not_before,omitempty"`
+	Generation      int    `json:"generation"`
+}
+
+func validReviewIntentProgress(operation ReviewOperation) bool {
+	intent := operation.Intent
+	if intent == nil {
+		return true
+	}
+	// The retained lineage permits 1,000 rebindings after the initial operation.
+	const maxGeneration = 1001
+	if intent.Generation < 1 || intent.Generation > maxGeneration || ValidateReviewOperationID(intent.RootOperationID) != nil || !validAllowanceTime(intent.CreatedAt) || intent.NotBefore != "" && !validAllowanceTime(intent.NotBefore) {
+		return false
+	}
+	if intent.SuccessorID != "" {
+		if ValidateReviewOperationID(intent.SuccessorID) != nil || intent.SuccessorID == operation.ID || intent.SuccessorID == intent.RootOperationID || intent.SuccessorID == intent.PredecessorID || intent.Generation == maxGeneration || operation.State != "cancelled" || operation.Reason != "source_superseded" {
+			return false
+		}
+	} else if operation.Reason == "source_superseded" {
+		return false
+	}
+	if intent.Generation == 1 {
+		return intent.RootOperationID == operation.ID && intent.PredecessorID == "" && intent.SuccessorID != "" && intent.CreatedAt == operation.CreatedAt && intent.NotBefore == ""
+	}
+	return intent.RootOperationID != operation.ID && ValidateReviewOperationID(intent.PredecessorID) == nil && intent.PredecessorID != operation.ID && (intent.PredecessorID == intent.RootOperationID) == (intent.Generation == 2)
 }
 
 // ReviewAllowanceObservation describes this held attempt's retained facts, not
@@ -260,6 +295,9 @@ func (c *Client) validReviewOperation(value ReviewOperation) bool {
 		return false
 	}
 	if !validReviewSourceRefusal(value.SourceRefusal, value.State, value.Reason, value.PullNumber) {
+		return false
+	}
+	if !validReviewIntentProgress(value) {
 		return false
 	}
 	if value.EvidenceID != "" && (value.AttemptID == "" || !validReviewOpaqueID(value.EvidenceID, "review_evidence_")) {
