@@ -82,25 +82,26 @@ type ReviewRunDetail struct {
 }
 
 type ReviewPullSummary struct {
-	ReviewSize     *reviewsize.Assessment       `json:"review_size,omitempty"`
-	Observation    *ReviewPullObservationHealth `json:"observation,omitempty"`
-	Diff           *ReviewPullDiff              `json:"diff,omitempty"`
-	IsDraft        *bool                        `json:"is_draft,omitempty"`
-	MergedAt       string                       `json:"merged_at,omitempty"`
-	Number         int64                        `json:"number"`
-	Title          string                       `json:"title"`
-	State          string                       `json:"state"`
-	HeadSHA        string                       `json:"head_sha"`
-	BaseRef        string                       `json:"base_ref"`
-	BaseSHA        string                       `json:"base_sha"`
-	CIState        string                       `json:"ci_state"`
-	Mergeability   string                       `json:"mergeability"`
-	Complete       bool                         `json:"complete"`
-	RunCount       int64                        `json:"run_count"`
-	RunCounts      ReviewChannelRunCounts       `json:"run_counts"`
-	AttemptCount   int64                        `json:"attempt_count"`
-	RecentRuns     []ReviewRunSummary           `json:"recent_runs"`
-	LatestAttempts []ReviewAttempt              `json:"latest_attempts"`
+	ParentPullNumber int64                        `json:"parent_pull_number,omitempty"`
+	ReviewSize       *reviewsize.Assessment       `json:"review_size,omitempty"`
+	Observation      *ReviewPullObservationHealth `json:"observation,omitempty"`
+	Diff             *ReviewPullDiff              `json:"diff,omitempty"`
+	IsDraft          *bool                        `json:"is_draft,omitempty"`
+	MergedAt         string                       `json:"merged_at,omitempty"`
+	Number           int64                        `json:"number"`
+	Title            string                       `json:"title"`
+	State            string                       `json:"state"`
+	HeadSHA          string                       `json:"head_sha"`
+	BaseRef          string                       `json:"base_ref"`
+	BaseSHA          string                       `json:"base_sha"`
+	CIState          string                       `json:"ci_state"`
+	Mergeability     string                       `json:"mergeability"`
+	Complete         bool                         `json:"complete"`
+	RunCount         int64                        `json:"run_count"`
+	RunCounts        ReviewChannelRunCounts       `json:"run_counts"`
+	AttemptCount     int64                        `json:"attempt_count"`
+	RecentRuns       []ReviewRunSummary           `json:"recent_runs"`
+	LatestAttempts   []ReviewAttempt              `json:"latest_attempts"`
 }
 
 // Completed review outcomes only; RunCount retains the full history inventory.
@@ -310,6 +311,9 @@ func (c *Client) validReviewMeta(project string, revision int64, snapshot, sourc
 }
 
 func (c *Client) validReviewPull(value ReviewPullSummary) bool {
+	if value.ParentPullNumber != 0 && (!validPullNumber(value.ParentPullNumber) || value.ParentPullNumber == value.Number) {
+		return false
+	}
 	if value.ReviewSize != nil && !reviewsize.Valid(*value.ReviewSize, value.Number) {
 		return false
 	}
