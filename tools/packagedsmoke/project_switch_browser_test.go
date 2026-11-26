@@ -407,6 +407,12 @@ try {
       await expect(chooser()).toBeVisible();await expect(chooser()).toBeEnabled();
       await expect.poll(async()=>chooser().locator('option').evaluateAll(options=>options.filter(o=>o.value&&!o.disabled).map(o=>o.value).sort())).toEqual([a.id,b.id].sort());
       await expect(chooser()).toHaveValue(p.id);
+      await expect(chooser().locator('option:checked')).toHaveText(p.name);
+      await expect(page.getByRole('link',{name:p.name+' home',exact:true})).toHaveAttribute('href',p.home);
+      const byline=page.locator('.workspace-mast .mast-byline');
+      await expect(byline).toHaveText('FireController');
+      const secondarySize=await byline.evaluate(element=>parseFloat(getComputedStyle(element).fontSize));
+      need(await chooser().evaluate(element=>parseFloat(getComputedStyle(element).fontSize))>secondarySize);
       const saved=await binding();need(saved.projectID===p.id&&saved.instanceID===config.instance&&(!saved.selectedworkerID||p.workers.includes(saved.selectedworkerID)));
       need(new URL(page.url()).pathname===p.home||new URL(page.url()).pathname.startsWith(p.home+'/'));
       const text=await page.locator('body').innerText();need(![other.title,other.brief,other.worker_name,...other.workers,other.job,c.name,c.title,c.brief,c.id,c.worker].some(value=>text.includes(value)));

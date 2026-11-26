@@ -53,7 +53,8 @@ describe('private connection first paint', () => {
     expect(html).not.toContain('opening-project-card');
     expect(html).toContain('class="header-utilities header-utilities-skeleton" aria-hidden="true"');
     expect(html).not.toContain('aria-label="Project utilities"');
-    expect(html).toContain('class="mast-label">Project workspace</span>');
+    expect(html).toContain('class="mast-identity"');
+    expect(html).not.toContain('class="mast-byline"');
     expect(html).not.toContain('Connect to a project');
     expect(html).not.toContain('Project credential');
     expect(html).not.toContain('<form');

@@ -230,6 +230,7 @@ describe('project selector and local safety', () => {
     const html = renderToStaticMarkup(tree);
     expect(html).toContain('aria-label="Switch project"'); expect(html).toContain('value="project_one" selected=""');
     expect(html).toContain('One &lt;literal&gt;</option>'); expect(html).toContain('value="project_two"');
+    expect(renderToStaticMarkup(<ProjectSwitcher {...props} activeName="Current name" />)).toContain('selected="">Current name</option>');
     expect(renderToStaticMarkup(<ProjectSwitcher {...props} projects={[projects[0], { ...projects[1], name: projects[0].name }]} />)).toContain('One &lt;literal&gt; · one');
     expect(html).not.toContain('disabled'); expect(html).not.toContain('credential');
     tree.props.children[1].props.onChange({ target: { value: projects[1].id } });
