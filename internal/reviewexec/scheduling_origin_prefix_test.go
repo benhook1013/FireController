@@ -165,7 +165,10 @@ func TestAutomaticPlanningStrictCutoffPreservesProoflessLegacyHold(t *testing.T)
 	schedulingGenerate(t, f, false)
 
 	// Enabling only the other lane keeps Hosted's basis epoch intact.
-	schedulingCLIEnable(t, f, 1, true)
+	revision, enabled := int64(1), true
+	if _, err := f.e.ConfigureScheduling(t.Context(), selectionScope(t, f, attemptProject, f.writer, "write"), "enable-cli-preserve-hosted", SchedulingRequest{ExpectedRevision: &revision, AutomaticHosted: &enabled, AutomaticCLI: &enabled}); err != nil {
+		t.Fatal(err)
+	}
 	schedulingGenerate(t, f, false)
 	// Deliberately reasserting Hosted rearms its earlier prefix.
 	schedulingEnable(t, f, 2, true)

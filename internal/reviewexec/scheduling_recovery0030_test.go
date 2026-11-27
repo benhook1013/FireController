@@ -52,15 +52,20 @@ func TestRecovery0030InterruptedInitialReadKeepsChannelContinuity(t *testing.T) 
 						}
 					}
 					reader := &refreshTestReader{}
+					editedDuringRead := false
 					if duringRead {
 						reader.repository = func(context.Context, int64) (reviewprovider.Repository, error) {
 							recovery0030EnableBoth(t, f)
+							editedDuringRead = true
 							return reviewprovider.Repository{ID: 801, FullName: "owner/repo", DefaultBranch: "main"}, nil
 						}
 					} else {
 						recovery0030EnableBoth(t, f)
 					}
 					selectionNext(t, f, reader)
+					if duringRead && !editedDuringRead {
+						t.Fatal("initial read did not apply the during-read scheduling update")
+					}
 					got := selectionRead(t, f, original.ID)
 					if got.State != "selected" || got.OperationID == "" || got.ActorID != original.ActorID || got.WorkerID != original.WorkerID || got.Revision != int64(3+2*interruptions) {
 						t.Fatal("interrupted initial intent lost continuity", got)
