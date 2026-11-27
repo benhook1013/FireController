@@ -805,8 +805,16 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			}
 			return e.finishPreparation(a, state, reason)
 		}
-		admitted, err := e.Admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent)
+		admitted, err := e.admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent, true)
 		if err != nil {
+			var preparedRefusal *preparedCLIAdmissionRefusal
+			if errors.As(err, &preparedRefusal) {
+				var schedulingHistory *schedulingHistoryUnavailable
+				if isStoredUnavailable(err, storedPolicyHistory) || errors.As(err, &schedulingHistory) {
+					continue
+				}
+				return persistenceFailure()
+			}
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
@@ -841,6 +849,9 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 				return e.finishPreparation(a, "held", "admission_changed")
 			}
 			return persistenceFailure()
+		}
+		if admitted.State == "held" {
+			continue
 		}
 		a = admitted
 		var progressMu sync.Mutex

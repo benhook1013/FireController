@@ -459,7 +459,15 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 	for _, pull := range queue {
 		p, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
-			return "", false, err
+			var local *pullSchedulingStateError
+			if !errors.As(err, &local) || local.project != project || local.pull != pull {
+				return "", false, err
+			}
+			// A missing readable control cannot establish this PR's basis.
+			// Keep its position in the degraded digest and assess later PRs.
+			values = append(values, []any{pull, nil, nil})
+			degraded = true
+			continue
 		}
 		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
 		if err != nil {
@@ -495,8 +503,8 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 	}
 	var digestInput any = []any{values, remaining}
 	if degraded {
-		// Version the encoding so it cannot be treated as an equivalent
-		// full-queue basis or rearm a full-digest-only historical intent.
+		// Preserve the paused-row encoding. An unreadable control has no
+		// verified revision, so its null revision cannot match that case.
 		digestInput = []any{"planning_basis_degraded_paused_v1", values, remaining}
 	}
 	sum := sha256.Sum256([]byte(encoded(digestInput)))

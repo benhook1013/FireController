@@ -47,6 +47,14 @@ func TestFrontLocalSchedulingHoldPreservesIndependentAndStackedEligibility(t *te
 	independent := SourcePlan{Repository: parent.Repository, Pull: reviewprovider.Pull{RepositoryID: 801, Number: 4, State: "open", HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40)}}
 	if err := f.e.readAdmission(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		r := Run{ProjectID: attemptProject, Channel: "cli"}
+		basis, eligible, err := automaticPlanningBasisForPrefix(ctx, tx, attemptProject, []int64{2, 4}, "", r.Channel)
+		if err != nil || !eligible || !hash.MatchString(basis) {
+			t.Fatalf("independent PR did not produce an eligible planning basis: %q %v %v", basis, eligible, err)
+		}
+		basis, eligible, err = automaticPlanningBasisForPrefix(ctx, tx, attemptProject, []int64{2}, "", r.Channel)
+		if err != nil || eligible || !hash.MatchString(basis) {
+			t.Fatalf("unreadable PR was not excluded from planning: %q %v %v", basis, eligible, err)
+		}
 		got, err := f.e.evaluateFront(ctx, tx, r, 801, []SourcePlan{parent, independent}, true)
 		if err != nil || got.state != "ready" || got.plan.Pull.Number != 4 {
 			t.Fatalf("unrelated ready candidate not available: %+v %v", got, err)

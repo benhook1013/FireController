@@ -124,7 +124,7 @@ func readPolicy(ctx context.Context, tx *sql.Tx, project string) (PolicyRecord, 
 	body, validBody = bodyValue.(string)
 	record.Revision, validRevision = revisionValue.(int64)
 	if !validBody || !validRevision || record.Revision < 1 || len(body) > 1024 || strictjson.Decode([]byte(body), &record.Policy) != nil || !validPolicy(record.Policy) {
-		return PolicyRecord{}, automaticProjectStateFailure("storage_unavailable", "Stored project review policy is unavailable.", 500)
+		return PolicyRecord{}, &automaticProjectStateError{newStoredUnavailable(storedPolicyHistory, "Stored project review policy is unavailable.")}
 	}
 	return record, nil
 }
