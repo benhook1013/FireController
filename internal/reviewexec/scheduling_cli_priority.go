@@ -193,7 +193,7 @@ candidates:
 		if attribution.revision != 0 {
 			limit, err := e.automaticHostedQueuedPrefixChannel(ctx, tx, r.ProjectID, c, r.Channel)
 			if err != nil {
-				if automaticProjectRefused(err) {
+				if automaticProjectRefused(err) || isRetainedOperationDecodeError(err) {
 					continue candidates
 				}
 				return false, err

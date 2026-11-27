@@ -135,6 +135,10 @@ func TestSchedulingHTTPDefaultsStrictCASAndPermissions(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	w = call("GET", "scheduling", f.reader, "", "")
+	var enabledScheduling Scheduling
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &enabledScheduling) != nil || enabledScheduling.Revision != 1 || !enabledScheduling.AutomaticHosted {
+		t.Fatalf("Hosted scheduling not enabled: HTTP %d: %s", w.Code, w.Body.String())
+	}
 	if strings.Contains(w.Body.String(), "credential") || strings.Contains(w.Body.String(), "principal") || !strings.Contains(w.Body.String(), `"authorizing_worker_id":"selection-worker"`) {
 		t.Fatal(w.Body.String())
 	}
