@@ -324,6 +324,27 @@ it('preserves a proven uncertain review as one partial pill with its original st
  expect(markup([],[uncertain],progress)).not.toContain('review-pill-partial');
 });
 
+it('keeps a verified Hosted request visible while scheduled observation takes over', () => {
+ const requested = { ...attempt, channel: 'hosted' as const, source_run_id: '', trigger_id: '42' };
+ const pending = { ...requested, state: 'uncertain' as const, reason: 'hosted_observation_pending' };
+ const current = { ...progress, channel: 'hosted' as const };
+ const render = (holder: ReviewAttemptSummary, activity_evidence?: ReviewRoundProgress['activity_evidence']) =>
+  markup([], [requested], { ...current, activity_evidence }, undefined, { pull_number: 78, attempt: holder });
+ const processing = {
+  kind: 'hosted_processing_observed' as const, attempt_id: requested.source_attempt_id, head_sha: head,
+  trigger_id: '42', observed_at: stamp, comment_updated_at: stamp, source_comment_id: 43,
+  provider_run_id: '11111111-2222-4333-8444-555555555555',
+ };
+ for (const html of [render(requested), render(pending), render(pending, { ...processing, trigger_id: '43' })]) {
+  expect(html).toContain('review-pill-status">Requested');
+  expect(html).not.toMatch(/Needs attention|Check attempt|review-pill-status">Running/u);
+ }
+ expect(markup([], [pending], current)).toContain('hosted execution: Requested');
+ expect(render(pending, processing)).toContain('review-pill-status">Running');
+ expect(render({ ...pending, reason: 'trigger_post_unproven' })).toContain('review-pill-status">Needs attention');
+ expect(render({ ...pending, trigger_id: '' })).toContain('review-pill-status">Needs attention');
+});
+
 it('keeps hosted uncertain evidence matched to its trigger and replaces it with its exact result',()=>{
  const signal={attempt_id:attempt.source_attempt_id,head_sha:head,observed_at:stamp,kind:'hosted_processing_observed' as const,comment_updated_at:stamp,source_comment_id:12,provider_run_id:'11111111-2222-4333-8444-555555555555',trigger_id:'42'};
  const uncertain={...attempt,channel:'hosted' as const,state:'uncertain' as const,source_run_id:'',trigger_id:'42',reason:'hosted_finished_inventory_unproven'};

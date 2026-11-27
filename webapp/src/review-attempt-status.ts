@@ -89,10 +89,18 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
     if (!attempt || attempt.state === 'completed' || settled) return undefined;
     return { text: 'Past attempt', kind: 'history', cause: stopped || ['uncertain', 'unknown'].includes(attempt.state) ? reviewAttemptCause(attempt) : undefined, description: `${diagnostic} ${attempt.state === 'uncertain' ? 'The provider outcome remains unconfirmed; PR closure does not reconcile it. ' : ''}Historical record, not current activity.` };
   }
-  // An unconfirmed provider outcome must be reconciled, even when another
-  // request or a closed grant exists. Do not present it as safe to retry.
   if (attempt?.state === 'uncertain') {
     const activity = activeAttemptStatus(attempt, progress).activity;
+    // A verified Hosted trigger can wait for the scheduled observer before
+    // CodeRabbit reports activity. That handoff requires no operator action.
+    if (attempt.channel === 'hosted' && attempt.reason === 'hosted_observation_pending' &&
+        !attempt.finished_at && /^review_attempt_[a-f0-9]{32}$/u.test(attempt.source_attempt_id) &&
+        /^[1-9][0-9]{0,18}$/u.test(attempt.trigger_id) && activity) {
+      return activity.evidence
+        ? { text: 'Reviewing', activity }
+        : { text: 'Requested', activity: { ...activity, explanation: 'Review requested. Waiting for CodeRabbit to report progress.' } };
+    }
+    // Other uncertain outcomes require reconciliation even after closure.
     return { ...(activity?.evidence ? { activity } : {}), text: hostedImportIncomplete(attempt) ? 'Import incomplete' : 'Needs agent attention', kind: 'attention', cause: reviewAttemptCause(attempt), description: `${hostedImportIncomplete(attempt) ? "Reconcile the attempt before retrying." : "The provider outcome is unconfirmed. Reconcile it before retrying."} ${diagnostic}` };
   }
   if (progress?.retained_adjudication_pending && !(attempt && !attempt.finished_at && ['preparing', 'prepared', 'posting', 'active'].includes(attempt.state))) return { text: 'Needs adjudication', description: 'Retained partial findings need decisions. No completed review round is claimed.' };
