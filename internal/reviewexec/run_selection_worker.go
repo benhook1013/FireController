@@ -721,13 +721,13 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 						return
 					}
 					settle := state != "queued" && reason != "selection_changed"
-					if settle && pull == 0 && choice.automaticQueueLimit != nil && choice.automaticBasisRevision != 0 {
+					if settle && choice.automaticQueueLimit != nil && choice.automaticBasisRevision != 0 {
 						var currentBasis int64
 						currentBasis, resultErr = automaticChannelBasisRevision(ctx, tx, r.ProjectID, r.Channel)
-						// An old no-child result is still retained as history, but
-						// it cannot suppress the source read of a newly rearmed lane.
+						// Retain an older result and any selected child as history.
+						// It must not mark a newly rearmed lane basis served.
 						settle = resultErr == nil && currentBasis == choice.automaticBasisRevision
-						if settle {
+						if settle && pull == 0 {
 							var revisions []int64
 							// A newly unreadable row must roll back the provisional
 							// front frame; it is not equivalent to an ordinary revision change.
