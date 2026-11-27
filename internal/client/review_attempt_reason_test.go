@@ -92,3 +92,52 @@ func TestReviewAttemptReasonStrictCompactAndFlatWire(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewPullReadsVerifiedParentFromActualResponse(t *testing.T) {
+	f := newReviewClientFixture(t)
+	snapshot := f.importSnapshot(t, func(in *domain.ObservationRequest) {
+		in.Queue[0].State = "open"
+		in.Queue = append(in.Queue, domain.PullInput{
+			Number: 2, Title: "Stacked child", State: "open",
+			HeadSHA: strings.Repeat("d", 40), BaseRef: "feature/parent", BaseSHA: in.Queue[0].HeadSHA,
+			CIState: "pending", Mergeability: "unknown", Complete: true,
+			Runs: []domain.RunInput{}, Attempts: []domain.Attempt{},
+		})
+	})
+	for i, head := range []string{"feature/parent", "feature/child"} {
+		draft := false
+		metadata, err := json.Marshal(domain.PullDisplayMetadata{
+			IsDraft:  &draft,
+			Branches: &domain.PullBranches{HeadRepositoryID: 701, HeadRef: head, DeliveryRef: "main"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.store.DB().Exec("UPDATE review_pull_versions SET metadata_json=? WHERE project_id=? AND number=?", string(metadata), f.project, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent, err := f.client.ReviewPull(t.Context(), 1, snapshot)
+	if err != nil || parent.Pull.ParentPullNumber != 0 {
+		t.Fatalf("read root: %#v, %v", parent.Pull, err)
+	}
+	child, err := f.client.ReviewPull(t.Context(), 2, snapshot)
+	if err != nil || child.Pull.ParentPullNumber != 1 {
+		t.Fatalf("read child: %#v, %v", child.Pull, err)
+	}
+
+	body, err := json.Marshal(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{
+		`"parent_pull_number":2`,
+		`"parent_pull_number":-1`,
+		`"parent_pull_number":2147483648`,
+		`"parent_pull_number":1,"unregistered_field":1`,
+	} {
+		mock := newReviewMock(t, strings.Replace(string(body), `"parent_pull_number":1`, invalid, 1), "/api/v1/projects/project-one/reviews/pulls/2")
+		_, err := mock.client.ReviewPull(t.Context(), 2, "")
+		checkError(t, err, "invalid_response")
+	}
+}

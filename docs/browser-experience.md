@@ -96,6 +96,8 @@ Each PR history page includes the [routed findings view](review-routes.md#browse
 
 ## Surface hierarchy
 
+The signed-in workspace header leads with the active project name. A multi-project session shows that name in the project selector beside the home link. The configured brand appears below it when the names differ.
+
 Larger outer surfaces use square corners: the joined hero, worker lanes, primary panels, login frame and review-history containers. Nested job cards and round pills retain modest rounding so individual items remain distinct inside their parent. Controls and compact status pills retain their own shapes. This is the default project presentation; configured project colours remain independent.
 
 The shared PR facts show the actual base at the start of the size pill: Based on PR #number when the stored parent is known, otherwise Based on the branch name. Keep this combined pill visible even when size data is unavailable; show Base unknown rather than inventing a missing base. Preserve the base link and allow long branch names to wrap on narrow screens.

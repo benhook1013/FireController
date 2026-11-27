@@ -339,6 +339,9 @@ function PrivateApp() {
   const projectOptions = connected ? session.api.browserSession?.projects : undefined;
   const showProjectSwitcher = connected && canSwitchProject(session.project.id, projectOptions);
   const visibleAppearance = connected ? appearance : undefined;
+  const brandName = visibleAppearance?.brand_name ?? 'FireController';
+  const projectName = connected ? visibleAppearance?.name ?? session.project.name : undefined;
+  const headerHome = connected ? projectHome(session.project) : routeProject && !restoring && !resumable ? `/projects/${encodeURIComponent(routeProject)}` : '/';
   useLayoutEffect(() => { applyPresentationRoot(document.documentElement, document, visibleAppearance); }, [visibleAppearance]);
   const login = <Connect key={routeProject ?? 'root'} inline={Boolean(routeProject)} projectId={routeProject ?? ''} busy={connecting} notice={notice} onConnect={(project, token) => void connect(project, token)} cancel={() => clear('Connection cancelled.')} />;
   const historyRevision = publishedHistory ? Number(publishedHistory.params.revision) : undefined;
@@ -346,10 +349,14 @@ function PrivateApp() {
   const validHistory = !publishedHistory || Number.isSafeInteger(historyRevision) && Number(historyRevision) > 0 && String(historyRevision) === publishedHistory.params.revision && validPublicGeneration(historyGeneration);
   return <PresentationContext.Provider value={visibleAppearance}>
     <header className="mast workspace-mast"><div className="mast-inner">
-      <Link className="brand" to={connected ? projectHome(session.project) : routeProject && !restoring && !resumable ? `/projects/${encodeURIComponent(routeProject)}` : '/'}><Flame />{visibleAppearance?.brand_name ?? 'FireController'}</Link>
+      <div className="mast-identity">
+        <div className="mast-title">
+          <Link className="brand" to={headerHome} aria-label={showProjectSwitcher ? `${projectName} home` : undefined}><Flame />{!showProjectSwitcher && <span className="mast-name">{projectName ?? brandName}</span>}</Link>
+          {showProjectSwitcher && <ProjectSwitcher projectID={session.project.id} activeName={projectName} projects={projectOptions} busy={switchBusy} select={project => void switchProject(project)} />}
+        </div>
+        {projectName && projectName !== brandName && <span className="mast-byline">{brandName}</span>}
+      </div>
       <div className="mast-meta">
-        {showProjectSwitcher ? <ProjectSwitcher projectID={session.project.id} projects={projectOptions} busy={switchBusy} select={project => void switchProject(project)} />
-          : <span className="mast-label">{connected ? `${visibleAppearance?.name ?? session.project.name} workspace` : 'Project workspace'}</span>}
         {!connected && routeProject && !restoring && !resumable && <button type="button" onClick={() => setSignIn(value => !value)} aria-expanded={signIn}>Sign in</button>}
         {!connected && (restoring || resumable || connecting || session) && <HeaderUtilitiesSkeleton />}
         {connected && <ProjectHeaderUtilities status={metadataStatus} refreshing={refreshingSession === session} busy={switchBusy} refresh={() => void refreshVisibleData()} disconnect={disconnect} />}
@@ -452,13 +459,14 @@ function canSwitchProject(projectID: string, projects?: BrowserProjectOption[]):
   return Boolean(projects?.some(project => project.id === projectID) && projects.some(project => project.id !== projectID));
 }
 
-export function ProjectSwitcher({ projectID, projects, busy, select }: { projectID: string; projects?: BrowserProjectOption[]; busy: boolean; select(projectID: string): void }) {
+export function ProjectSwitcher({ projectID, activeName, projects, busy, select }: { projectID: string; activeName?: string; projects?: BrowserProjectOption[]; busy: boolean; select(projectID: string): void }) {
   if (!canSwitchProject(projectID, projects)) return null;
+  const options = projects.map(project => project.id === projectID && activeName ? { ...project, name: activeName } : project);
   return <label className="project-switcher">
     <span className="visually-hidden">Switch project</span>
     <select aria-label="Switch project" value={projectID} disabled={busy} aria-busy={busy} onChange={event => select(event.target.value)}>
-      {projects.map(project => {
-        const duplicateName = projects.some(other => other.id !== project.id && other.name === project.name);
+      {options.map(project => {
+        const duplicateName = options.some(other => other.id !== project.id && other.name === project.name);
         return <option key={project.id} value={project.id}>{duplicateName ? `${project.name} · ${project.handle}` : project.name}</option>;
       })}
     </select>

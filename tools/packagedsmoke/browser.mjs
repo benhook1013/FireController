@@ -323,7 +323,7 @@ try {
     await route.continue();
   });
   const appearance = () => page.evaluate(() => ({
-    title: document.title, brand: document.querySelector('.brand')?.textContent.trim(),
+    title: document.title, brand: (document.querySelector('.mast-byline') ?? document.querySelector('.brand'))?.textContent.trim(),
     background: getComputedStyle(document.documentElement).backgroundColor,
     overrides: [...document.documentElement.style].filter(name => name.startsWith('--fc-')),
     accent: document.documentElement.style.getPropertyValue('--fc-accent_text'),
@@ -699,6 +699,7 @@ try {
   await heading.waitFor();
   await expect.poll(async () => (await appearance()).accent, {timeout:5000}).toBe('#fffffe');
   need((await appearance()).brand === brand && (await appearance()).title === title + ' · FireController');
+  await expect(page.locator('.mast .brand')).toHaveText(title);
   const themedIndicators = await indicatorColors();
   need(themedIndicators.connection === 'rgb(0, 0, 0)' && themedIndicators.connection !== themedIndicators.connectionSurface);
   need(themedIndicators.status === 'rgb(0, 0, 0)' && themedIndicators.status !== themedIndicators.surface);
@@ -724,9 +725,10 @@ try {
   });
   checkpoint = 'long-brand-layout';
   need(fits);
-  need(await page.locator('.brand').evaluate(element => {
-    const range = document.createRange(); range.selectNodeContents(element);
-    return document.documentElement.scrollWidth <= innerWidth && [...range.getClientRects()].every(rect => rect.left >= -1 && rect.right <= innerWidth + 1);
+  need(await page.locator('.mast .mast-name').evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return document.documentElement.scrollWidth <= innerWidth && bounds.left >= 0
+      && bounds.right <= innerWidth && getComputedStyle(element).textOverflow === 'ellipsis';
   }));
   checkpoint = 'none';
 

@@ -105,13 +105,13 @@ try{
   await expect(page.locator('.mast .brand')).toHaveAttribute('href','/');await page.locator('.mast .brand').click();await page.waitForURL(config.origin+'/');
   need(await page.evaluate(()=>history.state.idx)===rootHistoryIndex+1);
   await connect(config.project,token,'Refresh project A');
-  await page.getByRole('link',{name:'Initial A job',exact:true}).waitFor();await expect(page.locator('.brand')).toContainText('Initial brand A');
+  await page.getByRole('link',{name:'Initial A job',exact:true}).waitFor();await expect(page.locator('.mast-byline')).toContainText('Initial brand A');
   phase='closed-feed';await page.getByText('Project updates disconnected.',{exact:false}).waitFor();need(metadataA===1&&presentationA===1&&deliveryA===1);
   phase='missed-events';
   const changedTheme={...theme,header_background:'#e0eaf4',header_text:'#183451',header_muted:'#183451'};
   await fixture('PUT',config.project,config.worker,'/presentation',{expected_revision:1,presentation:{name:'Refreshed project A',brand_name:'Refreshed brand A',theme:changedTheme}});
   const changedJob=await fixture('POST',config.project,config.worker,'/jobs',{title:'A job from missed event',brief:'Synthetic post-disconnection work.',worker_id:config.worker},201);
-  await paint();await expect(page.getByRole('heading',{name:'Refresh project A',exact:true})).toBeVisible();await expect(page.locator('.brand')).toContainText('Initial brand A');
+  await paint();await expect(page.getByRole('heading',{name:'Refresh project A',exact:true})).toBeVisible();await expect(page.locator('.mast-byline')).toContainText('Initial brand A');
   need(await page.getByRole('link',{name:'A job from missed event',exact:true}).count()===0&&presentationA===1&&deliveryA===1&&metadataA===1);
   phase='held-refresh';armHold();
   const refresh=page.getByRole('button',{name:'Refresh visible data',exact:true});await refresh.click();await heldReady;
@@ -120,7 +120,7 @@ try{
   await expect(page.getByRole('heading',{name:'Refresh project A',exact:true})).toBeVisible();await screenshot('refresh-held-a-1440');
   releaseHeld();need(await heldDone==='delivered');releaseHeld=undefined;
   phase='refresh-result';await expect(refresh).toBeEnabled();await expect(refresh).toHaveAttribute('aria-busy','false');
-  await page.getByRole('heading',{name:'Refreshed project A',exact:true}).waitFor();await expect(page.locator('.brand')).toContainText('Refreshed brand A');await page.getByRole('link',{name:'A job from missed event',exact:true}).waitFor();
+  await page.getByRole('heading',{name:'Refreshed project A',exact:true}).waitFor();await expect(page.locator('.mast-byline')).toContainText('Refreshed brand A');await page.getByRole('link',{name:'A job from missed event',exact:true}).waitFor();
   need(await page.evaluate(()=>document.documentElement.style.getPropertyValue('--fc-header_background').trim())==='#e0eaf4');
   need(metadataA===1&&presentationA===2&&deliveryA===2);await expect(page.getByText('Project updates disconnected.',{exact:false})).toBeVisible();
   await page.setViewportSize({width:390,height:900});need(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await screenshot('refresh-recovered-a-390');
@@ -131,9 +131,9 @@ try{
   await page.goBack();await page.waitForURL(config.origin+'/?signin=1');need(await page.evaluate(()=>history.state.idx)===rootHistoryIndex);
   await expect(page.locator('.mast .brand')).toHaveAttribute('href','/');await page.locator('.mast .brand').click();await page.waitForURL(config.origin+'/');
   phase='connect-b';const targetHandle=await connect(config.target_project,targetToken,'Refresh project B');await page.getByRole('link',{name:'B only job',exact:true}).waitFor();
-  await expect(page.locator('.brand')).toContainText('Isolated brand B');
+  await expect(page.locator('.mast-byline')).toContainText('Isolated brand B');
   releaseHeld();const lateResult=await heldDone;releaseHeld=undefined;need(['delivered','cancelled'].includes(lateResult));
-  phase='late-result';await paint();await expect(page.getByRole('heading',{name:'Refresh project B',exact:true})).toBeVisible();await expect(page.locator('.brand')).toContainText('Isolated brand B');
+  phase='late-result';await paint();await expect(page.getByRole('heading',{name:'Refresh project B',exact:true})).toBeVisible();await expect(page.locator('.mast-byline')).toContainText('Isolated brand B');
   await expect(page.getByRole('link',{name:'B only job',exact:true})).toBeVisible();
   need(await page.getByRole('link',{name:'Initial A job',exact:true}).count()===0&&await page.getByRole('link',{name:'A job from missed event',exact:true}).count()===0);
   need(await page.evaluate(()=>document.documentElement.style.getPropertyValue('--fc-header_background').trim())==='#e4f0e4');

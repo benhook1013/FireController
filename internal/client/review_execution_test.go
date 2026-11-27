@@ -350,6 +350,95 @@ func TestReviewExecutionStrictOperationWireAndLegacyFacts(t *testing.T) {
 	}
 }
 
+func TestReviewOperationIntentProgressMatchesServerWire(t *testing.T) {
+	const rootID = "review_operation_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	const nextID = "review_operation_cccccccccccccccccccccccccccccccc"
+	const createdAt = "2026-01-01T00:00:00Z"
+	const notBefore = "2026-01-02T00:00:00Z"
+	for _, tt := range []struct {
+		name     string
+		terminal bool
+		intent   *reviewexec.IntentProgress
+	}{
+		{name: "legacy"},
+		{name: "original predecessor", terminal: true, intent: &reviewexec.IntentProgress{RootOperationID: executionOperationID, SuccessorID: nextID, CreatedAt: createdAt, Generation: 1}},
+		{name: "rebound completion", intent: &reviewexec.IntentProgress{RootOperationID: rootID, PredecessorID: rootID, CreatedAt: createdAt, NotBefore: notBefore, Generation: 2}},
+		{name: "middle predecessor", terminal: true, intent: &reviewexec.IntentProgress{RootOperationID: rootID, PredecessorID: rootID, SuccessorID: nextID, CreatedAt: createdAt, NotBefore: notBefore, Generation: 2}},
+		{name: "last permitted generation", intent: &reviewexec.IntentProgress{RootOperationID: rootID, PredecessorID: nextID, CreatedAt: createdAt, Generation: 1001}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			value := reviewexec.Operation{ID: executionOperationID, ProjectID: "project-one", ActorID: "principal_one", WorkerID: "other_worker", ConfigurationRevision: 1, PullNumber: 2, Channel: "hosted", HeadSHA: strings.Repeat("a", 40), State: "completed", Revision: 5, CreatedAt: createdAt, UpdatedAt: notBefore, Intent: tt.intent}
+			if tt.terminal {
+				value.State, value.Reason = "cancelled", "source_superseded"
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(value)
+			}))
+			defer srv.Close()
+			c := newClient(t, srv)
+			defer c.Close()
+			got, err := c.ReviewOperation(t.Context(), executionOperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := json.Marshal(tt.intent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := json.Marshal(client.AgentReviewOperation(got).Intent)
+			if err != nil || string(actual) != string(want) {
+				t.Fatalf("got intent %s, want %s (%v)", actual, want, err)
+			}
+		})
+	}
+}
+
+func TestReviewOperationIntentProgressRejectsInvalidWire(t *testing.T) {
+	const rootID = "review_operation_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	base, err := json.Marshal(sampleReviewOperation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := `{"root_operation_id":"` + rootID + `","predecessor_operation_id":"` + rootID + `","created_at":"2026-01-01T00:00:00Z","generation":2}`
+	for name, intent := range map[string]string{
+		"null":                      `null`,
+		"missing generation":        strings.Replace(valid, `,"generation":2`, "", 1),
+		"over generation bound":     strings.Replace(valid, `"generation":2`, `"generation":1002`, 1),
+		"fractional generation":     strings.Replace(valid, `"generation":2`, `"generation":1.5`, 1),
+		"root is current operation": strings.Replace(valid, rootID, executionOperationID, 1),
+		"missing predecessor":       strings.Replace(valid, `,"predecessor_operation_id":"`+rootID+`"`, "", 1),
+		"malformed time":            strings.Replace(valid, "2026-01-01T00:00:00Z", "now", 1),
+		"malformed wait floor":      strings.TrimSuffix(valid, "}") + `,"not_before":"now"}`,
+		"unexpected successor":      strings.TrimSuffix(valid, "}") + `,"successor_operation_id":"review_operation_cccccccccccccccccccccccccccccccc"}`,
+		"unexpected field":          strings.TrimSuffix(valid, "}") + `,"extra":true}`,
+		"private field value":       strings.Replace(valid, "2026-01-01T00:00:00Z", testToken, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/instance" {
+					handshake(w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(strings.TrimSuffix(string(base), "}") + `,"intent":` + intent + "}"))
+			}))
+			defer srv.Close()
+			c := newClient(t, srv)
+			defer c.Close()
+			_, err := c.ReviewOperation(t.Context(), executionOperationID)
+			checkError(t, err, "invalid_response")
+			if strings.Contains(err.Error(), testToken) {
+				t.Fatal("private field value was exposed")
+			}
+		})
+	}
+}
+
 func TestReviewExecutionValidationBeforeCredentialOrHTTP(t *testing.T) {
 	var calls atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); handshake(w) }))
