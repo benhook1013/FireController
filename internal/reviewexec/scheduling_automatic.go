@@ -290,10 +290,16 @@ func automaticBasisAppender(ctx context.Context, tx *sql.Tx, h io.Writer, channe
 }
 
 func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, shared automaticBasisRead) (string, error) {
+	basis, _, err := automaticPullBasisFormats(ctx, tx, project, pull, channel, shared)
+	return basis, err
+}
+
+func automaticPullBasisFormats(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, shared automaticBasisRead) (string, string, error) {
 	basisRevision := shared.revision
-	h := sha256.New()
-	h.Write(shared.prefix)
-	appendRows := automaticBasisAppender(ctx, tx, h, channel, basisRevision)
+	h, legacy := sha256.New(), sha256.New()
+	prefix := io.MultiWriter(h, legacy)
+	prefix.Write(shared.prefix)
+	appendRows := automaticBasisAppender(ctx, tx, prefix, channel, basisRevision)
 	queries := []struct {
 		sql  string
 		args []any
@@ -309,32 +315,33 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 		if err := appendRows(q.sql, false, q.args...); err != nil {
 			var local *automaticPullAdjudicationUnavailable
 			if !errors.As(err, &local) {
-				return "", err
+				return "", "", err
 			}
 			unavailable = err
 		}
 	}
 	if shared.workspace {
 		if err := appendRows(`SELECT p.state,p.head_sha,p.base_ref,p.base_sha,json_extract(p.metadata_json,'$.is_draft') FROM review_current_pulls c JOIN review_pull_memberships m ON m.project_id=c.project_id AND m.number=c.number AND m.start_revision=c.start_revision JOIN review_pull_versions p ON p.project_id=m.project_id AND p.number=m.number AND p.version_revision=m.version_revision WHERE c.project_id=? AND c.number=?`, false, project, pull); err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := appendRows(strings.ReplaceAll(automaticCurrentRunsBasisQuery, "'hosted'", "'"+channel+"'"), true, project, pull); err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := appendRows(automaticCurrentFindingsBasisQuery, true, project, pull); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
-	dependencies, err := shared.dependencies.forPull(pull)
+	dependencies, legacyDependencies, err := shared.dependencies.formatsForPull(pull)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if unavailable != nil {
-		return "", unavailable
+		return "", "", unavailable
 	}
 	h.Write([]byte(encoded(dependencies)))
 
-	return hex.EncodeToString(h.Sum(nil)), nil
+	legacy.Write([]byte(encoded(legacyDependencies)))
+	return hex.EncodeToString(h.Sum(nil)), hex.EncodeToString(legacy.Sum(nil)), nil
 }
 
 // Only a source-owned retained parent chain supplies dependency identity.
@@ -349,7 +356,12 @@ func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project strin
 	if err != nil {
 		return nil, err
 	}
-	return newAutomaticDependencyRead(ctx, tx, project, channel, frame, found).forPull(pull)
+	return automaticDependenciesWithFrame(ctx, tx, project, pull, channel, frame, found)
+}
+
+func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, frame frontFrame, found bool) ([]any, error) {
+	current, _, err := newAutomaticDependencyRead(ctx, tx, project, channel, frame, found).formatsForPull(pull)
+	return current, err
 }
 
 // A dependency read owns one planning snapshot and one project's channel.
@@ -378,21 +390,22 @@ func newAutomaticDependencyRead(ctx context.Context, tx *sql.Tx, project, channe
 	return read
 }
 
-func (r automaticDependencyRead) forPull(pull int64) ([]any, error) {
-	out := []any{}
+func (r automaticDependencyRead) formatsForPull(pull int64) ([]any, []any, error) {
+	out, legacy := []any{}, []any{}
 	current, found := r.byNumber[pull]
 	if !found {
-		return out, nil
+		return out, legacy, nil
 	}
 	seen := map[int64]bool{pull: true}
 	for parent := current.ParentPullNumber; parent != 0; {
 		if seen[parent] || len(seen) > 100 {
-			return nil, errors.Join(errAutomaticParentCycle, schedulingUnavailable())
+			return nil, nil, errors.Join(errAutomaticParentCycle, schedulingUnavailable())
 		}
 		seen[parent] = true
 		p, exists := r.byNumber[parent]
 		if !exists {
 			out = append(out, []any{parent, "source_prefix_incomplete"})
+			legacy = append(legacy, []any{parent, "source_prefix_incomplete"})
 			break
 		}
 		facts, loaded := r.facts[parent]
@@ -400,14 +413,16 @@ func (r automaticDependencyRead) forPull(pull int64) ([]any, error) {
 			var err error
 			facts, err = r.load(p)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			r.facts[parent] = facts
 		}
-		out = append(out, facts)
+		// Ancestor review facts must validate, but do not rearm the child.
+		out = append(out, []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA})
+		legacy = append(legacy, facts)
 		parent = p.ParentPullNumber
 	}
-	return out, nil
+	return out, legacy, nil
 }
 
 func loadAutomaticDependencyFacts(ctx context.Context, tx *sql.Tx, project, channel string, repository int64, p frontPull) ([]any, error) {
@@ -475,7 +490,7 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 			degraded = true
 			continue
 		}
-		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
+		basis, legacyBasis, err := automaticPullBasisFormats(ctx, tx, project, pull, channel, shared)
 		if err != nil {
 			var unreadable *automaticPullAdjudicationUnavailable
 			if !p.Paused || !errors.As(err, &unreadable) {
@@ -499,8 +514,8 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 		if pending {
 			continue
 		}
-		var seen bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id<>? AND pull_number=? AND pull_basis_sha256=?)`, project, ignoreSelection, pull, basis).Scan(&seen); err != nil {
+		seen, err := automaticPullPreviouslySelected(ctx, tx, project, ignoreSelection, pull, channel, basis, legacyBasis)
+		if err != nil {
 			return "", false, err
 		}
 		if !seen {
@@ -685,14 +700,33 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	if position := slices.Index(c.Queue, pull); position < 0 || position >= limit {
 		return true, nil
 	}
-	basis, err := automaticPullBasisChannel(ctx, tx, r.ProjectID, pull, r.Channel)
+	shared, err := readAutomaticBasis(ctx, tx, r.ProjectID, r.Channel)
 	if err != nil {
 		return false, err
 	}
+	basis, legacyBasis, err := automaticPullBasisFormats(ctx, tx, r.ProjectID, pull, r.Channel, shared)
+	if err != nil {
+		return false, err
+	}
+	return automaticPullPreviouslySelected(ctx, tx, r.ProjectID, r.ID, pull, r.Channel, basis, legacyBasis)
+}
+
+// Match the old format only for a retained cancelled child with exact identity.
+// This retains existing same-input suppression without broadening it to a
+// different source, grant, channel, or already-changed legacy input.
+func automaticPullPreviouslySelected(ctx context.Context, tx *sql.Tx, project, ignoreSelection string, pull int64, channel, basis, legacyBasis string) (bool, error) {
 	var seen bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id<>? AND pull_number=? AND pull_basis_sha256=?)`, r.ProjectID, r.ID, pull, basis).Scan(&seen)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+ SELECT 1 FROM review_automatic_selections a
+ WHERE a.project_id=? AND a.selection_id<>? AND a.pull_number=?
+ AND (a.pull_basis_sha256=? OR (a.pull_basis_sha256=? AND EXISTS(
+  SELECT 1 FROM review_selections s JOIN review_operations o ON o.id=s.operation_id AND o.project_id=s.project_id
+  WHERE s.id=a.selection_id AND s.project_id=a.project_id AND s.channel=? AND o.channel=s.channel
+  AND o.pull_number=a.pull_number AND o.state='cancelled'
+ ))))`, project, ignoreSelection, pull, basis, legacyBasis, channel).Scan(&seen)
 	return seen, err
 }
+
 func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pull int64, acceptedOnly bool) error {
 	attribution, err := automaticSelectionBinding(ctx, tx, r)
 	if err != nil || attribution.revision == 0 {

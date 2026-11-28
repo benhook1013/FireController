@@ -19,6 +19,10 @@ export async function refreshEventQueries(client: QueryClient, queryKey: QueryKe
   const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     .map(result => result.reason as unknown)
     .filter(error => !(error instanceof ApiError && error.code === 'not_found' && error.status === 404));
+  throwEventQueryFailures(failures);
+}
+
+export function throwEventQueryFailures(failures: readonly unknown[]): void {
   const failure = failures.find(error => error instanceof ApiError && (error.status === 401 || error.status === 403 || ['unauthorized', 'forbidden', 'instance_mismatch', 'invalid_binding'].includes(error.code)))
     ?? failures.find(error => error instanceof ApiError && error.code === 'invalid_response')
     ?? failures[0];

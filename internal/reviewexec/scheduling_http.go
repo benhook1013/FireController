@@ -8,6 +8,7 @@ import (
 )
 
 func (e *Engine) registerSchedulingHTTP(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/lanes/{channel}/diagnostics", e.readLaneDiagnosticHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)

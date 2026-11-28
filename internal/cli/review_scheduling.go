@@ -9,11 +9,12 @@ import (
 )
 
 type reviewSchedulingInvocation struct {
-	action string
-	pull   int64
-	key    string
-	config client.ConfigureReviewSchedulingRequest
-	pause  client.ConfigureReviewPullSchedulingRequest
+	action  string
+	channel string
+	pull    int64
+	key     string
+	config  client.ConfigureReviewSchedulingRequest
+	pause   client.ConfigureReviewPullSchedulingRequest
 }
 
 func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
@@ -24,6 +25,8 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 	allowed := map[string]bool{"--pr": true}
 	switch in.action {
 	case "read":
+	case "diagnostics":
+		allowed = map[string]bool{"--channel": true}
 	case "configure":
 		allowed = map[string]bool{"--automatic-hosted": true, "--automatic-cli": true, "--expect-revision": true, "--key": true}
 	case "pause", "resume":
@@ -67,6 +70,10 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 		}
 		in.pull = n
 	}
+	if in.action == "diagnostics" {
+		in.channel = values["--channel"]
+		return in, in.channel == "cli" || in.channel == "hosted"
+	}
 	if in.action == "read" {
 		return in, true
 	}
@@ -99,6 +106,8 @@ func parseReviewScheduling(args []string) (*reviewSchedulingInvocation, bool) {
 
 func executeReviewScheduling(ctx context.Context, service *client.Client, in *reviewSchedulingInvocation) (any, error) {
 	switch in.action {
+	case "diagnostics":
+		return service.ReviewLaneDiagnostic(ctx, in.channel)
 	case "configure":
 		return service.ConfigureReviewScheduling(ctx, in.key, in.config)
 	case "pause", "resume":
@@ -108,5 +117,14 @@ func executeReviewScheduling(ctx context.Context, service *client.Client, in *re
 			return service.ReviewPullScheduling(ctx, in.pull)
 		}
 		return service.ReviewScheduling(ctx)
+	}
+}
+
+func (in *reviewSchedulingInvocation) isMutation() bool {
+	switch in.action {
+	case "configure", "pause", "resume":
+		return true
+	default:
+		return false
 	}
 }

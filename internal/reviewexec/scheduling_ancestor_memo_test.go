@@ -20,15 +20,15 @@ func TestAutomaticDependenciesReuseSharedAncestorWithinSnapshot(t *testing.T) {
 	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		memo := newAutomaticDependencyRead(ctx, tx, attemptProject, "hosted", frame, true)
 		for pull := int64(10); pull < 60; pull++ {
-			direct, err := newAutomaticDependencyRead(ctx, tx, attemptProject, "hosted", frame, true).forPull(pull)
+			direct, directLegacy, err := newAutomaticDependencyRead(ctx, tx, attemptProject, "hosted", frame, true).formatsForPull(pull)
 			if err != nil {
 				return err
 			}
-			cached, err := memo.forPull(pull)
+			cached, cachedLegacy, err := memo.formatsForPull(pull)
 			if err != nil {
 				return err
 			}
-			if encoded(direct) != encoded(cached) {
+			if encoded(direct) != encoded(cached) || encoded(directLegacy) != encoded(cachedLegacy) {
 				return fmt.Errorf("pull %d: planning facts changed: direct %v, memo %v", pull, direct, cached)
 			}
 		}

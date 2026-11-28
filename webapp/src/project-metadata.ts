@@ -1,6 +1,6 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import type { ProjectMetadataPage } from './types';
-import { refreshEventQueries } from './queries';
+import { refreshEventQueries, throwEventQueryFailures } from './queries';
 
 export function isCurrentProjectView(project: string, pathname: string, lifetime: AbortController, current: AbortController | undefined): boolean {
   const path = `/projects/${encodeURIComponent(project)}`;
@@ -47,6 +47,10 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
       add('worker-primary', id); add('worker-primary-history', id);
     } else if (type === 'note.created' || type === 'note.updated') {
       add('notes'); add('note', id); add('note-history', id);
+    } else if (type === 'review.requested' || type === 'review.operation_updated') {
+      // Operation changes alter the pending count and per-PR queue-position
+      // badge and can change whether a policy assessment is sufficient.
+      add('reviews', 'current', 'round-progress'); add('reviews', 'policy-assessment');
     } else if (type.startsWith('review.') || type.startsWith('reviews.')) {
       add('reviews', 'current'); add('reviews', 'policy-assessment');
     }
@@ -54,5 +58,11 @@ export async function refreshProjectMetadata(client: QueryClient, key: QueryKey,
   // Prefixes within a page can overlap (for example a map rename and job
   // reference change); visit each active query only once for the batch.
   const selected = [...prefixes.values()].filter(prefix => ![...prefixes.values()].some(other => other.length < prefix.length && other.every((part, index) => part === prefix[index])));
-  for (const prefix of selected) { if (signal.aborted) return; await refreshEventQueries(client, prefix, signal); }
+  const failures: unknown[] = [];
+  for (const prefix of selected) {
+    if (signal.aborted) return;
+    try { await refreshEventQueries(client, prefix, signal); }
+    catch (error) { failures.push(error); }
+  }
+  if (!signal.aborted) throwEventQueryFailures(failures);
 }

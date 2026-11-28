@@ -19,7 +19,7 @@ func TestAutomaticDependencyReadSharesParentsOnlyWithinSnapshot(t *testing.T) {
 	}
 	expect := func(read automaticDependencyRead, pull int64, want string) {
 		t.Helper()
-		got, err := read.forPull(pull)
+		_, got, err := read.formatsForPull(pull)
 		if err != nil || encoded(got) != want {
 			t.Fatalf("pull %d: got %s, err=%v, want %s", pull, encoded(got), err, want)
 		}
