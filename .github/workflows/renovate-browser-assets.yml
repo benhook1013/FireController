@@ -1,0 +1,134 @@
+name: Renovate browser assets
+
+# Renovate updates webapp manifests but cannot run the browser build, so the
+# committed embedded assets go stale and CI's asset check blocks the PR. This
+# rebuilds them for same-repository Renovate branches only. The build runs
+# dependency code with a read-only token; a separate job with write access
+# applies only the resulting internal/webui/assets patch.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - webapp/package.json
+      - webapp/package-lock.json
+
+permissions: {}
+
+concurrency:
+  group: renovate-browser-assets-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Rebuild browser assets
+    if: >-
+      github.actor == 'renovate[bot]' &&
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'renovate/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm --prefix webapp ci --ignore-scripts --no-audit --no-fund
+      - run: make browser-build
+      - name: Capture asset changes
+        id: diff
+        run: |
+          set -euo pipefail
+          git add -A -- internal/webui/assets
+          if git diff --cached --quiet; then
+            echo changed=false >> "$GITHUB_OUTPUT"
+          else
+            git diff --cached --binary -- internal/webui/assets > "$RUNNER_TEMP/browser-assets.patch"
+            echo changed=true >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-assets-patch
+          path: ${{ runner.temp }}/browser-assets.patch
+          retention-days: 1
+          if-no-files-found: error
+
+  commit:
+    name: Commit browser assets
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # The pull_request run from a GITHUB_TOKEN update requires approval.
+      # A fine-grained contents: write token limited to this repository lets
+      # required checks start automatically on the regenerated head.
+      HAS_PUSH_TOKEN: ${{ secrets.RENOVATE_ASSETS_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.RENOVATE_ASSETS_TOKEN || github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: browser-assets-patch
+          path: ${{ runner.temp }}/patch
+      - name: Apply and push asset patch
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "Branch moved past $HEAD_SHA; the newer run owns the rebuild." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          patch="$RUNNER_TEMP/patch/browser-assets.patch"
+          git apply --index "$patch"
+          staged_changes="$(mktemp "$RUNNER_TEMP/browser-assets-index.XXXXXX")"
+          trap 'rm -f "$staged_changes"' EXIT
+          # With renames disabled, both paths appear as separate staged changes.
+          # Raw records also include the resulting Git file mode.
+          if ! git diff --cached --raw --no-renames -z -- > "$staged_changes"; then
+            echo 'Could not list staged browser asset changes.' >&2
+            exit 1
+          fi
+          if [ ! -s "$staged_changes" ]; then
+            echo 'No staged browser asset changes.' >&2
+            exit 1
+          fi
+          while IFS= read -r -d '' change && IFS= read -r -d '' path; do
+            case "$path" in
+              internal/webui/assets/*) ;;
+              *)
+                printf 'Staged path is outside internal/webui/assets: %q\n' "$path" >&2
+                exit 1
+                ;;
+            esac
+            IFS=' ' read -r _ mode _ <<< "$change"
+            case "$mode" in
+              000000|100644) ;; # Removed file or non-executable regular build output.
+              *)
+                printf 'Unexpected staged file mode %s for browser asset %q.\n' "$mode" "$path" >&2
+                exit 1
+                ;;
+            esac
+          done < "$staged_changes"
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m 'Regenerate embedded browser assets'
+          git push origin "HEAD:refs/heads/$HEAD_REF"
+          if [ "$HAS_PUSH_TOKEN" != true ]; then
+            echo 'Pushed with GITHUB_TOKEN. A maintainer with write access should select **Approve workflows to run** on the PR for the regenerated head.' >> "$GITHUB_STEP_SUMMARY"
+          fi
