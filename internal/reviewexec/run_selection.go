@@ -533,6 +533,9 @@ func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any,
 	if err != nil {
 		return false, err
 	}
+	if native, ok := originalRevision.(int64); originalLink == nil && ok && native < 1 {
+		return false, &unprovedSelectionCustodyError{runUnavailable()}
+	}
 	linkGuard := ` AND operation_id IS NULL`
 	holdReason := "local_read_unavailable"
 	args := []any{project, id, state, revision}

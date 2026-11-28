@@ -218,12 +218,17 @@ func retryRunSelectionRead(ctx context.Context, local func() error) error {
 
 // The source hold must not settle PR-local revisions that were not read.
 func readAutomaticPullSchedulingRevisions(ctx context.Context, tx *sql.Tx, project string, pulls []int64, tolerateUnreadable bool) ([]int64, error) {
+	return readAutomaticPullSchedulingRevisionsBound(ctx, tx, project, pulls, tolerateUnreadable, nil)
+}
+
+func readAutomaticPullSchedulingRevisionsBound(ctx context.Context, tx *sql.Tx, project string, pulls []int64, tolerateUnreadable bool, expected []int64) ([]int64, error) {
 	revisions := make([]int64, 0, len(pulls))
-	for _, pull := range pulls {
+	for i, pull := range pulls {
 		current, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
 			var local *pullSchedulingStateError
-			if !tolerateUnreadable || !errors.As(err, &local) {
+			if !tolerateUnreadable || !errors.As(err, &local) || local.project != project || local.pull != pull ||
+				(expected != nil && (i >= len(expected) || expected[i] != -1)) {
 				return nil, err
 			}
 			revisions = append(revisions, -1)
@@ -731,7 +736,7 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 							var revisions []int64
 							// A newly unreadable row must roll back the provisional
 							// front frame; it is not equivalent to an ordinary revision change.
-							revisions, resultErr = readAutomaticPullSchedulingRevisions(ctx, tx, r.ProjectID, boundPrefix, false)
+							revisions, resultErr = readAutomaticPullSchedulingRevisionsBound(ctx, tx, r.ProjectID, boundPrefix, true, choice.automaticPullScheduling)
 							settle = resultErr == nil && slices.Equal(revisions, choice.automaticPullScheduling)
 						}
 					}
@@ -788,8 +793,12 @@ func (e *Engine) finishRunChoice(ctx context.Context, r Run, repo int64, metadat
 			if err = publishSourcePlans(ctx, tx, core.Scope{ProjectID: current.ProjectID, PrincipalID: current.ActorID, WorkerID: current.WorkerID}, repo, metadataPins, choice.prefix); err != nil {
 				return err
 			}
-			if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
-				return err
+			zeroPrefixHold := choice.state == "held" && choice.automaticQueueLimit != nil &&
+				*choice.automaticQueueLimit == 0 && len(c.Queue) > 0 && len(choice.prefix) == 0
+			if !zeroPrefixHold {
+				if err = writeFrontFrame(ctx, tx, current, repo, c, choice); err != nil {
+					return err
+				}
 			}
 			if choice.state == "held" {
 				if choice.sourceReason == "" && !globalFrontHold(choice.reason) && choice.reason != "expected_pr_mismatch" && choice.reason != "source_prefix_incomplete" && choice.reason != "local_read_unavailable" {

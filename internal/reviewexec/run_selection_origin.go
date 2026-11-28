@@ -202,8 +202,8 @@ func selectionPredatesAutomation(ctx context.Context, tx *sql.Tx, r Run, accepte
 		if err := rows.Scan(&sequence, &revision, &body); err != nil {
 			return false, err
 		}
-		var control schedulingEvent
-		if revision != expected || !body.Valid || strictjson.Decode([]byte(body.String), &control) != nil || control.Hosted == nil {
+		control, _, _, valid := readSchedulingEventPayload(body, expected)
+		if revision != expected || !valid {
 			return false, nil
 		}
 		enabled := control.Hosted

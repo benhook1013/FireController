@@ -204,18 +204,25 @@ func scanSchedulingSnapshot(row interface{ Scan(...any) error }, destinations ..
 // retained event instead proves a pause or cannot be read as that identity.
 // Rank every event before projecting its native revision; never fall back to
 // an older valid resume when the winning revision cannot be trusted.
-const orphanPullSchedulingSQL = `WITH orphan AS (
-		SELECT e.project_id,e.resource_id,e.revision,e.sequence,
-			CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END AS payload,
-			ROW_NUMBER() OVER (PARTITION BY e.project_id,e.resource_id ORDER BY e.revision DESC,e.sequence DESC) AS newest,
-			COUNT(*) OVER (PARTITION BY e.project_id,e.resource_id,e.revision) AS matches,
-			MAX(CASE WHEN typeof(e.revision)<>'integer' OR e.revision<1 THEN 1 ELSE 0 END)
-			  OVER (PARTITION BY e.project_id,e.resource_id) AS bad_revision
-		FROM events e LEFT JOIN review_pull_scheduling s
-			ON s.project_id=e.project_id AND s.pull_number=CAST(e.resource_id AS INTEGER)
-			AND CAST(s.pull_number AS TEXT)=e.resource_id
-		WHERE e.event_type='review.pull_scheduling_updated' AND s.pull_number IS NULL
-	)`
+const orphanPullSchedulingSQL = `WITH orphan_history AS (
+        SELECT e.project_id,e.resource_id,e.revision,e.sequence,e.event_type,
+            CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END AS payload,
+            LAG(e.revision) OVER (PARTITION BY e.project_id,e.resource_id ORDER BY e.sequence) AS previous_revision
+        FROM events e LEFT JOIN review_pull_scheduling s
+            ON s.project_id=e.project_id AND s.pull_number=CAST(e.resource_id AS INTEGER)
+            AND CAST(s.pull_number AS TEXT)=e.resource_id
+        WHERE (e.event_type='review.pull_scheduling_updated'
+            OR (typeof(e.event_type)='blob' AND CAST(e.event_type AS TEXT)='review.pull_scheduling_updated'))
+            AND s.pull_number IS NULL
+    ), orphan AS (
+        SELECT project_id,resource_id,revision,sequence,payload,
+            ROW_NUMBER() OVER (PARTITION BY project_id,resource_id ORDER BY revision DESC,sequence DESC) AS newest,
+            COUNT(*) OVER (PARTITION BY project_id,resource_id,revision) AS matches,
+            MAX(CASE WHEN typeof(event_type)<>'text' OR typeof(revision)<>'integer' OR revision<1
+                OR (previous_revision IS NOT NULL AND revision<=previous_revision) THEN 1 ELSE 0 END)
+                OVER (PARTITION BY project_id,resource_id) AS bad_revision
+        FROM orphan_history
+    )`
 
 const latestOrphanPullResumesSQL = `
 	FROM orphan o JOIN events e ON e.sequence=o.sequence

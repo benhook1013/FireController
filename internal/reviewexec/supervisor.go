@@ -23,6 +23,76 @@ type Preparation struct {
 	Intent string
 }
 
+// CLIPreparationHandoff transfers a finished, exclusively owned CLI
+// preparation to the supervisor for guarded local settlement.
+type CLIPreparationHandoff struct {
+	recovery *PreparationRecoveryError
+	source   CLIExhaustionRecoverySource
+	release  func()
+}
+
+func (h *CLIPreparationHandoff) Error() string { return h.recovery.Error() }
+func (h *CLIPreparationHandoff) Unwrap() error { return h.recovery }
+
+// CLIRefusalBeforeUsage marks only classified project-local history refusals.
+// The concrete driver calls it after acquiring ownership and before quota usage.
+func CLIRefusalBeforeUsage(err error, release func()) error {
+	if isLinkedSelectionCustodyHeld(err) {
+		return &PreparationRecoveryError{Err: err}
+	}
+	if CLIProjectHistoryRefused(err) {
+		return &CLIPreparationHandoff{recovery: &PreparationRecoveryError{Err: err}, release: release}
+	}
+	return err
+}
+
+// CLIProjectHistoryRefused reports typed project-local history failures.
+func CLIProjectHistoryRefused(err error) bool {
+	return automaticProjectRefused(err) || isStoredUnavailable(err, storedRoundHistory) || isStoredUnavailable(err, storedPolicyHistory)
+}
+
+// CLIExhaustionAuthorityRefused identifies explicit authority/history refusal
+// of a normal zero-observation write. Only capture-only recovery may follow.
+func CLIExhaustionAuthorityRefused(err error) bool {
+	if isLinkedSelectionCustodyHeld(err) {
+		return false
+	}
+	var failure *core.Error
+	return CLIProjectHistoryRefused(err) || errors.As(err, &failure) &&
+		(failure.Code == "forbidden" || failure.Code == "pull_scheduling_paused" || failure.Code == "automation_authorization_changed")
+}
+
+// RetainedCLIExhaustionHandoff requires an already-saved private observation.
+// A failure to save the capture cannot use this path.
+func RetainedCLIExhaustionHandoff(err error, source CLIExhaustionRecoverySource, release func()) error {
+	return &CLIPreparationHandoff{recovery: &PreparationRecoveryError{Err: err}, source: source, release: release}
+}
+
+func (e *Engine) settleCLIPreparationHandoff(ctx context.Context, original Operation, a Attempt, h *CLIPreparationHandoff) error {
+	local, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if h.source == nil {
+		return retryRunSelectionLocal(local, func() error {
+			return e.settleUnusedCLIPreparation(local, original, a)
+		})
+	}
+	record, found, err := h.source.LoadCLIExhaustion(local, a.ID)
+	if err != nil {
+		return err
+	}
+	if !found || a != record.Attempt || !sameCLIClaim(original, record.Operation, a, original.Revision+1) ||
+		!sameCLIWait(original.Wait, record.Operation.Wait) {
+		return conflict()
+	}
+	err = retryRunSelectionLocal(local, func() error {
+		return e.replayCLIExhaustion(local, record, true)
+	})
+	if err == nil {
+		e.notifyOperation(a.OperationID)
+	}
+	return err
+}
+
 // Result describes external execution only. Completed is not policy credit or
 // merge readiness. The adapter must retain its bounded capture/evidence before
 // returning a proven terminal result; unresolved outcomes return uncertain.
@@ -764,6 +834,16 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
+			var handoff *CLIPreparationHandoff
+			if o.Channel == "cli" && errors.As(err, &handoff) {
+				if err := e.settleCLIPreparationHandoff(ctx, o, a, handoff); err != nil {
+					return &PreparationRecoveryError{Err: err}
+				}
+				if handoff.release != nil {
+					handoff.release()
+				}
+				continue
+			}
 			var recoverable *PreparationRecoveryError
 			if errors.As(err, &recoverable) {
 				return err

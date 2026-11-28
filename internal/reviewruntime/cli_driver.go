@@ -31,6 +31,7 @@ type CLIDriver struct {
 	review      func(context.Context, reviewworkspace.Workspace) (reviewprocess.Capture, error)
 	mu          sync.Mutex
 	prepared    map[string]*cliPrepared
+	settling    map[string]struct{}
 }
 
 func (*CLIDriver) String() string     { return "CLIDriver{private}" }
@@ -78,7 +79,7 @@ func NewCLIDriver(store *core.Store, engine *reviewexec.Engine, capability Opera
 	if err != nil {
 		return nil, err
 	}
-	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, exhaustions: exhaustions, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}}, nil
+	return &CLIDriver{store: store, engine: engine, capability: capability, manager: manager, captures: captures, exhaustions: exhaustions, reader: reader, fetch: manager.Fetch, verify: manager.Verify, usage: runner.Usage, review: runner.Review, prepared: map[string]*cliPrepared{}, settling: map[string]struct{}{}}, nil
 }
 
 // A successful preflight can be held by admission before Dispatch. Expire only
@@ -93,33 +94,50 @@ func (d *CLIDriver) purgePrepared() {
 }
 
 func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation, configuration reviewexec.Configuration, attempt reviewexec.Attempt) (preparation reviewexec.Preparation, failure error) {
-	d.mu.Lock()
-	d.purgePrepared()
-	d.mu.Unlock()
-	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
-	if err != nil {
-		return preparation, err
-	}
-	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || configuration.CapabilityID != d.capability.ID || operation.Channel != "cli" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.ID != current.Operation.AttemptID || attempt.State != "preparing" || attempt.Revision != 1 {
-		return preparation, reviewHold("execution_binding_changed")
+	if configuration.CapabilityID != d.capability.ID || operation.Channel != "cli" || attempt.Provider != "coderabbit" || attempt.Account != d.capability.Account || attempt.ProjectID != operation.ProjectID || attempt.OperationID != operation.ID || attempt.State != "preparing" || attempt.Revision != 1 {
+		return preparation, &reviewexec.PreparationRecoveryError{Err: reviewHold("execution_binding_changed")}
 	}
 	d.mu.Lock()
 	d.purgePrepared()
 	_, exists := d.prepared[attempt.ID]
-	if !exists {
+	_, settling := d.settling[attempt.ID]
+	if !exists && !settling {
 		d.prepared[attempt.ID] = nil
 	}
 	d.mu.Unlock()
-	if exists {
-		return preparation, reviewHold("preparation_duplicate")
+	if exists || settling {
+		return preparation, &reviewexec.PreparationRecoveryError{Err: reviewHold("preparation_duplicate")}
 	}
+	releaseSettlement := func() {
+		d.mu.Lock()
+		delete(d.settling, attempt.ID)
+		d.mu.Unlock()
+	}
+	usageStarted := false
 	defer func() {
-		if failure != nil {
-			d.mu.Lock()
-			delete(d.prepared, attempt.ID)
-			d.mu.Unlock()
+		if failure == nil {
+			return
+		}
+		if !usageStarted {
+			failure = reviewexec.CLIRefusalBeforeUsage(failure, releaseSettlement)
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.prepared, attempt.ID)
+		var handoff *reviewexec.CLIPreparationHandoff
+		if errors.As(failure, &handoff) {
+			// Keep out duplicate Prepare calls while the supervisor records
+			// the bounded local handoff. This entry is never a dispatch permit.
+			d.settling[attempt.ID] = struct{}{}
 		}
 	}()
+	current, err := d.engine.ExecutionContext(ctx, operation.ProjectID, operation.ID)
+	if err != nil {
+		return preparation, err
+	}
+	if !sameOperation(operation, current.Operation) || !reflect.DeepEqual(configuration, current.Configuration) || attempt.ID != current.Operation.AttemptID {
+		return preparation, &reviewexec.PreparationRecoveryError{Err: reviewHold("execution_binding_changed")}
+	}
 	reads := newSourceReads(d.reader)
 	plan, _, err := resolveReviewSource(ctx, d.engine, reads, current.RepositoryID, current.Configuration, current.Operation)
 	if err != nil {
@@ -140,6 +158,7 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 	if baseline != nil && !sameHostedRetryComparison(*baseline, anchor) {
 		return preparation, reviewHold("source_changed")
 	}
+	usageStarted = true
 	usage, err := d.usage(ctx, workspace, plan.Repository.FullName, d.capability.Organization)
 	if err != nil {
 		var failure *reviewprocess.Error
@@ -164,11 +183,14 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 			if err := retryAllowanceRetention(ctx, waitPreparation, func() error {
 				return core.NormalizeStorageError(d.engine.RecordCLIExhaustion(ctx, operation.ProjectID, attempt.ID, attempt.Revision, observation))
 			}); err != nil {
-				if retryableHostedRetention(err) || ctx.Err() != nil {
+				if retryableHostedRetention(err) || ctx.Err() != nil || reviewexec.CLIExhaustionAuthorityRefused(err) {
+					return preparation, reviewexec.RetainedCLIExhaustionHandoff(err, d.exhaustions, releaseSettlement)
+				}
+				var refusal *core.Error
+				if reviewexec.CLIProjectHistoryRefused(err) || errors.As(err, &refusal) && refusal.Code == "review_conflict" {
 					return preparation, &reviewexec.PreparationRecoveryError{Err: err}
 				}
-				var held *core.Error
-				if errors.As(err, &held) && held.Code == "review_held" {
+				if errors.As(err, &refusal) && refusal.Code == "review_held" {
 					return preparation, err
 				}
 				return preparation, reviewHold("allowance_unavailable")
@@ -181,6 +203,9 @@ func (d *CLIDriver) Prepare(ctx context.Context, operation reviewexec.Operation,
 		return preparation, err
 	}
 	if err := publishPreparedAttempt(ctx, d.engine, operation.ProjectID, attempt.ID, plan); err != nil {
+		if reviewexec.CLIProjectHistoryRefused(err) {
+			return preparation, &reviewexec.PreparationRecoveryError{Err: err}
+		}
 		return preparation, err
 	}
 	d.mu.Lock()

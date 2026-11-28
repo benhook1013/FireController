@@ -386,13 +386,7 @@ func (e *Engine) settleCLIAdmissionRefusal(ctx context.Context, tx *sql.Tx, o Op
 	if record.Observation.Remaining <= 0 || record.Observation.Anchor != anchor {
 		return Attempt{}, refusal
 	}
-	var unused bool
-	err = tx.QueryRowContext(ctx, `SELECT
-		EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND account=? AND repository_id=? AND pull_number=? AND action_class='cli')
-		AND EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=? AND revision=1 AND state='preparing' AND reason='preparing' AND external_id='')
-		AND NOT EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=? AND revision<>1)
-		AND NOT EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=?)`,
-		a.ID, a.Provider, a.Account, anchor.RepositoryID, o.PullNumber, a.ID, a.ID, a.ID).Scan(&unused)
+	unused, err := untouchedCLIReservation(ctx, tx, o, a, anchor.RepositoryID)
 	if err != nil {
 		return Attempt{}, err
 	}
@@ -400,6 +394,77 @@ func (e *Engine) settleCLIAdmissionRefusal(ctx context.Context, tx *sql.Tx, o Op
 		return Attempt{}, refusal
 	}
 	return e.advanceAttempt(ctx, tx, o, a, "held", "automatic_scheduling_unavailable", "")
+}
+
+func untouchedCLIReservation(ctx context.Context, tx *sql.Tx, o Operation, a Attempt, repositoryID int64) (bool, error) {
+	var unused bool
+	err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND account=? AND repository_id=? AND pull_number=? AND action_class='cli')
+		AND EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=? AND revision=1 AND state='preparing' AND reason='preparing' AND external_id='')
+		AND NOT EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=? AND revision<>1)
+		AND NOT EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=?)`,
+		a.ID, a.Provider, a.Account, repositoryID, o.PullNumber, a.ID, a.ID, a.ID).Scan(&unused)
+	return unused, err
+}
+
+// The driver has finished its exclusively owned preparation before usage.
+// Release only the original revision-1 reservation and retain the queued request.
+func (e *Engine) settleUnusedCLIPreparation(ctx context.Context, original Operation, captured Attempt) error {
+	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		a, err := readAttempt(ctx, tx, captured.ProjectID, captured.ID)
+		if err != nil {
+			return err
+		}
+		o, err := readOperation(ctx, tx, captured.ProjectID, captured.OperationID)
+		if err != nil {
+			return err
+		}
+		if a != captured || a.State != "preparing" || a.Revision != 1 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" ||
+			!sameCLIClaim(original, o, a, original.Revision+1) || !sameCLIWait(original.Wait, o.Wait) {
+			return conflict()
+		}
+		var repositoryID int64
+		if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, o.ProjectID).Scan(&repositoryID); err != nil {
+			return err
+		}
+		unused, err := untouchedCLIReservation(ctx, tx, o, a, repositoryID)
+		if err != nil {
+			return err
+		}
+		_, err = readCLIAllowanceRecord(ctx, tx, o, a)
+		if !unused || err == nil {
+			return conflict()
+		}
+		if !errors.Is(err, errAllowanceObservationAbsent) {
+			return err
+		}
+		_, err = e.advanceAttempt(ctx, tx, o, a, "held", "automatic_scheduling_unavailable", "")
+		return err
+	})
+	if err == nil {
+		e.notifyOperation(captured.OperationID)
+	}
+	return err
+}
+
+func sameCLIClaim(original, current Operation, a Attempt, expectedRevision int64) bool {
+	return original.Channel == "cli" && current.Channel == "cli" &&
+		original.ProjectID == current.ProjectID && current.ProjectID == a.ProjectID &&
+		original.ID == current.ID && current.ID == a.OperationID &&
+		original.ActorID == current.ActorID && original.WorkerID == current.WorkerID &&
+		original.ConfigurationRevision == current.ConfigurationRevision && original.PolicyRevision == current.PolicyRevision &&
+		original.CapabilityFingerprint == current.CapabilityFingerprint && original.PullNumber == current.PullNumber &&
+		original.HeadSHA == current.HeadSHA && original.AllowOutOfOrder == current.AllowOutOfOrder &&
+		original.OverrideFileLimit == current.OverrideFileLimit && current.State == "preparing" && current.AttemptID == a.ID &&
+		current.Revision == expectedRevision
+}
+
+func sameCLIWait(original, current *OperationWait) bool {
+	if original == nil || current == nil {
+		return original == current
+	}
+	return original.BaselineAttemptID == current.BaselineAttemptID &&
+		original.RetryNotBefore == current.RetryNotBefore && original.Paused == current.Paused
 }
 
 func safeText(s string, max int) bool {

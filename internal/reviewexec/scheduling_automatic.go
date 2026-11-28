@@ -588,6 +588,10 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 		}
 		r, err := readRun(ctx, tx, project, id)
 		if err != nil {
+			var bindingState *operationSelectionBindingStateError
+			if errors.As(err, &bindingState) {
+				continue
+			}
 			return 0, err
 		}
 		if err = e.requireAutomaticRun(ctx, tx, r); err != nil {
