@@ -451,3 +451,53 @@ func TestSelectionQuarantineInventoryRejectsDanglingEmptyV2Marker(t *testing.T) 
 	   SET state='held',reason='linked_selection_quarantined',revision=2`)
 	assertCurrentSummaryInventoryRefused(t, bundle, false)
 }
+
+// A physical v1 database can already contain selected runs and front frames.
+func TestSelectionV1UpgradePreservesSelectedRunAndFront(t *testing.T) {
+	f, id := selectionInventoryFixture(t, "selected")
+	db := f.store.DB()
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM review_selections WHERE id=? AND state='selected'`, id).Scan(&count); err != nil || count != 1 {
+		t.Fatal("missing selected predecessor", count, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM review_front_frames`).Scan(&count); err != nil || count < 1 {
+		t.Fatal("missing predecessor front frame", count, err)
+	}
+	if _, err := db.Exec(`DROP TABLE review_selection_quarantine;
+		UPDATE metadata SET value='1' WHERE key='schema:review_selection'`); err != nil {
+		t.Fatal(err)
+	}
+	before := backupRows(t, db)
+	const schema = `SELECT type,name,tbl_name,sql FROM sqlite_schema
+		WHERE name NOT LIKE 'sqlite_%' AND tbl_name<>'review_selection_quarantine' ORDER BY type,name`
+	physical := restoreRows(t, db, schema)
+	const metadata = `SELECT key,value FROM metadata WHERE key<>'schema:review_selection' ORDER BY key`
+	parentMetadata := restoreRows(t, db, metadata)
+	bundle := restoreBundle(t, f)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(t.Context(), bundle.Path, filepath.Join(t.TempDir(), "inactive-selection-v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	after := backupRows(t, db)
+	for table, hash := range before {
+		if table != "metadata" && after[table] != hash {
+			t.Fatal("upgrade changed retained rows", table)
+		}
+	}
+	if len(after) != len(before)+1 || !reflect.DeepEqual(physical, restoreRows(t, db, schema)) ||
+		!reflect.DeepEqual(parentMetadata, restoreRows(t, db, metadata)) {
+		t.Fatal("upgrade changed unrelated schema or metadata")
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM review_selection_quarantine`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("upgrade manufactured quarantine records", count, err)
+	}
+	var version string
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "2" {
+		t.Fatal("wrong upgraded selection version", version, err)
+	}
+}

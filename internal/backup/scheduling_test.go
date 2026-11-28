@@ -372,3 +372,42 @@ func TestSchedulingCLIBackupAndV1Compatibility(t *testing.T) {
 		t.Fatal("migration changed opt-in", cli, hosted, err)
 	}
 }
+
+func TestSchedulingInventoryAcceptsLegacyHostedAndItsActualMigration(t *testing.T) {
+	f := newRestoreFixture(t)
+	db := f.store.DB()
+	if _, err := db.Exec(`DROP TABLE review_scheduling;
+		UPDATE metadata SET value='1' WHERE key='schema:review_scheduling';` + reviewexec.SchedulingSchemaSQL()[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		var credential string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM credentials WHERE principal_id=? AND is_admin=1`, f.principal).Scan(&credential); err != nil {
+			return err
+		}
+		at := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_scheduling
+			(project_id,revision,automatic_hosted,actor_id,worker_id,credential_id,updated_at)
+			VALUES(?,1,1,?,?,?,?)`, f.project, f.principal, f.worker, credential, at); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO events(project_id,event_type,resource_id,revision,actor_id,payload_json,created_at)
+			VALUES(?,'review.scheduling_updated',?,1,?,'{"automatic_hosted":true}',?)`, f.project, f.project, f.principal, at)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(t.Context(), restoreBundle(t, f).Path); err != nil {
+		t.Fatal("legacy Hosted scheduling inventory refused", err)
+	}
+	if err := reviewexec.EnsureSchedulingSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	var hosted, cli bool
+	if err := db.QueryRow(`SELECT automatic_hosted,automatic_cli FROM review_scheduling WHERE project_id=?`, f.project).Scan(&hosted, &cli); err != nil || !hosted || cli {
+		t.Fatal("migration changed legacy scheduling authority", hosted, cli, err)
+	}
+	if _, err := Inspect(t.Context(), restoreBundle(t, f).Path); err != nil {
+		t.Fatal("actual migrated scheduling inventory refused", err)
+	}
+}

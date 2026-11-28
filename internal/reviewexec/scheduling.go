@@ -79,8 +79,12 @@ type schedulingStateError struct{ error }
 
 func (e *schedulingStateError) Unwrap() error { return e.error }
 
+type schedulingHistoryUnavailable struct{ error }
+
+func (e *schedulingHistoryUnavailable) Unwrap() error { return e.error }
+
 func schedulingUnavailable() error {
-	return automaticProjectStateFailure("storage_unavailable", "Stored review scheduling is unavailable.", 503)
+	return &automaticProjectStateError{&schedulingHistoryUnavailable{core.Fail("storage_unavailable", "Stored review scheduling is unavailable.", 503)}}
 }
 
 func schedulingRecordUnavailable() error {

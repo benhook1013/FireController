@@ -183,6 +183,10 @@ func WithCLIExhaustionRecovery(source CLIExhaustionRecoverySource) EngineOption 
 // Current authority is deliberately not consulted: the subsequent retry still
 // requires normal admission. The journal write and cooldown are one transaction.
 func (e *Engine) ReplayCLIExhaustion(ctx context.Context, r CLIExhaustionRecovery) error {
+	return e.replayCLIExhaustion(ctx, r, false)
+}
+
+func (e *Engine) replayCLIExhaustion(ctx context.Context, r CLIExhaustionRecovery, live bool) error {
 	if err := ValidateCLIExhaustionRecovery(r); err != nil {
 		return err
 	}
@@ -238,11 +242,14 @@ func (e *Engine) ReplayCLIExhaustion(ctx context.Context, r CLIExhaustionRecover
 		if a.State != "preparing" || a.Revision != 1 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" || o.State != "preparing" || o.AttemptID != a.ID || o.Revision != original.Revision {
 			return invalid()
 		}
-		var reserved int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND account=? AND repository_id=? AND pull_number=? AND action_class='cli'`, a.ID, a.Provider, a.Account, repository, o.PullNumber).Scan(&reserved); err != nil {
+		if live && (!sameCLIClaim(original, o, a, original.Revision) || !sameCLIWait(original.Wait, o.Wait)) {
+			return invalid()
+		}
+		unused, err := untouchedCLIReservation(ctx, tx, o, a, repository)
+		if err != nil {
 			return err
 		}
-		if reserved != 1 {
+		if !unused {
 			return invalid()
 		}
 		if !exists {
