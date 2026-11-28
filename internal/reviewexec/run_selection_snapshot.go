@@ -235,6 +235,31 @@ func validateSelectionQuarantine(ctx context.Context, q EvidenceQuery) error {
 	if inconsistent {
 		return runUnavailable()
 	}
+	// Older snapshots can lack the optional scheduling domain. If retained
+	// attribution exists, validate it here as well as in the scheduling scan.
+	var automaticTable bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema
+		WHERE type='table' AND name='review_automatic_selections')`).Scan(&automaticTable); err != nil {
+		return err
+	}
+	if automaticTable {
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM review_selection_quarantine d
+			JOIN review_selections s ON s.id=d.selection_id
+			JOIN review_automatic_selections a ON a.selection_id=d.selection_id
+			LEFT JOIN review_operations o ON o.id=d.original_operation_id
+			WHERE a.project_id<>d.project_id OR a.actor_id<>s.actor_id OR a.worker_id<>s.worker_id
+				OR typeof(a.pull_number)<>'integer' OR a.pull_number<0 OR a.pull_number>2147483647
+				OR (a.pull_number=0 AND a.pull_basis_sha256<>'')
+				OR (a.pull_number<>0 AND (o.id IS NULL OR o.project_id<>d.project_id OR o.pull_number<>a.pull_number))
+		)`).Scan(&inconsistent); err != nil {
+			return err
+		}
+		if inconsistent {
+			return runUnavailable()
+		}
+	}
+
 	rows, err := q.QueryContext(ctx, `SELECT CASE WHEN typeof(d.original_operation_id)='text' AND length(CAST(d.original_operation_id AS BLOB))<=128 THEN d.original_operation_id END,
 	  d.original_state,d.observed_revision,s.state,s.reason,s.operation_id,s.revision,s.project_id,d.project_id
 	  FROM review_selection_quarantine d LEFT JOIN review_selections s ON s.id=d.selection_id`)

@@ -465,7 +465,15 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 	for _, pull := range queue {
 		p, err := readPullScheduling(ctx, tx, project, pull)
 		if err != nil {
-			return "", false, err
+			var local *pullSchedulingStateError
+			if !errors.As(err, &local) || local.project != project || local.pull != pull {
+				return "", false, err
+			}
+			// A missing readable control cannot establish this PR's basis.
+			// Keep its position in the degraded digest and assess later PRs.
+			values = append(values, []any{pull, nil, nil})
+			degraded = true
+			continue
 		}
 		basis, err := automaticPullBasisWithRead(ctx, tx, project, pull, channel, shared)
 		if err != nil {
@@ -501,8 +509,8 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 	}
 	var digestInput any = []any{values, remaining}
 	if degraded {
-		// Version the encoding so it cannot be treated as an equivalent
-		// full-queue basis or rearm a full-digest-only historical intent.
+		// Preserve the paused-row encoding. An unreadable control has no
+		// verified revision, so its null revision cannot match that case.
 		digestInput = []any{"planning_basis_degraded_paused_v1", values, remaining}
 	}
 	sum := sha256.Sum256([]byte(encoded(digestInput)))
@@ -569,7 +577,7 @@ func (e *Engine) automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql
 	if err != nil {
 		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT q.key,s.id,s.project_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
+	rows, err := tx.QueryContext(ctx, `SELECT q.key,o.pull_number,s.id,s.project_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number
 LEFT JOIN review_selections s ON s.operation_id=o.id
 WHERE o.project_id=? AND o.channel=? AND o.state='queued'
@@ -586,10 +594,11 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 			return 0, schedulingUnavailable()
 		}
 		var position int
+		var pull int64
 		var selection, selectionProject any
 		var operation string
 		var custodyPresent bool
-		if err := rows.Scan(&position, &selection, &selectionProject, &operation, &custodyPresent); err != nil {
+		if err := rows.Scan(&position, &pull, &selection, &selectionProject, &operation, &custodyPresent); err != nil {
 			return 0, err
 		}
 		if custodyPresent {
@@ -601,8 +610,16 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 			}
 			return 0, runUnavailable()
 		}
-		// A direct operation has no parent selection and keeps its position.
+		// A readable direct operation keeps its fence. A locally
+		// unavailable control cannot prevent independent pulls being assessed.
 		if selection == nil {
+			if _, err := readPullScheduling(ctx, tx, project, pull); err != nil {
+				var local *pullSchedulingStateError
+				if errors.As(err, &local) && local.project == project && local.pull == pull {
+					continue
+				}
+				return 0, err
+			}
 			return position, nil
 		}
 		id, validID := selection.(string)
@@ -611,6 +628,10 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 		}
 		r, err := readRun(ctx, tx, project, id)
 		if err != nil {
+			var bindingState *operationSelectionBindingStateError
+			if errors.As(err, &bindingState) {
+				continue
+			}
 			return 0, err
 		}
 		if err = e.requireAutomaticRun(ctx, tx, r); err != nil {

@@ -15,6 +15,7 @@ type Scope struct {
 	ProjectID            string
 	WorkerID             string
 	tokenHash            string
+	automationCredential string
 	instanceID           string
 	admin                bool
 	activeWorkerRequired bool

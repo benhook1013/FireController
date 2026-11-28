@@ -662,8 +662,11 @@ func TestAdoptionHoldsIntegrationSupervisorSettlesRepositoryChangeDuringPrepare(
 						t.Fatal(err)
 					}
 					f.configure(t, otherAttemptProject, "test-capability", 0, false)
-					f.enqueue(t, otherAttemptProject, "other-after-corrupt-source", channel, 2, 1)
-					other := &controlledDriver{dispatch: func(_ context.Context, _ Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
+					healthy := f.enqueue(t, otherAttemptProject, "other-after-corrupt-source", channel, 2, 1)
+					other := &controlledDriver{dispatch: func(_ context.Context, operation Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
+						if operation.ID != healthy.ID || operation.ProjectID != otherAttemptProject {
+							t.Fatalf("dispatched %s/%s instead of healthy operation %s", operation.ProjectID, operation.ID, healthy.ID)
+						}
 						return Result{State: "failed", Reason: "synthetic_no_post"}, nil
 					}}
 					if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": other}); err != nil || other.calls.Load() != 1 {
@@ -689,8 +692,11 @@ func TestAdoptionHoldsIntegrationSupervisorSettlesRepositoryChangeDuringPrepare(
 				// A repository identity change is local to its retained source. The
 				// next supervisor pass must remain able to serve another project.
 				f.configure(t, otherAttemptProject, "test-capability", 0, false)
-				f.enqueue(t, otherAttemptProject, "other-project-after-source-change", channel, 2, 1)
-				other := &controlledDriver{dispatch: func(_ context.Context, _ Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
+				healthy := f.enqueue(t, otherAttemptProject, "other-project-after-source-change", channel, 2, 1)
+				other := &controlledDriver{dispatch: func(_ context.Context, operation Operation, _ Attempt, _ func(context.Context, string) error) (Result, error) {
+					if operation.ID != healthy.ID || operation.ProjectID != otherAttemptProject {
+						t.Fatalf("dispatched %s/%s instead of healthy operation %s", operation.ProjectID, operation.ID, healthy.ID)
+					}
 					return Result{State: "failed", Reason: "synthetic_no_post"}, nil
 				}}
 				if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": other}); err != nil || other.calls.Load() != 1 {
