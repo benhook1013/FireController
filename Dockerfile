@@ -11,6 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY skills/firecontroller-use/SKILL.md skills/firecontroller-use/mcp_guidance.go ./skills/firecontroller-use/
 RUN go build -mod=readonly -trimpath -buildvcs=false -o /out/fcd ./cmd/fcd
 
 FROM ${RUNTIME_IMAGE} AS runtime

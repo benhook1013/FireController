@@ -9,6 +9,10 @@
 !cmd/**
 !internal/
 !internal/**
+!skills/
+!skills/firecontroller-use/
+!skills/firecontroller-use/SKILL.md
+!skills/firecontroller-use/mcp_guidance.go
 
 # Keep private/local content excluded even beneath an allowed source directory.
 **/.git

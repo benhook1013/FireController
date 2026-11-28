@@ -433,36 +433,36 @@ func TestStartupSelectionAndQuietErrors(t *testing.T) {
 }
 
 func TestRunUsesOnlySDKStdioProtocol(t *testing.T) {
-	c := localContext()
-	path := profiles(t, map[string]profile.Context{"alpha": c}, "missing")
-	inR, inW := io.Pipe()
-	outR, outW := io.Pipe()
-	var stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	done := make(chan int, 1)
-	go func() {
-		done <- mcpadapter.Run(ctx, []string{"--profile", "alpha", "--profiles-file", path}, nil, inR, outW, &stderr)
-		outW.Close()
-	}()
-	sdk := mcp.NewClient(&mcp.Implementation{Name: "stdio-fixture", Version: "1"}, nil)
-	cs, err := sdk.Connect(ctx, &mcp.IOTransport{Reader: outR, Writer: inW}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got profile.Context
-	decodeResult(t, call(t, cs, "context", nil), &got)
-	if got != c {
-		t.Fatal("stdio context changed")
-	}
-	cs.Close()
-	select {
-	case code := <-done:
-		if code != 0 || stderr.Len() != 0 {
-			t.Fatalf("stdio shutdown code=%d stderr=%s", code, stderr.String())
-		}
-	case <-ctx.Done():
-		t.Fatal("stdio session did not stop within bound")
+	for _, version := range []string{"2025-11-25", "2026-07-28"} {
+		t.Run(version, func(t *testing.T) {
+			c := localContext()
+			path := profiles(t, map[string]profile.Context{"alpha": c}, "missing")
+			inR, inW := io.Pipe()
+			outR, outW := io.Pipe()
+			var stderr bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			done := make(chan int, 1)
+			go func() {
+				done <- mcpadapter.Run(ctx, []string{"--profile", "alpha", "--profiles-file", path}, nil, inR, outW, &stderr)
+				outW.Close()
+			}()
+			cs := connectWithInstructions(t, ctx, &mcp.IOTransport{Reader: outR, Writer: inW}, version)
+			var got profile.Context
+			decodeResult(t, call(t, cs, "context", nil), &got)
+			if got != c {
+				t.Fatal("stdio context changed")
+			}
+			cs.Close()
+			select {
+			case code := <-done:
+				if code != 0 || stderr.Len() != 0 {
+					t.Fatalf("stdio shutdown code=%d stderr=%s", code, stderr.String())
+				}
+			case <-ctx.Done():
+				t.Fatal("stdio session did not stop within bound")
+			}
+		})
 	}
 }
 

@@ -16,6 +16,12 @@ Execution tool arguments and recovery are owned by [review execution](review-exe
 
 [PR following](review-notifications.md) supplies durable merged/closed inbox notices independently of an active review wait. Ordinary explicit work follows automatically; optional `review_following_read` and `review_following_update` control only the bound worker's preference.
 
+## Server instructions
+
+The MCP server supplies the same short guidance on stdio and Streamable HTTP through the SDK's `initialize` and `server/discover` responses. The Go build embeds the canonical [everyday-use skill](../skills/firecontroller-use/SKILL.md), and the adapter sends only its marked core. It covers bound work, job updates, native CI waits, and where to find the separate review skill. It carries no installation data or project-specific policy. SDK tests compare the wire instructions with the marked skill section and exercise both handshakes. Tool schemas remain the authority for accepted arguments.
+
+Use the [matching client bundle](releases.md#native-client-bundles) for the full local skills. Whether a host exposes or acts on the server instructions needs its own session check. See [remote connector qualification](remote-mcp.md#build-deployment-and-completion-proof).
+
 ## Configure one agent binding
 
 Build with `make build`. Configure the host to launch this command with this agent's private profile:

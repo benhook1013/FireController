@@ -57,7 +57,34 @@ Successful Linux qualification and Windows/macOS smoke jobs retain the binaries 
 
 Download an artifact through its Actions run page or `gh run download RUN_ID --repo benhook1013/FireController --name ARTIFACT_NAME`. Verify the adjacent `.sha256` before extracting the archive. Keep each revision's binaries and guidance together. Refresh any already installed FireController skill directories from that same bundle, including their referenced files; replacing binaries alone leaves agents with stale procedures. Preserve unrelated host metadata and locally added resources. Updating a generated launcher affects future processes; an already-running MCP session needs its normal host reconnect, preserving the same private profile. There is no automatic update of other agents' processes.
 
-Bundle generation routes skill links to private `references/docs/` copies of that exact release's canonical documentation, including links within supporting references. Install or update all bundled FireController skill directories by merging their complete contents, creating the package-owned generated documentation while preserving host metadata and custom files; do not copy only `SKILL.md` or create a shared global docs directory. Cross-skill links use those sibling installed skills, and source-code links are pinned to the release revision. Generated documentation is not maintained separately from `docs/`.
+Bundle generation routes skill links to private `references/docs/` copies of that exact release's canonical documentation, including links within supporting references. Install or update all bundled FireController skill directories by merging their complete contents, creating the package-owned generated documentation while preserving host metadata and custom files; do not copy only `SKILL.md` or create a shared global docs directory. The two operational skills link to each other locally. Links from those skills to optional onboarding and application source use the release revision. Generated documentation is not maintained separately from `docs/`.
+
+### Install local skills
+
+Install `firecontroller-use` and `firecontroller-reviews` as sibling directories from one verified bundle. The bundle also ships `firecontroller-onboard` for installation and connection setup. Use the intended client's scope and environment.
+
+| Client | User scope | Repository scope |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/` | `.claude/skills/` |
+| Codex | `~/.agents/skills/` | `.agents/skills/` |
+
+[Claude Code skill locations](https://code.claude.com/docs/en/skills#where-skills-live) and [Codex skill locations](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills) describe discovery and scope precedence.
+
+Use the repository's [client bundle tool](../tools/release/package-clients.py) against the archive and exact source revision. The default invocation checks the source, archive hash, and selected destinations before showing the plan. Add `--apply` to write the files. Select `claude-code` or `codex` and pass the intended user home or repository root explicitly. Select `codex-legacy` only for an existing client whose configured skill root is `.codex/skills`, including Windows installations using that root.
+
+```sh
+python3 tools/release/package-clients.py install-skills \
+  --archive "$CLIENT_ARCHIVE" --sha256 "$CLIENT_ARCHIVE_SHA256" \
+  --source "$RELEASE_SOURCE" --client codex --scope-root "$HOME"
+```
+
+The ordinary install merges package files into the two selected skill directories and preserves other files, including local resources and host metadata. It refuses conflicting links or file types, a manifest identifying another skill, and a conflicting package path without a matching installed skill manifest. It leaves onboarding and other skills alone.
+
+For managed releases, activate the verified client generation through the existing `current` pointer first. Pass that path with `--managed-current` to verify the selected generation against the bundle and install links to its two skill directories. Existing links to the same `current` path are kept. A link pointing directly at a sibling immutable release is replaced only when its source manifest identifies that generation. The installer refuses other links and occupied directories. These operations leave the generation directories and pointer intact. Creating a link requires the local host to already permit it.
+
+Check other enabled skill scopes for duplicate FireController names, including `.agents/skills` and `.codex/skills` on a Codex installation. Select the root the intended session actually loads. Preserve any custom resources before retiring a confirmed superseded entry. Host-specific instructions can refer to the skills by name.
+
+After refreshing skills, compare both resolved `SKILL.md` files with the extracted bundle and check that the linked references are available within the installed skills. Start fresh sessions for skill discovery and reconnect MCP with the same bound connection. Confirm that each skill is available from the intended path, then use `context` to verify a local adapter's actual source revision and `doctor` to verify its bound worker. A safe assigned-job read checks that the refreshed host can use the MCP tools. Record host behavior separately from file checks and SDK handshake results.
 
 A managed installation can keep bound launchers on a stable absolute executable path and atomically move that path to a verified package. This lets future processes select the installed build together and lets existing capable MCP processes report a [launch-target mismatch](agent-client.md#profiles-and-identity) without changing their authenticated binding. Retain executable files needed by running processes. A client-only output or guidance change does not require redeploying an otherwise unchanged daemon.
 
