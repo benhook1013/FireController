@@ -8,15 +8,35 @@ import (
 
 func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 	for _, channel := range []string{"hosted", "cli"} {
-		for _, change := range []string{"explicit-pause", "malformed-state"} {
+		for _, change := range []string{"explicit-pause", "automatic-pause", "disable", "disable-reenable", "revoke", "lost-management", "malformed-state", "malformed-scheduling"} {
 			t.Run(channel+"/"+change, func(t *testing.T) {
 				f := schedulingFixtureWithQueue(t, []int64{2})
 				f.e.publishAttempt = publishAttemptTransition
-				id := f.enqueue(t, attemptProject, "late-explicit-pause", channel, 2, 1).ID
+				automatic := change != "explicit-pause"
+				var id string
+				if automatic {
+					if channel == "hosted" {
+						schedulingEnable(t, f, 0, true)
+						schedulingGenerate(t, f, true)
+					} else {
+						schedulingCLIEnable(t, f, 0, true)
+						schedulingCLIGenerate(t, f, true)
+					}
+					selectionNext(t, f, &refreshTestReader{})
+					id = schedulingLatest(t, f).OperationID
+				} else {
+					id = f.enqueue(t, attemptProject, "late-explicit-pause", channel, 2, 1).ID
+				}
 				before := roundOperation(t, f, id)
 				attribution := snapshotTable(t, f, "review_automatic_selections")
 				waits := snapshotTable(t, f, "review_operation_waits")
-				const reason = "pull_scheduling_paused"
+				reason := "automation_authorization_changed"
+				if change == "explicit-pause" || change == "automatic-pause" {
+					reason = "pull_scheduling_paused"
+				}
+				if change == "malformed-state" || change == "malformed-scheduling" {
+					reason = "automatic_scheduling_unavailable"
+				}
 				var preparedAttempt Attempt
 				driver := &controlledDriver{prepare: func(ctx context.Context, op Operation, _ Configuration, a Attempt) (Preparation, error) {
 					if _, err := f.e.ExecutionContext(ctx, op.ProjectID, op.ID); err != nil {
@@ -24,8 +44,26 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 					}
 					preparedAttempt = a
 					switch change {
-					case "explicit-pause":
+					case "explicit-pause", "automatic-pause":
 						schedulingPause(t, f, 2, 0, true)
+					case "disable", "disable-reenable":
+						if channel == "hosted" {
+							schedulingEnable(t, f, 1, false)
+							if change == "disable-reenable" {
+								schedulingEnable(t, f, 2, true)
+							}
+						} else {
+							schedulingCLIEnable(t, f, 1, false)
+							if change == "disable-reenable" {
+								schedulingCLIEnable(t, f, 2, true)
+							}
+						}
+					case "revoke":
+						admissionSQL(t, f, `UPDATE credentials SET revoked=1 WHERE id='exec-writer-cred'`)
+					case "lost-management":
+						admissionSQL(t, f, `UPDATE grants SET can_manage=0 WHERE credential_id='exec-writer-cred'`)
+					case "malformed-scheduling":
+						admissionSQL(t, f, `UPDATE review_scheduling SET updated_at=? WHERE project_id=?`, "not-a-timestamp", attemptProject)
 					case "malformed-state":
 						admissionSQL(t, f, `UPDATE review_execution_config SET body_json='{' WHERE project_id=?`, attemptProject)
 					}
@@ -64,7 +102,7 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 				if err := f.store.DB().QueryRow(`SELECT state,anchor_json,intent,external_id FROM review_execution_attempts WHERE id=?`, preparedAttempt.ID).Scan(&state, &anchor, &intent, &external); err != nil || state != "held" || anchor != "null" || intent != "" || external != "" {
 					t.Fatal("unused attempt recorded dispatch intent", state, anchor, intent, external, err)
 				}
-				if change == "explicit-pause" {
+				if change == "explicit-pause" || change == "automatic-pause" {
 					schedulingPause(t, f, 2, 1, false)
 					driver.prepare = nil
 					driver.dispatch = func(ctx context.Context, op Operation, _ Attempt, record func(context.Context, string) error) (Result, error) {
@@ -79,6 +117,11 @@ func TestSchedulingAdmissionRechecksControlsAfterPreparation(t *testing.T) {
 					}
 					if err := f.e.processNext(t.Context(), map[string]Driver{"test-capability": driver}); err != nil || driver.calls.Load() != 1 || roundOperation(t, f, id).State != "completed" {
 						t.Fatal("resume did not finish the same queued operation", err)
+					}
+				} else if change == "disable-reenable" {
+					attempt, err := f.e.StartAttempt(t.Context(), attemptProject, id)
+					if err != nil || attempt.ID != "" {
+						t.Fatal("re-enabling resurrected interrupted authorization", attempt, err)
 					}
 				}
 			})

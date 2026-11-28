@@ -52,21 +52,31 @@ func TestQueuedNativeSelectionWithUnprovedChildDoesNotStopIndependentSelection(t
 
 func TestSourceRecoveryRefusesUnknownEventlessAcceptanceOrder(t *testing.T) {
 	for _, tc := range []struct {
-		name, createdAt string
-		keepEvent, want bool
+		name, createdAt                string
+		keepEvent, neighborFirst, want bool
 	}{
-		{"eventless-earlier", "2001-01-01T00:00:00Z", false, false},
-		{"eventless-unknown", "unknown", false, true},
-		{"later-event-authoritative", "2001-01-01T00:00:00Z", true, true},
+		{"eventless-earlier-wall-clock-unproved", "2001-01-01T00:00:00Z", false, false, true},
+		{"eventless-unknown", "unknown", false, false, true},
+		{"later-event-authoritative", "2001-01-01T00:00:00Z", true, false, true},
+		{"earlier-event-authoritative", "2099-01-01T00:00:00Z", true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := selectionFixture(t)
+			enqueueNeighbor := func() string {
+				return f.enqueue(t, attemptProject, "retained-intent", "hosted", 2, 1).ID
+			}
+			var neighborID string
+			if tc.neighborFirst {
+				neighborID = enqueueNeighbor()
+			}
 			base, _ := selectionEnqueue(t, f, "recovery-target", "hosted", nil)
-			neighbor := f.enqueue(t, attemptProject, "retained-intent", "hosted", 2, 1)
+			if !tc.neighborFirst {
+				neighborID = enqueueNeighbor()
+			}
 			run := selectionRead(t, f, base.ID)
-			admissionSQL(t, f, `UPDATE review_operations SET created_at=? WHERE id=?`, tc.createdAt, neighbor.ID)
+			admissionSQL(t, f, `UPDATE review_operations SET created_at=? WHERE id=?`, tc.createdAt, neighborID)
 			if !tc.keepEvent {
-				admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.requested' AND resource_id=?`, neighbor.ID)
+				admissionSQL(t, f, `DELETE FROM events WHERE event_type='review.requested' AND resource_id=?`, neighborID)
 			}
 			err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
 				got, err := automaticSourceSuperseded(ctx, tx, run)
@@ -150,7 +160,7 @@ func TestContinuityValidatesCurrentBasisAndNativeProjectActor(t *testing.T) {
 			}
 			current := schedulingRecord{Scheduling: Scheduling{ProjectID: "test-project", Revision: 2, AutomaticHosted: true}, actor: "test-actor"}
 			ok, err := automaticChannelContinuous(t.Context(), tx, Run{ProjectID: "test-project", Channel: "hosted"}, 1, "test-actor", current)
-			if ok != tc.valid || tc.valid != (err == nil) {
+			if ok != tc.valid || err != nil {
 				t.Fatalf("continuity: got %v %v; expected valid=%v", ok, err, tc.valid)
 			}
 		})

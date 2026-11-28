@@ -391,6 +391,59 @@ func TestSelectionQuarantineInventoryRefusesV1NameCollision(t *testing.T) {
 	assertCurrentSummaryInventoryRefused(t, bundle, false)
 }
 
+func TestSelectionQuarantineInventoryRetainsAutomaticChildWithoutAuthority(t *testing.T) {
+	f, _, _ := schedulingBackupFixture(t)
+	ctx := t.Context()
+	const children = `SELECT * FROM review_operations ORDER BY id`
+	const authors = `SELECT * FROM review_automatic_selections ORDER BY selection_id`
+	const journal = `SELECT * FROM events ORDER BY sequence`
+	beforeChildren, beforeAuthors, beforeJournal := restoreRows(t, f.store.DB(), children), restoreRows(t, f.store.DB(), authors), restoreRows(t, f.store.DB(), journal)
+	var selection, operation string
+	var revision int64
+	if err := f.store.DB().QueryRow(`SELECT s.id,s.operation_id,s.revision FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id WHERE a.pull_number<>0`).Scan(&selection, &operation, &revision); err != nil {
+		t.Fatal(err)
+	}
+	// Construct only the canonical post-hold metadata for a normal synthetic
+	// selection. No inconsistent queued binding or provider dispatch is staged.
+	if err := f.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_selection_quarantine
+		(selection_id,project_id,original_operation_id,original_state,observed_revision) VALUES(?,?,?,'selecting',?)`, selection, f.project, operation, revision); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason='linked_selection_quarantined',
+		  revision=revision+1,operation_id=NULL WHERE id=?`, selection)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "inactive-custody")
+	if _, err := Restore(ctx, bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSnapshot(ctx, filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !reflect.DeepEqual(beforeChildren, restoreRows(t, db, children)) ||
+		!reflect.DeepEqual(beforeAuthors, restoreRows(t, db, authors)) ||
+		!reflect.DeepEqual(beforeJournal, restoreRows(t, db, journal)) {
+		t.Fatal("restoring forensic custody changed the child, origin, or event history")
+	}
+	var got string
+	if err := db.QueryRow(`SELECT original_operation_id FROM review_selection_quarantine WHERE selection_id=?`, selection).Scan(&got); err != nil || got != operation {
+		t.Fatal("original automatic operation identity was not retained", got, err)
+	}
+	var state, reason string
+	var heldRevision int64
+	var link sql.NullString
+	if err := db.QueryRow(`SELECT state,reason,revision,operation_id FROM review_selections WHERE id=? AND project_id=?`, selection, f.project).
+		Scan(&state, &reason, &heldRevision, &link); err != nil || state != "held" || reason != "linked_selection_quarantined" || heldRevision != revision+1 || link.Valid {
+		t.Fatal("restore changed the held, unlinked selection", state, reason, heldRevision, link.Valid, err)
+	}
+}
+
 func TestSelectionQuarantineInventoryRejectsDanglingEmptyV2Marker(t *testing.T) {
 	f, _ := selectionInventoryFixture(t, "queued")
 	bundle := restoreBundle(t, f)

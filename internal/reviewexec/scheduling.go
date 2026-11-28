@@ -1,6 +1,7 @@
 package reviewexec
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -24,6 +25,33 @@ type Scheduling struct {
 	AuthorizingWorkerID string           `json:"authorizing_worker_id,omitempty"`
 	UpdatedAt           string           `json:"updated_at,omitempty"`
 	Reason              string           `json:"reason,omitempty"`
+}
+type SchedulingRequest struct {
+	ExpectedRevision *int64 `json:"expected_revision"`
+	AutomaticCLI     *bool  `json:"automatic_cli,omitempty"`
+	AutomaticHosted  *bool  `json:"automatic_hosted"`
+}
+
+// Omission preserves the CLI setting; explicit null is not a boolean choice.
+func (r *SchedulingRequest) UnmarshalJSON(data []byte) error {
+	type plain SchedulingRequest
+	var value plain
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for name, raw := range fields {
+		if strings.EqualFold(name, "automatic_cli") && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return invalid()
+		}
+	}
+	*r = SchedulingRequest(value)
+	return nil
 }
 
 type PullScheduling struct {
@@ -219,6 +247,72 @@ func (e *Engine) ReadScheduling(ctx context.Context, scope core.Scope) (Scheduli
 	return out, err
 }
 func validSchedulingRevision(r *int64) bool { return r != nil && *r >= 0 && *r < math.MaxInt64 }
+func (e *Engine) ConfigureScheduling(ctx context.Context, scope core.Scope, key string, input SchedulingRequest) (json.RawMessage, error) {
+	if !validSchedulingRevision(input.ExpectedRevision) || input.AutomaticHosted == nil {
+		return nil, invalid()
+	}
+	scope = scope.RequireAdministration()
+	out, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.scheduling", Target: "scheduling", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
+		old, err := readScheduling(ctx, tx, scope.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		if old.Revision != *input.ExpectedRevision {
+			return nil, conflict()
+		}
+		automaticCLI := old.AutomaticCLI
+		if input.AutomaticCLI != nil {
+			automaticCLI = *input.AutomaticCLI
+		}
+		if err := core.CheckActiveWorker(ctx, tx, scope.ProjectID, scope.WorkerID); err != nil {
+			return nil, err
+		}
+		credential := ""
+		if *input.AutomaticHosted || automaticCLI {
+			credential, err = e.store.AuthenticatedCredentialID(ctx, tx, scope)
+			if err != nil {
+				return nil, err
+			}
+			allowed, err := schedulingAuthorizerAllowed(ctx, tx, schedulingRecord{Scheduling: Scheduling{ProjectID: scope.ProjectID, AutomaticHosted: true, AuthorizingWorkerID: scope.WorkerID}, actor: scope.PrincipalID, credential: credential})
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				return nil, core.Fail("forbidden", "An active bound project manager must authorize automatic review scheduling.", 403)
+			}
+		}
+		hostedBasis, cliBasis, err := schedulingBasisRevisions(ctx, tx, old)
+		if err != nil {
+			return nil, err
+		}
+		authorizerChanged := old.actor != scope.PrincipalID || old.AuthorizingWorkerID != scope.WorkerID || old.credential != credential
+		hostedChanged, cliChanged := old.AutomaticHosted != *input.AutomaticHosted, old.AutomaticCLI != automaticCLI
+		// A write changing only the other channel is not a new intent here.
+		// Reasserting unchanged settings remains an intentional rearm of the
+		// supplied channels; omitted CLI retains its basis, just like its bit.
+		reassert := !hostedChanged && !cliChanged
+		if authorizerChanged || hostedChanged || reassert {
+			hostedBasis = old.Revision + 1
+		}
+		if authorizerChanged || cliChanged || reassert && input.AutomaticCLI != nil {
+			cliBasis = old.Revision + 1
+		}
+		at := stamp()
+		worker := scope.WorkerID
+		_, err = tx.ExecContext(ctx, `INSERT INTO review_scheduling(project_id,revision,automatic_hosted,automatic_cli,actor_id,worker_id,credential_id,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,automatic_hosted=excluded.automatic_hosted,automatic_cli=excluded.automatic_cli,actor_id=excluded.actor_id,worker_id=excluded.worker_id,credential_id=excluded.credential_id,updated_at=excluded.updated_at`, scope.ProjectID, old.Revision+1, *input.AutomaticHosted, automaticCLI, scope.PrincipalID, worker, credential, at)
+		if err != nil {
+			return nil, err
+		}
+		if err = core.AppendEvent(ctx, tx, scope, "review.scheduling_updated", scope.ProjectID, old.Revision+1, map[string]any{"automatic_hosted": *input.AutomaticHosted, "automatic_cli": automaticCLI, "hosted_basis_revision": hostedBasis, "cli_basis_revision": cliBasis}); err != nil {
+			return nil, err
+		}
+		return Receipt{ID: scope.ProjectID, State: "scheduling_configured", Revision: old.Revision + 1}, nil
+	})
+	if err == nil {
+		e.wakeScheduling()
+	}
+	return out, err
+}
 
 // A pull-specific retained control refusal is distinct from project
 // scheduling, a query error, or another member of the queue.

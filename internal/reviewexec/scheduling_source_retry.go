@@ -4,7 +4,98 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
+
+const automaticSourceRetryDelay = 30 * time.Second
+
+// The selection's retained monotonic revision is a conservative transition
+// budget, not a retry counter. An ordinary failure is revision 3; each complete
+// requeue/claim/failure costs three more revisions. Allowing only revisions <= 6
+// permits at most two delayed retries of completed source holds. Restart
+// recovery consumes this budget too, never replenishes it. Existing backup/restore retains both the
+// revision and updated_at, so neither process restarts nor restore reset it.
+func transientAutomaticSourceHold(r Run) bool {
+	if !validChannel(r.Channel) || r.State != "held" || r.OperationID != "" || r.Revision < 3 || r.Revision > 6 {
+		return false
+	}
+	switch r.Reason {
+	case "source_budget_exhausted", "source_fetch_timeout", "source_provider_unavailable", "routed_findings_unavailable":
+		return true
+	}
+	return false
+}
+
+// retryAutomaticSourceTx only requeues a previously accepted read-only intent.
+// It is called after the normal coordinator's restore, authorizer, pause and
+// active-operation checks, and only for an already suppressed semantic basis.
+// No operation, attempt, grant or new selection is created here.
+func (e *Engine) retryAutomaticSourceTx(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time) (bool, error) {
+	return e.retryAutomaticSourceChannelTx(ctx, tx, project, basis, schedulingRevision, now, "hosted")
+}
+
+func (e *Engine) retryAutomaticSourceChannelTx(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time, channel string) (bool, error) {
+	r, err := e.automaticSourceRetryCandidate(ctx, tx, project, basis, schedulingRevision, now, channel)
+	if err != nil || r == nil {
+		return false, err
+	}
+	if err = updateRunAt(ctx, tx, *r, "queued", "", "", now); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// This read-only check is shared by preflight and writer revalidation.
+func (e *Engine) automaticSourceRetryCandidate(ctx context.Context, tx *sql.Tx, project, basis string, schedulingRevision int64, now time.Time, channel string) (*Run, error) {
+	if !validChannel(channel) {
+		return nil, schedulingUnavailable()
+	}
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT s.id FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id AND a.project_id=s.project_id WHERE s.project_id=? AND s.channel=? AND s.state='held' AND s.reason<>'linked_selection_quarantined' AND s.operation_id IS NULL AND s.revision BETWEEN 3 AND 6 AND a.scheduling_revision=? AND (a.basis_sha256=? OR a.settled_basis_sha256=?) ORDER BY s.created_at DESC,s.id LIMIT 1`, project, channel, schedulingRevision, basis, basis).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r, err := readRun(ctx, tx, project, id)
+	if err != nil {
+		return nil, err
+	}
+	if !transientAutomaticSourceHold(r) {
+		return nil, nil
+	}
+	updated, err := time.Parse(time.RFC3339Nano, r.UpdatedAt)
+	if err != nil {
+		return nil, runUnavailable()
+	}
+	if now.Before(updated.Add(automaticSourceRetryDelay)) {
+		return nil, nil
+	}
+	superseded, err := automaticSourceSuperseded(ctx, tx, r)
+	if err != nil || superseded {
+		return nil, err
+	}
+	configuration, _, reason, err := e.runBinding(ctx, tx, r)
+	if err != nil || reason != "" {
+		return nil, err
+	}
+	if r.Reason == "routed_findings_unavailable" {
+		// A repaired projection can have the same source digest as before
+		// invalidation. Reconsider the same intent, but do not spend its
+		// bounded source retries while a configured pull's route facts are
+		// dirty. Check the whole bounded queue: an eligible pull may depend
+		// on an ancestor outside its current waiting cutoff.
+		var dirty bool
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM json_each(?) q JOIN review_route_policy_invalidations i
+			ON i.project_id=? AND i.target_pull_number=q.value)`, encoded(configuration.Queue), project).Scan(&dirty)
+		if err != nil || dirty {
+			return nil, err
+		}
+	}
+	return &r, nil
+}
 
 // Recheck recovery fences during every admission snapshot, including after
 // source I/O. Interrupted initial reads retain ordinary authorization continuity.
@@ -104,10 +195,9 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 	// Any later or simultaneous same-channel intent supersedes this recovery, even if
 	// that intent was cancelled, denied, held or completed. A directly submitted
 	// operation is also a fence; never recover behind its cancellation/uncertainty.
-	// Compare parsed times, not RFC3339 text with variable fractional precision.
-	// For rows with no acceptance event, millisecond ties conservatively fence.
 	// Event sequence is the durable acceptance order even if the wall clock
-	// moves backwards. Missing acceptance evidence is not permission to retry.
+	// moves backwards. Legacy eventless rows are readable, but their timestamps
+	// cannot prove they preceded this intent. Treat their order as unknown.
 	var accepted int64
 	err := tx.QueryRowContext(ctx, `SELECT sequence FROM events WHERE project_id=? AND resource_id=? AND event_type='review.selection_requested' AND revision=1 ORDER BY sequence DESC LIMIT 1`, r.ProjectID, r.ID).Scan(&accepted)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -119,10 +209,9 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 	var superseded bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(
  SELECT 1 FROM review_selections s WHERE s.project_id=? AND s.channel=? AND s.id<>?
- AND (typeof(s.created_at)<>'text' OR length(s.created_at)<19 OR substr(s.created_at,11,1) NOT IN ('T',' ') OR julianday(s.created_at) IS NULL OR julianday(s.created_at)>=julianday(?))
  AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.id AND e.event_type='review.selection_requested' AND e.revision=1)
 ) OR EXISTS(
- SELECT 1 FROM review_operations o WHERE o.project_id=? AND o.channel=? AND (typeof(o.created_at)<>'text' OR length(o.created_at)<19 OR substr(o.created_at,11,1) NOT IN ('T',' ') OR julianday(o.created_at) IS NULL OR julianday(o.created_at)>=julianday(?))
+ SELECT 1 FROM review_operations o WHERE o.project_id=? AND o.channel=?
  AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=o.project_id AND e.resource_id=o.id AND e.event_type='review.requested' AND e.revision=1)
 ) OR EXISTS(
  SELECT 1 FROM events e JOIN review_selections s ON s.project_id=e.project_id AND s.id=e.resource_id
@@ -130,6 +219,6 @@ func automaticSourceSuperseded(ctx context.Context, tx *sql.Tx, r Run) (bool, er
 ) OR EXISTS(
  SELECT 1 FROM events e JOIN review_operations o ON o.project_id=e.project_id AND o.id=e.resource_id
  WHERE e.project_id=? AND e.sequence>? AND e.event_type='review.requested' AND e.revision=1 AND o.channel=?
-)`, r.ProjectID, r.Channel, r.ID, r.CreatedAt, r.ProjectID, r.Channel, r.CreatedAt, r.ProjectID, accepted, r.Channel, r.ProjectID, accepted, r.Channel).Scan(&superseded)
+)`, r.ProjectID, r.Channel, r.ID, r.ProjectID, r.Channel, r.ProjectID, accepted, r.Channel, r.ProjectID, accepted, r.Channel).Scan(&superseded)
 	return superseded, err
 }

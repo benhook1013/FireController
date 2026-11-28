@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -37,11 +38,6 @@ func automaticProjectRefused(err error) bool {
 func automaticDenied() error {
 	return core.Fail("automation_authorization_changed", "Automatic review scheduling is disabled or its original authorizer is no longer authorized.", 403)
 }
-
-func automaticChannelEnabled(s schedulingRecord, channel string) bool {
-	return channel == "hosted" && s.AutomaticHosted || channel == "cli" && s.AutomaticCLI
-}
-
 func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) error {
 	attribution, err := automaticSelectionBinding(ctx, tx, r)
 	if err != nil || attribution.revision == 0 {
@@ -73,8 +69,9 @@ func (e *Engine) requireAutomaticRun(ctx context.Context, tx *sql.Tx, r Run) err
 			return automaticDenied()
 		}
 	} else {
-		// Same-revision work still requires the exact canonical event
-		// behind its enabled control; a retained projection alone is not proof.
+		// A same-revision retry still requires the exact canonical event
+		// behind its enabled control. Use the same basis validation as
+		// a scheduling edit; a retained projection alone is not proof.
 		if _, _, err := schedulingBasisRevisions(ctx, tx, s); err != nil {
 			return err
 		}
@@ -140,13 +137,10 @@ func automaticPullBasis(ctx context.Context, tx *sql.Tx, project string, pull in
 }
 
 type automaticBasisRead struct {
-	prefix        []byte
-	revision      int64
-	workspace     bool
-	frame         frontFrame
-	hasFrame      bool
-	parentFacts   map[int64][]any
-	frontByNumber map[int64]frontPull
+	prefix       []byte
+	revision     int64
+	workspace    bool
+	dependencies automaticDependencyRead
 }
 
 // The channel semantic revision is independent of unrelated control edits.
@@ -173,10 +167,11 @@ func readAutomaticBasis(ctx context.Context, tx *sql.Tx, project, channel string
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='review_current_pulls' AND type='table')`).Scan(&out.workspace); err != nil {
 		return out, err
 	}
-	out.frame, out.hasFrame, err = readFrontFrame(ctx, tx, project, channel)
+	frame, found, err := readFrontFrame(ctx, tx, project, channel)
 	if err != nil {
 		return out, err
 	}
+	out.dependencies = newAutomaticDependencyRead(ctx, tx, project, channel, frame, found)
 	var prefix bytes.Buffer
 	appendRows := automaticBasisAppender(ctx, tx, &prefix, channel, out.revision)
 	for _, query := range []string{
@@ -189,10 +184,6 @@ func readAutomaticBasis(ctx context.Context, tx *sql.Tx, project, channel string
 		}
 	}
 	out.prefix = prefix.Bytes()
-	if out.hasFrame {
-		out.parentFacts = make(map[int64][]any)
-		out.frontByNumber = frontPullIndex(out.frame)
-	}
 	return out, nil
 }
 
@@ -334,7 +325,7 @@ func automaticPullBasisWithRead(ctx context.Context, tx *sql.Tx, project string,
 			return "", err
 		}
 	}
-	dependencies, err := automaticDependenciesWithFrame(ctx, tx, project, pull, channel, shared.frame, shared.hasFrame, shared.frontByNumber, shared.parentFacts)
+	dependencies, err := shared.dependencies.forPull(pull)
 	if err != nil {
 		return "", err
 	}
@@ -358,26 +349,38 @@ func automaticDependenciesChannel(ctx context.Context, tx *sql.Tx, project strin
 	if err != nil {
 		return nil, err
 	}
-	return automaticDependenciesWithFrame(ctx, tx, project, pull, channel, frame, found, nil, nil)
+	return newAutomaticDependencyRead(ctx, tx, project, channel, frame, found).forPull(pull)
 }
 
-func frontPullIndex(frame frontFrame) map[int64]frontPull {
-	byNumber := make(map[int64]frontPull, len(frame.prefix))
-	for _, p := range frame.prefix {
-		byNumber[p.Number] = p
-	}
-	return byNumber
+// A dependency read owns one planning snapshot and one project's channel.
+// Keep traversal guards per descendant, but read each ancestor's immutable
+// transaction facts once. A writer replan always constructs a fresh read.
+type automaticDependencyRead struct {
+	byNumber map[int64]frontPull
+	facts    map[int64][]any
+	load     func(frontPull) ([]any, error)
 }
 
-func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, frame frontFrame, found bool, byNumber map[int64]frontPull, parentFacts map[int64][]any) ([]any, error) {
-	out := []any{}
+func newAutomaticDependencyRead(ctx context.Context, tx *sql.Tx, project, channel string, frame frontFrame, found bool) automaticDependencyRead {
 	if !found {
-		return out, nil
+		return automaticDependencyRead{}
 	}
-	if byNumber == nil {
-		byNumber = frontPullIndex(frame)
+	read := automaticDependencyRead{
+		byNumber: make(map[int64]frontPull, len(frame.prefix)),
+		facts:    make(map[int64][]any),
+		load: func(p frontPull) ([]any, error) {
+			return loadAutomaticDependencyFacts(ctx, tx, project, channel, frame.repository, p)
+		},
 	}
-	current, found := byNumber[pull]
+	for _, p := range frame.prefix {
+		read.byNumber[p.Number] = p
+	}
+	return read
+}
+
+func (r automaticDependencyRead) forPull(pull int64) ([]any, error) {
+	out := []any{}
+	current, found := r.byNumber[pull]
 	if !found {
 		return out, nil
 	}
@@ -387,46 +390,49 @@ func automaticDependenciesWithFrame(ctx context.Context, tx *sql.Tx, project str
 			return nil, errors.Join(errAutomaticParentCycle, schedulingUnavailable())
 		}
 		seen[parent] = true
-		p, exists := byNumber[parent]
+		p, exists := r.byNumber[parent]
 		if !exists {
 			out = append(out, []any{parent, "source_prefix_incomplete"})
 			break
 		}
-		// One planning snapshot owns this memo and immutable frame. Never
-		// cache an error or skip the current pull's own chain/cycle checks.
-		if facts, present := parentFacts[parent]; present {
-			out = append(out, facts)
-			parent = p.ParentPullNumber
-			continue
-		}
-		progress, err := channelProgress(ctx, tx, project, frame.repository, parent, channel)
-		if err != nil {
-			return nil, err
-		}
-		control, err := readRoundRecord(ctx, tx, project, parent, channel)
-		if err != nil {
-			return nil, err
-		}
-		obligations, err := sourceObligationCount(ctx, tx, project, parent)
-		if err != nil {
-			return nil, err
-		}
-		routes, err := pendingIncomingRoutes(ctx, tx, project, parent)
-		if err != nil {
-			return nil, err
-		}
-		var completed int64
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
-			return nil, err
-		}
-		facts := []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes}
-		if parentFacts != nil {
-			parentFacts[parent] = facts
+		facts, loaded := r.facts[parent]
+		if !loaded {
+			var err error
+			facts, err = r.load(p)
+			if err != nil {
+				return nil, err
+			}
+			r.facts[parent] = facts
 		}
 		out = append(out, facts)
 		parent = p.ParentPullNumber
 	}
 	return out, nil
+}
+
+func loadAutomaticDependencyFacts(ctx context.Context, tx *sql.Tx, project, channel string, repository int64, p frontPull) ([]any, error) {
+	parent := p.Number
+	progress, err := channelProgress(ctx, tx, project, repository, parent, channel)
+	if err != nil {
+		return nil, err
+	}
+	control, err := readRoundRecord(ctx, tx, project, parent, channel)
+	if err != nil {
+		return nil, err
+	}
+	obligations, err := sourceObligationCount(ctx, tx, project, parent)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := pendingIncomingRoutes(ctx, tx, project, parent)
+	if err != nil {
+		return nil, err
+	}
+	var completed int64
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM review_comparison_proofs WHERE project_id=? AND pull_number=? AND channel='`+channel+`' AND state='ready'`, project, parent).Scan(&completed); err != nil {
+		return nil, err
+	}
+	return []any{parent, p.HeadSHA, p.ParentPullNumber, p.ParentSHA, progress, control.Configured, control.Epoch, control.grantRevision, control.Closed, control.Used, control.Dry, control.Tapered, completed, obligations, routes}, nil
 }
 
 // Planning can move on to a distinct unattempted PR without treating an
@@ -532,6 +538,31 @@ func automaticPlanningBasisForPrefix(ctx context.Context, tx *sql.Tx, project st
 		}
 	}
 	return basis, len(remaining) > 0, nil
+}
+
+// Legacy pre-child intents have only an opaque whole-queue digest. At a
+// shortened cutoff there is no proof that a new prefix digest falls outside
+// the retained intent. Keep that scope held until an explicit rearm changes
+// the channel basis, a configuration/policy revision changes, or the full
+// queue becomes eligible for the original exact-digest comparison.
+func automaticLegacyPrefixFence(ctx context.Context, tx *sql.Tx, project string, configurationRevision, policyRevision int64, channel string) (bool, error) {
+	basisRevision, err := automaticChannelBasisRevision(ctx, tx, project, channel)
+	if err != nil {
+		return false, err
+	}
+	var held bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM review_automatic_selections a
+		JOIN review_selections s ON s.id=a.selection_id AND s.project_id=a.project_id
+		WHERE a.project_id=? AND s.channel=? AND s.configuration_revision=? AND s.policy_revision=?
+		  AND a.scheduling_revision>=? AND a.pull_number=0 AND s.operation_id IS NULL AND s.state IN ('held','empty')
+		  AND NOT EXISTS(
+		    SELECT 1 FROM events e WHERE e.project_id=s.project_id AND e.resource_id=s.id
+		      AND e.event_type='review.selection_requested' AND e.revision=1 AND e.actor_id=s.actor_id
+		      AND e.payload_json=json_object('channel',s.channel,'origin','automatic','worker_id',s.worker_id)
+		  )
+	)`, project, channel, configurationRevision, policyRevision, basisRevision).Scan(&held)
+	return held, err
 }
 
 // A waiting request keeps its identity and deadline. Automatic selection may
@@ -662,7 +693,7 @@ func (e *Engine) automaticPullSuppressed(ctx context.Context, tx *sql.Tx, r Run,
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id<>? AND pull_number=? AND pull_basis_sha256=?)`, r.ProjectID, r.ID, pull, basis).Scan(&seen)
 	return seen, err
 }
-func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pull int64) error {
+func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pull int64, acceptedOnly bool) error {
 	attribution, err := automaticSelectionBinding(ctx, tx, r)
 	if err != nil || attribution.revision == 0 {
 		return err
@@ -682,6 +713,257 @@ func (e *Engine) settleAutomaticBasis(ctx context.Context, tx *sql.Tx, r Run, pu
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE review_automatic_selections SET settled_basis_sha256=?,pull_number=?,pull_basis_sha256=? WHERE selection_id=? AND project_id=?`, basis, pull, pullBasis, r.ID, r.ProjectID)
+	if acceptedOnly {
+		// A repository mismatch proves no new source facts. Retain the
+		// original suppression only if the same basis is still current.
+		_, err = tx.ExecContext(ctx, `UPDATE review_automatic_selections SET settled_basis_sha256=basis_sha256 WHERE selection_id=? AND project_id=? AND basis_sha256=?`, r.ID, r.ProjectID, basis)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE review_automatic_selections SET settled_basis_sha256=?,pull_number=?,pull_basis_sha256=? WHERE selection_id=? AND project_id=?`, basis, pull, pullBasis, r.ID, r.ProjectID)
+	}
 	return err
+}
+
+// One bounded local coordinator pass. Existing selection workers own every
+// provider read and fresh source/admission check; this method creates no attempt.
+func (e *Engine) generateAutomaticHosted(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+	var projects []string
+	if err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT project_id FROM review_scheduling WHERE automatic_hosted=1 ORDER BY (project_id<=?),project_id LIMIT 100`, e.automaticCursor)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p string
+			if err = rows.Scan(&p); err != nil {
+				return err
+			}
+			projects = append(projects, p)
+		}
+		return rows.Err()
+	}); err != nil {
+		return false, err
+	}
+	for _, project := range projects {
+		e.automaticCursor = project
+		worked, err := e.generateAutomaticProject(ctx, project, "hosted", readers)
+		if automaticProjectRefused(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if worked {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (e *Engine) coordinateAutomaticHosted(ctx context.Context, readers map[string]TargetReader) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// Leave the other selection worker available for accepted intents.
+	if !e.automaticMu.TryLock() {
+		return false, ctx.Err()
+	}
+	defer e.automaticMu.Unlock()
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	now := time.Now()
+	if now.Before(e.automaticNext) {
+		return false, nil
+	}
+	e.automaticNext = now.Add(5 * time.Second)
+	worked, hostedErr := e.generateAutomaticHosted(ctx, readers)
+	if ctx.Err() != nil {
+		return worked, ctx.Err()
+	}
+	cliWorked, cliErr := e.generateAutomaticCLI(ctx, readers)
+	if ctx.Err() != nil {
+		return worked || cliWorked, ctx.Err()
+	}
+	// A transient admission/deadline refusal in one channel must not suppress
+	// the other channel or hide its fatal storage error.
+	transient := func(err error) error {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "overloaded" {
+			return nil
+		}
+		return err
+	}
+	return worked || cliWorked, errors.Join(transient(hostedErr), transient(cliErr))
+}
+
+func automaticChannelEnabled(s schedulingRecord, channel string) bool {
+	return channel == "hosted" && s.AutomaticHosted || channel == "cli" && s.AutomaticCLI
+}
+
+// The read preflight can only nominate work. Repeat the entire plan under the
+// serialized writer and compare its identity before using ordinary acceptance
+// or retry CAS. Idle and permanently suppressed projects never take the writer.
+type automaticProjectPlan struct {
+	account    string
+	scheduling schedulingRecord
+	scope      core.Scope
+	basis      string
+	retry      *Run
+}
+
+func (e *Engine) planAutomaticProject(ctx context.Context, tx *sql.Tx, project, channel string, readers map[string]TargetReader) (*automaticProjectPlan, error) {
+	var restored bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM metadata WHERE (key='restore:provider_state' AND value='held') OR (key='restore:state' AND value='inactive'))`).Scan(&restored); err != nil {
+		return nil, err
+	}
+	if restored {
+		return nil, nil
+	}
+	s, err := readScheduling(ctx, tx, project)
+	if err != nil || !automaticChannelEnabled(s, channel) {
+		return nil, err
+	}
+	scope, err := e.store.ProjectAutomationScope(ctx, tx, project, s.actor, s.AuthorizingWorkerID, s.credential)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Status >= 400 && failure.Status < 500 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	c, configurationRevision, err := readConfiguration(ctx, tx, project)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "reviews_unconfigured" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if c.Paused || !slices.Contains(c.Channels, channel) || e.validateConfiguration(c) != nil || readers[c.CapabilityID] == nil || len(c.Queue) == 0 {
+		return nil, nil
+	}
+	policy, err := readPolicy(ctx, tx, project)
+	if err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "reviews_policy_unconfigured" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if policy.Revision < 1 || slices.Contains(policy.Policy.PausedChannels, channel) {
+		return nil, nil
+	}
+	var busy bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_selections WHERE project_id=? AND channel=? AND state IN('queued','selecting')) OR EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN('preparing','posting','active','uncertain'))`, project, channel, project, channel).Scan(&busy); err != nil {
+		return nil, err
+	}
+	if busy {
+		return nil, nil
+	}
+	limit, err := e.automaticHostedQueuedPrefixChannel(ctx, tx, project, c, channel)
+	if err != nil || limit == 0 {
+		return nil, err
+	}
+	queue := c.Queue[:limit]
+	unpaused := false
+	for _, pull := range queue {
+		control, err := readPullScheduling(ctx, tx, project, pull)
+		if err != nil {
+			return nil, err
+		}
+		unpaused = unpaused || !control.Paused
+	}
+	if !unpaused {
+		return nil, nil
+	}
+	basis, candidates, err := automaticPlanningBasisForPrefix(ctx, tx, project, queue, "", channel)
+	if err != nil || !candidates {
+		return nil, err
+	}
+	var seen bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND (basis_sha256=? OR settled_basis_sha256=?))`, project, basis, basis).Scan(&seen); err != nil {
+		return nil, err
+	}
+	plan := &automaticProjectPlan{account: automaticAccountKey(e.capabilities[c.CapabilityID]), scheduling: s, scope: scope, basis: basis}
+	if seen {
+		plan.retry, err = e.automaticSourceRetryCandidate(ctx, tx, project, basis, s.Revision, time.Now(), channel)
+		if err != nil || plan.retry == nil {
+			return nil, err
+		}
+	}
+	if !seen && limit < len(c.Queue) {
+		held, err := automaticLegacyPrefixFence(ctx, tx, project, configurationRevision, policy.Revision, channel)
+		if err != nil || held {
+			return nil, err
+		}
+	}
+	return plan, nil
+}
+
+func automaticAccountKey(capability Capability) string {
+	return capability.Provider + "\x00" + capability.Account
+}
+
+func (e *Engine) generateAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader) (bool, error) {
+	return e.generateAutomaticProjectForAccount(ctx, project, channel, readers, "")
+}
+
+// A CLI pass nominates only under the account counted by its pre-read;
+// a changed account must be reconsidered by a fresh pass.
+func (e *Engine) generateAutomaticProjectForAccount(ctx context.Context, project, channel string, readers map[string]TargetReader, expectedAccount string) (bool, error) {
+	var candidate *automaticProjectPlan
+	err := e.readAdmission(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		candidate, err = e.planAutomaticProject(ctx, tx, project, channel, readers)
+		return err
+	})
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if err != nil || candidate == nil || expectedAccount != "" && candidate.account != expectedAccount {
+		return false, err
+	}
+	return e.acceptAutomaticProject(ctx, project, channel, readers, candidate)
+}
+
+func (e *Engine) acceptAutomaticProject(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan) (bool, error) {
+	return e.acceptAutomaticProjectWithEnqueue(ctx, project, channel, readers, candidate, e.enqueueRunTx)
+}
+
+func (e *Engine) acceptAutomaticProjectWithEnqueue(ctx context.Context, project, channel string, readers map[string]TargetReader, candidate *automaticProjectPlan, enqueue func(context.Context, *sql.Tx, core.Scope, RunRequest) (Receipt, error)) (bool, error) {
+	worked := false
+	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		current, err := e.planAutomaticProject(ctx, tx, project, channel, readers)
+		if err != nil || current == nil {
+			return err
+		}
+		if channel == "cli" && current.account != candidate.account || current.basis != candidate.basis || current.scheduling.Revision != candidate.scheduling.Revision || (current.retry == nil) != (candidate.retry == nil) {
+			return nil
+		}
+		if current.retry != nil {
+			if current.retry.ID != candidate.retry.ID || current.retry.Revision != candidate.retry.Revision {
+				return nil
+			}
+			err = updateRunAt(ctx, tx, *current.retry, "queued", "", "", time.Now())
+		} else {
+			// Same ordinary acceptance path, fully reauthorized in this snapshot.
+			receipt, enqueueErr := enqueue(ctx, tx, current.scope, RunRequest{Channel: channel, origin: selectionOriginAutomatic})
+			if enqueueErr != nil {
+				var failure *core.Error
+				if errors.As(enqueueErr, &failure) && failure.Status == 409 {
+					return nil
+				}
+				return enqueueErr
+			}
+			s := current.scheduling
+			_, err = tx.ExecContext(ctx, `INSERT INTO review_automatic_selections(selection_id,project_id,scheduling_revision,basis_sha256,actor_id,worker_id,credential_id) VALUES(?,?,?,?,?,?,?)`, receipt.ID, project, s.Revision, current.basis, s.actor, s.AuthorizingWorkerID, s.credential)
+		}
+		worked = err == nil
+		return err
+	})
+	if ctx.Err() != nil {
+		return worked && err == nil, ctx.Err()
+	}
+	return worked && err == nil, err
 }

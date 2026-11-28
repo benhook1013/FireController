@@ -2,19 +2,23 @@ package reviewexec
 
 import (
 	"encoding/json"
+	"github.com/benhook1013/FireController/internal/core"
 	"net/http"
 	"strconv"
-
-	"github.com/benhook1013/FireController/internal/core"
 )
 
 func (e *Engine) registerSchedulingHTTP(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
+	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/scheduling", e.schedulingHTTP)
 	mux.HandleFunc("GET /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)
 	mux.HandleFunc("POST /api/v1/projects/{project_id}/reviews/pulls/{pull_number}/scheduling", e.pullSchedulingHTTP)
 }
 func (e *Engine) schedulingHTTP(w http.ResponseWriter, r *http.Request) {
-	scope, err := e.store.Scope(r, "read")
+	permission := "read"
+	if r.Method == "POST" {
+		permission = "write"
+	}
+	scope, err := e.store.Scope(r, permission)
 	if err != nil {
 		core.WriteError(w, err)
 		return
@@ -23,7 +27,26 @@ func (e *Engine) schedulingHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	out, err := e.ReadScheduling(r.Context(), scope)
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		out, err := e.ReadScheduling(r.Context(), scope)
+		if err != nil {
+			core.WriteError(w, err)
+			return
+		}
+		core.WriteJSON(w, 200, out)
+		return
+	}
+	var input SchedulingRequest
+	if err = core.ReadJSON(w, r, &input); err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	key, err := core.IdempotencyKey(r, "idempotency_key_required")
+	if err != nil {
+		core.WriteError(w, err)
+		return
+	}
+	out, err := e.ConfigureScheduling(r.Context(), scope, key, input)
 	if err != nil {
 		core.WriteError(w, err)
 		return

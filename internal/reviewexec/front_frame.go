@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 	"github.com/benhook1013/FireController/internal/strictjson"
 )
 
@@ -35,6 +36,13 @@ type frontFrame struct {
 	prefix                              []frontPull
 }
 
+func (f frontFrame) plans() []SourcePlan {
+	out := make([]SourcePlan, 0, len(f.prefix))
+	for _, p := range f.prefix {
+		out = append(out, SourcePlan{Repository: reviewprovider.Repository{ID: f.repository}, Pull: reviewprovider.Pull{RepositoryID: f.repository, Number: p.Number, State: p.State, Merged: p.Merged, HeadSHA: p.HeadSHA, BaseSHA: p.BaseSHA, BaseRef: p.BaseRef}, ParentPullNumber: p.ParentPullNumber, ParentSHA: p.ParentSHA, ObservedAt: p.ObservedAt, SourceReason: p.SourceReason})
+	}
+	return out
+}
 func validFrontFrame(f frontFrame, c Configuration, channel string) bool {
 	if f.repository < 1 || f.configuration < 1 || !roundTime(f.checkedAt) || validateConfigurationShape(c) != nil || c.Paused || !slices.Contains(c.Channels, channel) || *c.ExpectedRevision != f.configuration-1 || len(f.prefix) > len(c.Queue) || len(f.prefix) > 100 || f.prefix == nil || (f.sourceReason != "" && (!identifier.MatchString(f.sourceReason) || len(f.sourceReason) > 128)) {
 		return false

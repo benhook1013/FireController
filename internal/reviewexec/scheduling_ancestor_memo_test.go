@@ -18,14 +18,13 @@ func TestAutomaticDependenciesReuseSharedAncestorWithinSnapshot(t *testing.T) {
 		frame.prefix = append(frame.prefix, frontPull{Number: pull, ParentPullNumber: parent})
 	}
 	if err := f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		memo := make(map[int64][]any)
-		index := frontPullIndex(frame)
+		memo := newAutomaticDependencyRead(ctx, tx, attemptProject, "hosted", frame, true)
 		for pull := int64(10); pull < 60; pull++ {
-			direct, err := automaticDependenciesWithFrame(ctx, tx, attemptProject, pull, "hosted", frame, true, nil, nil)
+			direct, err := newAutomaticDependencyRead(ctx, tx, attemptProject, "hosted", frame, true).forPull(pull)
 			if err != nil {
 				return err
 			}
-			cached, err := automaticDependenciesWithFrame(ctx, tx, attemptProject, pull, "hosted", frame, true, index, memo)
+			cached, err := memo.forPull(pull)
 			if err != nil {
 				return err
 			}
@@ -33,8 +32,8 @@ func TestAutomaticDependenciesReuseSharedAncestorWithinSnapshot(t *testing.T) {
 				return fmt.Errorf("pull %d: planning facts changed: direct %v, memo %v", pull, direct, cached)
 			}
 		}
-		if len(memo) != 2 {
-			return fmt.Errorf("memo has %d entries, want exactly two shared ancestors", len(memo))
+		if len(memo.facts) != 2 {
+			return fmt.Errorf("memo has %d entries, want exactly two shared ancestors", len(memo.facts))
 		}
 		return nil
 	}); err != nil {

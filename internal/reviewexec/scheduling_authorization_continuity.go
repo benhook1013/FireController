@@ -33,6 +33,12 @@ func automaticChannelContinuous(ctx context.Context, tx *sql.Tx, r Run, revision
 		return false, nil
 	}
 	if _, _, err := schedulingBasisRevisions(ctx, tx, current); err != nil {
+		if automaticProjectRefused(err) {
+			// Invalid retained evidence cannot prove continuity. Keep the
+			// existing authorization denial for this cross-revision check;
+			// propagate actual query or transaction failures.
+			return false, nil
+		}
 		return false, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT revision,actor_id,CASE WHEN typeof(payload_json)='text' AND length(CAST(payload_json AS BLOB))<=4096 THEN payload_json END FROM events WHERE project_id=? AND event_type='review.scheduling_updated' AND resource_id=? AND revision BETWEEN ? AND ? ORDER BY revision,sequence LIMIT 10002`, r.ProjectID, r.ProjectID, revision, current.Revision)

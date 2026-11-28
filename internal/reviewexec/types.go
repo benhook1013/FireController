@@ -75,6 +75,8 @@ type AllowanceObservation struct {
 }
 
 type Operation struct {
+	independentPreflight  *queuePriorityPreflight
+	independentClaim      *independentClaimWitness
 	Wait                  *OperationWait        `json:"wait,omitempty"`
 	Allowance             *AllowanceObservation `json:"allowance,omitempty"`
 	AllowOutOfOrder       bool                  `json:"allow_out_of_order,omitempty"`
@@ -113,11 +115,20 @@ type Attempt struct {
 
 type Engine struct {
 	cliExhaustionRecovery      CLIExhaustionRecoverySource
+	automaticCursor            string
+	automaticCLICursor         string
+	automaticCLIOtherCursor    string
+	automaticMu                sync.Mutex
+	automaticNext              time.Time
 	runSourceBudget            time.Duration
 	schedulingNow              func() time.Time
 	configurationFailureMu     sync.Mutex
 	configurationFailureNext   map[string]time.Time
 	draftProbePermit           atomic.Bool
+	independentProbeMu         sync.Mutex
+	independentProbeActive     bool
+	independentProbeLast       time.Time
+	independentProbeNext       map[independentProbeKey]time.Time
 	draftProbeMu               sync.Mutex
 	draftProbeNext             map[string]time.Time
 	draftProbeCursor           string

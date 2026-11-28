@@ -8,38 +8,49 @@ import (
 // The choose/finish refusal paths pass the incremented in-memory run rather
 // than the normalized SQL claim. Exercise that exact MaxInt64 boundary.
 func TestRecovery0030QuarantinesInMemoryMaximumRevision(t *testing.T) {
-	f := schedulingFixtureWithQueue(t, []int64{2})
-	receipt, _ := selectionEnqueue(t, f, "max-claim", "hosted", nil)
-	r := selectionRead(t, f, receipt.ID)
-	admissionSQL(t, f, `UPDATE review_selections SET state='selecting',revision=? WHERE id=?`, int64(math.MaxInt64), r.ID)
-	r.State, r.Revision = "selecting", math.MaxInt64
-	history := snapshotTable(t, f, "events")
-	attribution := snapshotTable(t, f, "review_automatic_selections")
-	waiter := &operationWaiter{changed: make(chan struct{}, 1)}
-	f.e.operationMu.Lock()
-	if f.e.operationWaiters == nil {
-		f.e.operationWaiters = map[string]map[*operationWaiter]struct{}{}
-	}
-	f.e.operationWaiters[r.ID] = map[*operationWaiter]struct{}{waiter: {}}
-	f.e.operationMu.Unlock()
-	worked, err := f.e.holdRunLocalRefusal(t.Context(), r)
-	if err != nil || !worked {
-		t.Fatal("in-memory max revision was not quarantined", worked, err)
-	}
-	got := selectionRead(t, f, r.ID)
-	if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != math.MaxInt64 || got.OperationID != "" {
-		t.Fatal("quarantine rewrote retained evidence", got)
-	}
-	select {
-	case <-waiter.changed:
-	default:
-		t.Fatal("waiter not notified")
-	}
-	if worked, err = f.e.holdRunLocalRefusal(t.Context(), r); err != nil || worked {
-		t.Fatal("stale claim mutated quarantine", worked, err)
-	}
-	if history != snapshotTable(t, f, "events") || attribution != snapshotTable(t, f, "review_automatic_selections") {
-		t.Fatal("quarantine fabricated history or replaced authority")
+	for _, automatic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "explicit", true: "automatic"}[automatic], func(t *testing.T) {
+			f := schedulingFixtureWithQueue(t, []int64{2})
+			var r Run
+			if automatic {
+				schedulingEnable(t, f, 0, true)
+				schedulingGenerate(t, f, true)
+				r = schedulingLatest(t, f)
+			} else {
+				receipt, _ := selectionEnqueue(t, f, "max-claim", "hosted", nil)
+				r = selectionRead(t, f, receipt.ID)
+			}
+			admissionSQL(t, f, `UPDATE review_selections SET state='selecting',revision=? WHERE id=?`, int64(math.MaxInt64), r.ID)
+			r.State, r.Revision = "selecting", math.MaxInt64
+			history := snapshotTable(t, f, "events")
+			attribution := snapshotTable(t, f, "review_automatic_selections")
+			waiter := &operationWaiter{changed: make(chan struct{}, 1)}
+			f.e.operationMu.Lock()
+			if f.e.operationWaiters == nil {
+				f.e.operationWaiters = map[string]map[*operationWaiter]struct{}{}
+			}
+			f.e.operationWaiters[r.ID] = map[*operationWaiter]struct{}{waiter: {}}
+			f.e.operationMu.Unlock()
+			worked, err := f.e.holdRunLocalRefusal(t.Context(), r)
+			if err != nil || !worked {
+				t.Fatal("in-memory max revision was not quarantined", worked, err)
+			}
+			got := selectionRead(t, f, r.ID)
+			if got.State != "held" || got.Reason != "local_read_unavailable" || got.Revision != math.MaxInt64 || got.OperationID != "" {
+				t.Fatal("quarantine rewrote retained evidence", got)
+			}
+			select {
+			case <-waiter.changed:
+			default:
+				t.Fatal("waiter not notified")
+			}
+			if worked, err = f.e.holdRunLocalRefusal(t.Context(), r); err != nil || worked {
+				t.Fatal("stale claim mutated quarantine", worked, err)
+			}
+			if history != snapshotTable(t, f, "events") || attribution != snapshotTable(t, f, "review_automatic_selections") {
+				t.Fatal("quarantine fabricated history or replaced authority")
+			}
+		})
 	}
 }
 
