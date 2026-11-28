@@ -376,3 +376,37 @@ func TestReviewRunActualHTTPAcceptsOnceAndReadDoesNotSelect(t *testing.T) {
 		t.Fatal("retained read selected or lost scope", err)
 	}
 }
+
+func TestReviewSelectionShowsLinkedSchedulingHeader(t *testing.T) {
+	for _, tc := range []struct {
+		state, header string
+		want          bool
+	}{
+		{"queued", "pull_scheduling_paused", true},
+		{"queued", "unknown_reason", false},
+		{"uncertain", "pull_scheduling_paused", false},
+	} {
+		t.Run(tc.state+"/"+tc.header, func(t *testing.T) {
+			value := selectionSample()
+			value.Operation.State = tc.state
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/instance") {
+					handshake(w)
+					return
+				}
+				w.Header().Set("X-FC-Review-Queued", tc.header)
+				write(w, 200, value)
+			}))
+			defer srv.Close()
+			c := newClient(t, srv)
+			got, err := c.ReviewSelection(t.Context(), runSelectionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := client.AgentReviewSelection(got).Diagnostic
+			if (d != nil) != tc.want || d != nil && !strings.Contains(d.Explanation, "New reviews are paused for this PR") {
+				t.Fatalf("wrong scheduling guidance: %+v", d)
+			}
+		})
+	}
+}
