@@ -74,9 +74,9 @@ jobs:
     env:
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      # Pushes made with GITHUB_TOKEN do not start CI. A fine-grained token
-      # limited to this repository with contents: write lets the required
-      # checks run on the regenerated head.
+      # The pull_request run from a GITHUB_TOKEN update requires approval.
+      # A fine-grained contents: write token limited to this repository lets
+      # required checks start automatically on the regenerated head.
       HAS_PUSH_TOKEN: ${{ secrets.RENOVATE_ASSETS_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -95,16 +95,40 @@ jobs:
             exit 0
           fi
           patch="$RUNNER_TEMP/patch/browser-assets.patch"
-          outside="$(git apply --numstat "$patch" | cut -f3- | grep -v '^internal/webui/assets/' || true)"
-          if [ -n "$outside" ]; then
-            printf 'Patch touches paths outside internal/webui/assets:\n%s\n' "$outside" >&2
+          git apply --index "$patch"
+          staged_changes="$(mktemp "$RUNNER_TEMP/browser-assets-index.XXXXXX")"
+          trap 'rm -f "$staged_changes"' EXIT
+          # With renames disabled, both paths appear as separate staged changes.
+          # Raw records also include the resulting Git file mode.
+          if ! git diff --cached --raw --no-renames -z -- > "$staged_changes"; then
+            echo 'Could not list staged browser asset changes.' >&2
             exit 1
           fi
-          git apply --index "$patch"
+          if [ ! -s "$staged_changes" ]; then
+            echo 'No staged browser asset changes.' >&2
+            exit 1
+          fi
+          while IFS= read -r -d '' change && IFS= read -r -d '' path; do
+            case "$path" in
+              internal/webui/assets/*) ;;
+              *)
+                printf 'Staged path is outside internal/webui/assets: %q\n' "$path" >&2
+                exit 1
+                ;;
+            esac
+            IFS=' ' read -r _ mode _ <<< "$change"
+            case "$mode" in
+              000000|100644) ;; # Removed file or non-executable regular build output.
+              *)
+                printf 'Unexpected staged file mode %s for browser asset %q.\n' "$mode" "$path" >&2
+                exit 1
+                ;;
+            esac
+          done < "$staged_changes"
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit -m 'Regenerate embedded browser assets'
           git push origin "HEAD:refs/heads/$HEAD_REF"
           if [ "$HAS_PUSH_TOKEN" != true ]; then
-            echo 'Pushed with GITHUB_TOKEN, so CI will not start on the new head. Configure RENOVATE_ASSETS_TOKEN or re-run CI.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Pushed with GITHUB_TOKEN. A maintainer with write access should select **Approve workflows to run** on the PR for the regenerated head.' >> "$GITHUB_STEP_SUMMARY"
           fi
