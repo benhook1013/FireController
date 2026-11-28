@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/benhook1013/FireController/internal/reviewprovider"
 )
 
 func TestActivityEvidenceIsPrivateCurrentAndIdempotent(t *testing.T) {
@@ -159,7 +161,7 @@ func TestActivityEvidenceSurvivesUncertainCaptureWithoutChangingStart(t *testing
 	}
 }
 
-func TestSubmissionEstimateUsesOnlyMatchedAcknowledgedTrigger(t *testing.T) {
+func TestSubmissionEvidenceUsesOnlyMatchedAcknowledgedTrigger(t *testing.T) {
 	f, a, _, _ := incompleteHostedFixture(t)
 	tx, err := f.store.DB().BeginTx(t.Context(), nil)
 	if err != nil {
@@ -193,5 +195,86 @@ func TestSubmissionEstimateUsesOnlyMatchedAcknowledgedTrigger(t *testing.T) {
 	}
 	if got, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted"); err != nil || got != nil {
 		t.Fatal("unrelated trigger used as submission", got, err)
+	}
+}
+
+func TestHostedSubmissionEvidenceLegacyActiveAcknowledgement(t *testing.T) {
+	f, attempt, _ := hostedObservationFixture(t)
+	a, err := f.e.Advance(t.Context(), attemptProject, attempt.ID, attempt.Revision, "active", "trigger_recorded", "101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.store.DB().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	got, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted")
+	if err != nil || got == nil || got.AttemptID != a.ID || got.TriggerID != "101" || got.SubmittedAt == "" {
+		t.Fatalf("active direct request lost its original acknowledgement: %+v %v", got, err)
+	}
+}
+
+func TestHostedSubmissionEvidenceActiveAndExactReplay(t *testing.T) {
+	f, attempt, input := hostedObservationFixture(t)
+	a, err := f.e.Advance(t.Context(), attemptProject, attempt.ID, attempt.Revision, "active", "trigger_recovered", "101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() *SubmissionEvidence {
+		t.Helper()
+		tx, err := f.store.DB().BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		got, err := readSubmissionEvidence(t.Context(), tx, attemptProject, 2, "hosted")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := read(); got != nil {
+		t.Fatalf("recovery timestamp supplied by itself: %+v", got)
+	}
+	now := time.Now().UTC()
+	trigger := reviewprovider.HostedTriggerRecovery{State: "adopted", CommentID: 101, CreatedAt: now.Truncate(time.Second)}
+	record := func(anchor Anchor, trigger reviewprovider.HostedTriggerRecovery, at time.Time) error {
+		return f.e.RecordHostedSubmissionEvidence(t.Context(), attemptProject, a.ID, anchor, trigger, at)
+	}
+	if err = record(input.ExpectedAnchor, trigger, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = record(input.ExpectedAnchor, trigger, now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	want := SubmissionEvidence{AttemptID: a.ID, HeadSHA: input.ExpectedAnchor.CandidateSHA, TriggerID: "101", SubmittedAt: trigger.CreatedAt.Format(time.RFC3339Nano)}
+	if got := read(); got == nil || *got != want {
+		t.Fatalf("active request projection: got %+v, want %+v", got, want)
+	}
+	mux := http.NewServeMux()
+	f.e.Register(mux)
+	f.handler = mux
+	raw, _ := json.Marshal(progressStageChannel(t, f, "view=stages&include_activity_evidence=true", 0)["submission_evidence"])
+	var projected SubmissionEvidence
+	if err := json.Unmarshal(raw, &projected); err != nil || projected != want {
+		t.Fatalf("private progress omitted active request: %s %v", raw, err)
+	}
+	if got := progressStageChannel(t, f, "view=stages", 0)["submission_evidence"]; got != nil {
+		t.Fatal("request timing leaked outside opt-in progress", got)
+	}
+	changed := trigger
+	changed.CreatedAt = changed.CreatedAt.Add(-time.Second)
+	if err = record(input.ExpectedAnchor, changed, now); err == nil {
+		t.Fatal("conflicting original timestamp replaced the retained receipt")
+	}
+	changed = trigger
+	changed.CommentID++
+	if err = record(input.ExpectedAnchor, changed, now); err == nil {
+		t.Fatal("accepted unrelated trigger")
+	}
+	var events int
+	if err := f.store.DB().QueryRow(`SELECT count(*) FROM events WHERE event_type='review.activity_observed' AND resource_id=?`, a.ID).Scan(&events); err != nil || events != 1 {
+		t.Fatalf("submission published %d refresh events: %v", events, err)
 	}
 }

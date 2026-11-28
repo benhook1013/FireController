@@ -209,6 +209,15 @@ func observeHostedAttempt(ctx context.Context, reader HostedRecoveryReader, capt
 	}
 	captured, err := RetainHosted(ctx, captures, engine, attempt, retained)
 	if err != nil || !captured.Complete {
+		// On a pending result, backfill even when this pass reused identical
+		// source. Successful repeats need no diagnostic write transaction.
+		if bound.SubmissionAt != trigger.CreatedAt.Format(time.RFC3339Nano) {
+			defer func() {
+				if result.State == "active" || result.State == "uncertain" {
+					_ = engine.RecordHostedSubmissionEvidence(ctx, project, attempt.ID, anchor, trigger, retained.Snapshot.ObservedAt)
+				}
+			}()
+		}
 		result.Reason = captured.Reason
 		if err == nil && captured.rejectionState != "" {
 			result.State = captured.rejectionState

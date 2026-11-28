@@ -234,8 +234,10 @@ type tableVersion struct {
 
 // Fixed application schema bounds are intentionally independent of migration
 // execution. Inspection never opens a Store or installs/rewrites a schema.
-var supportedDomains = map[string]int{"review_hosted_request_times": 1, "review_queue_priority": 1, "review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "project_tracking": 1, "jobs": 9, "inbox": 2, "review_notifications": 1, "review_retention_indexes": 1, "reviews": 13, "review_policy": 2, "review_execution": 12, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 6, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
+var supportedDomains = map[string]int{"review_hosted_submission_evidence": 1, "review_hosted_request_times": 1, "review_queue_priority": 1, "review_intent_rebindings": 1, "review_selection_decision_history": 1, "review_hosted_continuations": 1, "review_source_retries": 2, "worker_retirements": 1, "review_scheduling": 2, "project_management": 1, "project_handles": 1, "review_adoption_obligations": 2, "coordination_import": 2, "history_collection": 1, "public_site": 1, "project_presentation": 1, "operator_variables": 1, "project_map": 3, "project_tracking": 1, "jobs": 9, "inbox": 2, "review_notifications": 1, "review_retention_indexes": 1, "reviews": 13, "review_policy": 2, "review_execution": 12, "review_execution_indexes": 3, "review_source_refusals": 4, "review_evidence": 6, "review_adjudication": 2, "review_source_refresh": 3, "review_checkpoint_publication": 1, "review_comparison": 2, "review_applicability": 1, "review_route_policy": 2, "review_rounds": 6, "review_round_adoption": 1, "review_selection": 1, "review_fronts": 1, "managed_backups": 1, "managed_backup_publications": 1, "recovery_history": 1}
 var tables = map[string]tableVersion{
+	"review_hosted_submission_evidence": {"review_hosted_submission_evidence", 1, "attempt_id project_id head_sha trigger_id submitted_at observed_at"},
+
 	"review_queue_priority":             {"review_queue_priority", 1, "project_id revision pulls_json"},
 	"connector_credentials":             {"", 4, "credential_id project_id worker_id"},
 	"review_scheduling":                 {"review_scheduling", 1, "project_id revision automatic_hosted actor_id worker_id credential_id updated_at"},
@@ -708,6 +710,12 @@ func validateSchema(ctx context.Context, db sqlReader, allowInactive bool) (map[
 			if contextErr := checkContext(ctx); contextErr != nil {
 				return nil, contextErr
 			}
+			return nil, err
+		}
+	}
+	if versions["review_hosted_submission_evidence"] > 0 {
+		const table = "review_hosted_submission_evidence"
+		if err = validatePhysicalSchemaObjects(ctx, db, map[string]physicalSchemaObject{table: {"table", historyDefinitionSQL(reviewexec.HostedSubmissionEvidenceTableSQL)}}, []string{table}); err != nil {
 			return nil, err
 		}
 	}
@@ -1520,6 +1528,14 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 			return invalid()
 		}
 	}
+	if versions["review_hosted_submission_evidence"] > 0 {
+		if err := reviewexec.ValidateHostedSubmissionEvidenceSnapshot(ctx, tx); err != nil {
+			if checkContext(ctx) != nil {
+				return unavailable()
+			}
+			return invalid()
+		}
+	}
 	return checkContext(ctx)
 }
 func reference(refs map[string]Artifact, attempt, captureID, hash string, size int64, hosted bool) bool {
@@ -1914,6 +1930,8 @@ func canonicalFK(table, from, to, onDelete string) foreignKey {
 }
 
 var canonicalForeignKeys = map[string][]foreignKey{
+	"review_hosted_submission_evidence": {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("review_execution_attempts", "attempt_id", "id", "NO ACTION")},
+
 	"review_pr_followers":               {canonicalFK("projects", "project_id", "id", "NO ACTION"), canonicalFK("workers", "project_id,worker_id", "project_id,id", "NO ACTION")},
 	"review_queue_priority":             {canonicalFK("projects", "project_id", "id", "NO ACTION")},
 	"review_scheduling":                 {canonicalFK("projects", "project_id", "id", "NO ACTION")},

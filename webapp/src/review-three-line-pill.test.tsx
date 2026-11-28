@@ -328,8 +328,8 @@ it('keeps a verified Hosted request visible while scheduled observation takes ov
  const requested = { ...attempt, channel: 'hosted' as const, source_run_id: '', trigger_id: '42' };
  const pending = { ...requested, state: 'uncertain' as const, reason: 'hosted_observation_pending' };
  const current = { ...progress, channel: 'hosted' as const };
- const render = (holder: ReviewAttemptSummary, activity_evidence?: ReviewRoundProgress['activity_evidence']) =>
-  markup([], [requested], { ...current, activity_evidence }, undefined, { pull_number: 78, attempt: holder });
+ const render = (holder: ReviewAttemptSummary, activity_evidence?: ReviewRoundProgress['activity_evidence'], submission_evidence?: ReviewRoundProgress['submission_evidence']) =>
+  markup([], [requested], { ...current, activity_evidence, submission_evidence }, undefined, { pull_number: 78, attempt: holder });
  const processing = {
   kind: 'hosted_processing_observed' as const, attempt_id: requested.source_attempt_id, head_sha: head,
   trigger_id: '42', observed_at: stamp, comment_updated_at: stamp, source_comment_id: 43,
@@ -337,10 +337,23 @@ it('keeps a verified Hosted request visible while scheduled observation takes ov
  };
  for (const html of [render(requested), render(pending), render(pending, { ...processing, trigger_id: '43' })]) {
   expect(html).toContain('review-pill-status">Requested');
+  expect(html).toContain('title="Start time unknown">—');
   expect(html).not.toMatch(/Needs attention|Check attempt|review-pill-status">Running/u);
+ }
+ const submission = { attempt_id: requested.source_attempt_id, head_sha: head, trigger_id: '42', submitted_at: '2026-11-15T05:34:52Z' };
+ for (const holder of [requested, pending]) {
+  const html = render(holder, undefined, submission);
+  expect(html).toMatch(/review-pill-status">Requested<\/span><time[^>]*dateTime="2026-11-15T05:34:52Z"[^>]*title="Requested: /u);
+ }
+ for (const wrong of [{ ...submission, attempt_id: `review_attempt_${'b'.repeat(32)}` }, { ...submission, head_sha: 'b'.repeat(40) }, { ...submission, trigger_id: '43' }]) {
+  expect(render(requested, undefined, wrong)).toContain('title="Start time unknown">—');
  }
  expect(markup([], [pending], current)).toContain('hosted execution: Requested');
  expect(render(pending, processing)).toContain('review-pill-status">Running');
+ const observedAt = '2026-11-15T05:35:11Z';
+ const running = render(pending, { ...processing, observed_at: observedAt }, submission);
+ expect(running).toContain(`dateTime="${observedAt}" title="Assumed start (CodeRabbit activity seen): `);
+ expect(running).not.toContain(`dateTime="${submission.submitted_at}"`);
  expect(render({ ...pending, reason: 'trigger_post_unproven' })).toContain('review-pill-status">Needs attention');
  expect(render({ ...pending, trigger_id: '' })).toContain('review-pill-status">Needs attention');
 });

@@ -364,13 +364,17 @@ func (d *HostedDriver) Dispatch(ctx context.Context, operation reviewexec.Operat
 		}
 		return reviewexec.Result{State: "uncertain", Reason: "trigger_post_unproven"}, nil
 	}
-	trigger, err := reviewprovider.RecoverHostedTrigger([]reviewprovider.IssueComment{comment}, true, intent, prepared.postingActor, bound.EarliestPosting, time.Now().UTC())
+	observedAt := time.Now().UTC()
+	trigger, err := reviewprovider.RecoverHostedTrigger([]reviewprovider.IssueComment{comment}, true, intent, prepared.postingActor, bound.EarliestPosting, observedAt)
 	if err != nil || trigger.State != "adopted" {
 		return reviewexec.Result{State: "uncertain", Reason: "trigger_post_unproven"}, nil
 	}
 	externalID := strconv.FormatInt(trigger.CommentID, 10)
 	retentionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = recordTrigger(retentionCtx, externalID)
+	if err == nil {
+		_ = d.engine.RecordHostedSubmissionEvidence(retentionCtx, operation.ProjectID, attempt.ID, *attempt.Anchor, trigger, observedAt)
+	}
 	cancel()
 	if err != nil {
 		return reviewexec.Result{State: "uncertain", Reason: "trigger_recording_pending", ExternalID: externalID}, nil

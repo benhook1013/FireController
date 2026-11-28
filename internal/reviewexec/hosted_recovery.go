@@ -18,6 +18,7 @@ type HostedRecoveryContext struct {
 	Attempt         Attempt
 	EarliestPosting time.Time
 	EvidenceID      string
+	SubmissionAt    string
 }
 
 func hostedRecoveryUnavailable() error {
@@ -42,7 +43,12 @@ func (e *Engine) ReadHostedRecovery(ctx context.Context, project, attemptID, cap
 			return err
 		}
 		var configBody string
-		err = tx.QueryRowContext(ctx, `SELECT body_json FROM review_execution_config WHERE project_id=? AND revision=?`, project, o.ConfigurationRevision).Scan(&configBody)
+		var submissionAt sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT c.body_json,
+			(SELECT s.submitted_at FROM review_hosted_submission_evidence s
+			 WHERE s.attempt_id=? AND s.project_id=c.project_id AND s.head_sha=? AND s.trigger_id=?)
+			FROM review_execution_config c WHERE c.project_id=? AND c.revision=?`,
+			a.ID, o.HeadSHA, a.ExternalID, project, o.ConfigurationRevision).Scan(&configBody, &submissionAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return hostedRecoveryUnavailable()
 		}
@@ -68,7 +74,7 @@ func (e *Engine) ReadHostedRecovery(ctx context.Context, project, attemptID, cap
 		if err != nil {
 			return err
 		}
-		result = HostedRecoveryContext{Operation: o, Attempt: a, EarliestPosting: admittedAt.Truncate(time.Second), EvidenceID: evidenceID}
+		result = HostedRecoveryContext{Operation: o, Attempt: a, EarliestPosting: admittedAt.Truncate(time.Second), EvidenceID: evidenceID, SubmissionAt: submissionAt.String}
 		return nil
 	})
 	if err != nil {

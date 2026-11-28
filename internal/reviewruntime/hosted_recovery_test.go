@@ -99,6 +99,39 @@ func recoverRuntime(t *testing.T, f *cliEvidenceFixture, captures *HostedCapture
 	return RecoverHosted(t.Context(), reader, captures, f.engine, f.project, a.ID, "runtime-capability", reader.record.PostingActor, reader.record.ProviderActor)
 }
 
+func TestHostedRecoveryBackfillsSubmissionEvidenceWithReusedCapture(t *testing.T) {
+	f, captures, attempt, reader := recoveryRuntimeFixture(t, "posting")
+	reader.record.Snapshot.Reviews = []reviewprovider.HostedReview{}
+	reader.record.Snapshot.ReviewComments = []reviewprovider.ReviewComment{}
+	legacy, _, err := retainHostedObservation(t.Context(), captures, f.engine, attempt, reader.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err = f.engine.Advance(t.Context(), f.project, attempt.ID, attempt.Revision, "active", "trigger_recovered", "100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := reader.record.Snapshot.IssueComments[0].CreatedAt.Format(time.RFC3339Nano)
+	beforeTransitions := recoveryRuntimeCount(t, f, "review_execution_transitions")
+	for pass := 0; pass < 2; pass++ {
+		got, err := recoverRuntime(t, f, captures, attempt, reader)
+		if err != nil || got.State != "active" || got.TriggerCommentID != 100 || got.EvidenceID != "" {
+			t.Fatalf("expected original issued request still waiting: %+v %v", got, err)
+		}
+	}
+	refs, err := f.engine.ReadHostedObservations(t.Context(), f.project, attempt.ID)
+	if err != nil || len(refs) != 1 || refs[0].Input.CaptureSHA256 != legacy.Capture.SHA256 ||
+		recoveryRuntimeCount(t, f, "review_execution_transitions") != beforeTransitions ||
+		recoveryRuntimeCount(t, f, "review_execution_evidence") != 0 ||
+		recoveryRuntimeCount(t, f, "review_hosted_submission_evidence") != 1 {
+		t.Fatalf("diagnostic changed retained source or execution: %+v %v", refs, err)
+	}
+	var recorded string
+	if err := f.store.DB().QueryRow(`SELECT submitted_at FROM review_hosted_submission_evidence WHERE attempt_id=?`, attempt.ID).Scan(&recorded); err != nil || recorded != original {
+		t.Fatalf("expected original request %s, got %s: %v", original, recorded, err)
+	}
+}
+
 func recoveryRuntimeCount(t *testing.T, f *cliEvidenceFixture, table string) int {
 	t.Helper()
 	var n int

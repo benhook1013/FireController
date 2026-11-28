@@ -509,12 +509,14 @@ function RunningReviewPill({ evidence, attemptID, channel, attention, submittedA
   const cli = evidence?.kind === 'cli_process_spawned';
   const date = evidence ? (evidence.kind === 'cli_process_spawned' ? evidence.process_started_at : evidence.observed_at) : submittedAt;
   const estimated = !evidence && !!submittedAt;
-  const timing = !date ? 'Start time unknown' : estimated ? `Estimated start (request submission acknowledged) ${time(date)}` : cli ? `CLI started ${time(date)}` : `Assumed start (CodeRabbit activity seen) ${time(date)}`;
+  const timeLabel = evidence ? (cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)')
+    : awaitingStart ? 'Requested' : 'Estimated start (request submission acknowledged)';
+  const timing = date ? `${timeLabel} ${time(date)}` : 'Start time unknown';
   const description = importIncomplete ? `${attention} Finding count unverified. ${timing}.` : `${channel === 'cli' ? 'CLI' : 'Hosted'} ${attention ? 'review needs attention. ' + attention : awaitingStart ? 'review requested. Waiting for a start signal.' : 'review running.'} Counts pending. ${timing}.`;
   const instanceID = useId();
   const detailID = `review-attention-${attemptID}-${instanceID}`;
   return <><ReviewRoundPillDisplay found="?" accepted="?" routed="?" className={attention ? "review-pill-partial" : awaitingStart ? undefined : "review-pill-running"} status={importIncomplete ? "Import incomplete" : attention ? "Needs attention" : awaitingStart ? "Requested" : "Running"} title={description} label={description} wrap={content => attention ? <button {...content} type="button" popoverTarget={detailID} /> : <span {...content} role="img" />}>
-    {date ? estimated ? <span className="review-pill-age">~ <RelativeTime value={date} label="Estimated start (request submission acknowledged)" /></span> : <RelativeTime value={date} label={cli ? 'CLI started' : 'Assumed start (CodeRabbit activity seen)'} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
+    {date ? estimated && !awaitingStart ? <span className="review-pill-age">~ <RelativeTime value={date} label={timeLabel} /></span> : <RelativeTime value={date} label={timeLabel} /> : <span className="review-pill-age" title="Start time unknown">—</span>}
   </ReviewRoundPillDisplay>{attention && <div id={detailID} popover="auto" className="review-attention-detail"><p>{description}</p><button type="button" popoverTarget={detailID} popoverTargetAction="hide">Close</button></div>}</>;
 }
 const laneAttemptLabels: Partial<Record<string, { text?: string; tone?: 'active' | 'alert' }>> = {
@@ -562,7 +564,7 @@ function ReviewLane({ number, channel, title, runs, attempts, snapshot, head, lo
   const finishedUncaptured = !historical && !returned && attempt?.channel === 'hosted' &&
     attempt.state === 'uncertain' && attempt.reason === 'hosted_finished_inventory_unproven' && /^[1-9]\d*$/.test(attempt.trigger_id);
   const submission = progress?.submission_evidence;
-  const submittedAt = !historical && status?.text === 'Import incomplete' && submission && validSubmissionEvidence(submission) &&
+  const submittedAt = !historical && (holder && status?.kind !== 'attention' || status?.text === 'Import incomplete') && submission && validSubmissionEvidence(submission) &&
     submission.attempt_id === attempt?.source_attempt_id && submission.head_sha === attempt.head_sha && submission.trigger_id === attempt.trigger_id
     ? submission.submitted_at : undefined;
   const attemptPill = !!holder || !!running || finishedUncaptured;
