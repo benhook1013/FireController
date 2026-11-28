@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/benhook1013/FireController/internal/core"
+	"github.com/benhook1013/FireController/internal/reviewexec"
 )
 
 const restoreMarker = ".restore-in-progress"
@@ -243,6 +244,16 @@ func restoreIdentity(ctx context.Context, dir string, m Manifest, id, key string
 	if _, err = tx.ExecContext(ctx, `UPDATE credentials SET revoked=1`); err != nil {
 		return unavailable()
 	}
+	if err = reviewexec.RestoreHistoricalPullResumes(ctx, tx); err != nil {
+		if interrupted := checkContext(ctx); interrupted != nil {
+			return interrupted
+		}
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Code == "storage_unavailable" {
+			return historicalResumeRestoreError{public: invalid(), cause: err}
+		}
+		return historicalResumeRestoreError{public: unavailable(), cause: err}
+	}
 	if err = tx.Commit(); err != nil {
 		return unavailable()
 	}
@@ -317,3 +328,10 @@ func restoreParent(path string) error {
 		path = next
 	}
 }
+
+// historicalResumeRestoreError preserves the operational cause without exposing
+// storage internals through the public restore message.
+type historicalResumeRestoreError struct{ public, cause error }
+
+func (e historicalResumeRestoreError) Error() string   { return e.public.Error() }
+func (e historicalResumeRestoreError) Unwrap() []error { return []error{e.public, e.cause} }

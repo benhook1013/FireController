@@ -16,6 +16,7 @@ type RunRequest struct {
 	Channel                       string `json:"channel"`
 	ExpectedPullNumber            *int64 `json:"expected_pull_number,omitempty"`
 	ExpectedConfigurationRevision *int64 `json:"expected_configuration_revision,omitempty"`
+	origin                        string
 }
 type Run struct {
 	ID                    string `json:"id"`
@@ -40,7 +41,7 @@ const runColumns = `id,project_id,actor_id,worker_id,channel,configuration_revis
 func validRunID(id string) bool    { return hostedObservationID(id, "review_selection_") }
 func runPending(state string) bool { return state == "queued" || state == "selecting" }
 func runUnavailable() error {
-	return core.Fail("storage_unavailable", "Stored review selection is unavailable.", 500)
+	return automaticProjectStateFailure("storage_unavailable", "Stored review selection is unavailable.", 500)
 }
 func validRun(r Run) bool {
 	created, e1 := time.Parse(time.RFC3339Nano, r.CreatedAt)
@@ -62,9 +63,12 @@ func validRun(r Run) bool {
 }
 func readRun(ctx context.Context, q EvidenceQuery, project, id string) (Run, error) {
 	var r Run
-	err := q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM review_selections WHERE project_id=? AND id=?`, project, id).Scan(&r.ID, &r.ProjectID, &r.ActorID, &r.WorkerID, &r.Channel, &r.ConfigurationRevision, &r.PolicyRevision, &r.CapabilityFingerprint, &r.ExpectedPullNumber, &r.State, &r.Reason, &r.Revision, &r.OperationID, &r.CreatedAt, &r.UpdatedAt)
+	err := scanRoundValues(q.QueryRowContext(ctx, `SELECT `+runColumns+` FROM review_selections WHERE project_id=? AND id=?`, project, id), &r.ID, &r.ProjectID, &r.ActorID, &r.WorkerID, &r.Channel, &r.ConfigurationRevision, &r.PolicyRevision, &r.CapabilityFingerprint, &r.ExpectedPullNumber, &r.State, &r.Reason, &r.Revision, &r.OperationID, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, core.Fail("not_found", "The review selection is unavailable in this project.", 404)
+	}
+	if automaticProjectRefused(err) {
+		return Run{}, runUnavailable()
 	}
 	if err != nil {
 		return r, err
@@ -85,7 +89,7 @@ func readRun(ctx context.Context, q EvidenceQuery, project, id string) (Run, err
 			return Run{}, err
 		}
 		if child.ActorID != r.ActorID || child.WorkerID != r.WorkerID || child.Channel != r.Channel || child.ConfigurationRevision != r.ConfigurationRevision || child.PolicyRevision != r.PolicyRevision || child.CapabilityFingerprint != r.CapabilityFingerprint || r.ExpectedPullNumber != 0 && child.PullNumber != r.ExpectedPullNumber {
-			return Run{}, runUnavailable()
+			return Run{}, &operationSelectionBindingStateError{runUnavailable()}
 		}
 	}
 	return r, nil
@@ -114,6 +118,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 		v := *input.ExpectedConfigurationRevision
 		input.ExpectedConfigurationRevision = &v
 	}
+	input.origin = selectionOriginExplicit
 	out, err := e.store.Mutate(ctx, scope, core.Mutation{Operation: "reviews.run", Target: "channel-selection", Key: key, Request: input}, func(ctx context.Context, tx *sql.Tx) (any, error) {
 		return e.enqueueRunTx(ctx, tx, scope, input)
 	})
@@ -126,7 +131,7 @@ func (e *Engine) EnqueueRun(ctx context.Context, scope core.Scope, key string, i
 	return out, err
 }
 
-// enqueueRunTx accepts one explicit durable selection.
+// enqueueRunTx is shared by explicit requests and the reauthorized automatic coordinator.
 func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope, input RunRequest) (Receipt, error) {
 	c, revision, err := readConfiguration(ctx, tx, scope.ProjectID)
 	if err != nil {
@@ -184,13 +189,23 @@ func (e *Engine) enqueueRunTx(ctx context.Context, tx *sql.Tx, scope core.Scope,
 	if err != nil {
 		return Receipt{}, err
 	}
-	if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, map[string]any{"channel": input.Channel}); err != nil {
+	if err = core.AppendEvent(ctx, tx, scope, "review.selection_requested", id, 1, selectionRequestedEvent{Channel: input.Channel, Origin: input.origin, WorkerID: scope.WorkerID}); err != nil {
 		return Receipt{}, err
 	}
 	return Receipt{ID: id, State: "queued", Revision: 1}, nil
 }
 
 func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configuration, int64, string, error) {
+	if err := e.requireAutomaticRun(ctx, tx, r); err != nil {
+		var failure *core.Error
+		if errors.As(err, &failure) && failure.Status == 403 {
+			return Configuration{}, 0, "automation_authorization_changed", nil
+		}
+		return Configuration{}, 0, "", err
+	}
+	if reason, err := automaticSourceRecoveryFence(ctx, tx, r); err != nil || reason != "" {
+		return Configuration{}, 0, reason, err
+	}
 	c, revision, err := readConfiguration(ctx, tx, r.ProjectID)
 	if err != nil {
 		return c, 0, "", err
@@ -220,8 +235,32 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
 		return c, 0, "repository_changed", nil
 	}
 	var busy bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('queued','preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations o
+ WHERE o.project_id=? AND o.channel=? AND o.state IN ('queued','preparing','posting','active','uncertain')
+ AND NOT (o.channel='hosted' AND o.state='queued' AND EXISTS(SELECT 1 FROM review_pull_scheduling p
+   WHERE p.project_id=o.project_id AND p.pull_number=o.pull_number AND typeof(p.paused)='integer' AND p.paused=1)))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
+	}
+	if !busy && r.Channel == "hosted" {
+		// The SQL predicate is only a shortlist. A queued operation
+		// may yield its turn only on a fully validated pull pause.
+		busy, err = unprovedQueuedHostedPause(ctx, tx, r.ProjectID)
+		if err != nil {
+			return c, 0, "", err
+		}
+	}
+	if busy {
+		var automatic bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, r.ProjectID, r.ID).Scan(&automatic); err != nil {
+			return c, 0, "", err
+		}
+		if automatic {
+			// Existing queued requests retain their turn; automatic front
+			// evaluation considers only the prefix before the earliest one.
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_operations WHERE project_id=? AND channel=? AND state IN ('preparing','posting','active','uncertain'))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
+				return c, 0, "", err
+			}
+		}
 	}
 	if busy {
 		return c, repository, "review_inflight", nil
@@ -263,15 +302,18 @@ func updateRunAt(ctx context.Context, tx *sql.Tx, r Run, state, reason, operatio
 func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 	var changed []string
 	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT project_id,id FROM review_selections WHERE state='selecting' ORDER BY id LIMIT 257`)
+		rows, err := tx.QueryContext(ctx, `SELECT project_id,id,`+selectionClaimRevision+` FROM review_selections WHERE state='selecting' ORDER BY id LIMIT 257`)
 		if err != nil {
 			return err
 		}
-		type key struct{ p, id string }
+		type key struct {
+			p, id    any
+			revision int64
+		}
 		var keys []key
 		for rows.Next() {
 			var k key
-			if err = rows.Scan(&k.p, &k.id); err != nil {
+			if err = rows.Scan(&k.p, &k.id, &k.revision); err != nil {
 				rows.Close()
 				return err
 			}
@@ -286,11 +328,45 @@ func (e *Engine) RecoverReviewRuns(ctx context.Context) error {
 			return runUnavailable()
 		}
 		for _, k := range keys {
-			r, err := readRun(ctx, tx, k.p, k.id)
+			project, projectOK := k.p.(string)
+			id, idOK := k.id.(string)
+			if !projectOK || !idOK {
+				if _, err := quarantineNativeSelection(ctx, tx, k.p, k.id, "selecting", k.revision); err != nil && !selectionCustodyUnproved(err) {
+					return err
+				}
+				continue
+			}
+			r, err := readRun(ctx, tx, project, id)
+			if automaticProjectRefused(err) || err == nil && r.Revision == math.MaxInt64 {
+				didChange, err := quarantineSelection(ctx, tx, Run{ProjectID: project, ID: id, State: "selecting", Revision: k.revision})
+				if selectionCustodyUnproved(err) {
+					// Only the pre-write row-local refusal is isolated. Keep
+					// the original link intact and recover other rows.
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if didChange {
+					changed = append(changed, id)
+				}
+				continue
+			}
 			if err != nil {
 				return err
 			}
-			if err = updateRun(ctx, tx, r, "queued", "", ""); err != nil {
+			state, reason := "queued", ""
+			if _, err := automaticSelectionBinding(ctx, tx, r); automaticProjectRefused(err) {
+				state = "held"
+				var holdErr error
+				reason, holdErr = selectionLocalHoldReason(ctx, tx, r)
+				if holdErr != nil {
+					return holdErr
+				}
+			} else if err != nil {
+				return err
+			}
+			if err = updateRun(ctx, tx, r, state, reason, ""); err != nil {
 				return err
 			}
 			changed = append(changed, r.ID)
@@ -390,7 +466,7 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	present, err := restoredDomain(ctx, tx, "review_selection", "review_selections", "1")
+	present, err := restoredDomain(ctx, tx, "review_selection", "review_selections", "1", "2")
 	if err != nil || !present {
 		return 0, err
 	}
@@ -432,4 +508,136 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 		}
 	}
 	return int64(len(selected)), nil
+}
+
+func unprovedQueuedHostedPause(ctx context.Context, tx *sql.Tx, project string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT pull_number FROM review_operations
+	 WHERE project_id=? AND channel='hosted' AND state='queued' ORDER BY pull_number LIMIT 101`, project)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var pulls []int64
+	for rows.Next() {
+		var pull int64
+		if err := rows.Scan(&pull); err != nil {
+			return false, err
+		}
+		pulls = append(pulls, pull)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(pulls) > 100 {
+		return true, nil
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	for _, pull := range pulls {
+		s, err := readPullScheduling(ctx, tx, project, pull)
+		if err != nil {
+			var invalid *pullSchedulingStateError
+			if errors.As(err, &invalid) {
+				return true, nil
+			}
+			return false, err
+		}
+		if !s.Paused {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// A corrupt revision is an opaque retained value, never an arithmetic operand.
+const selectionClaimRevision = `CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision ELSE 0 END`
+
+// Quarantine only the observed pending row. Never reinterpret a retained
+// live child as an explicit operation after removing its selection binding.
+func quarantineSelection(ctx context.Context, tx *sql.Tx, expected Run) (bool, error) {
+	return quarantineNativeSelection(ctx, tx, expected.ProjectID, expected.ID, expected.State, expected.Revision)
+}
+
+// Unproved custody is classified only before any selection writes. It may
+// isolate a startup rebuild row, never a failed query or post-write error.
+type unprovedSelectionCustodyError struct{ error }
+
+func (e *unprovedSelectionCustodyError) Unwrap() error { return e.error }
+func selectionCustodyUnproved(err error) bool {
+	var refusal *unprovedSelectionCustodyError
+	return errors.As(err, &refusal)
+}
+func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any, state string, revision int64) (bool, error) {
+	if state != "queued" && state != "selecting" {
+		return false, nil
+	}
+	const observed = ` WHERE project_id=? AND id=? AND state=? AND ` + selectionClaimRevision + `=?`
+	var originalLink, originalRevision any
+	err := tx.QueryRowContext(ctx, `SELECT operation_id,revision FROM review_selections`+observed, project, id, state, revision).Scan(&originalLink, &originalRevision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	linkGuard := ` AND operation_id IS NULL`
+	holdReason := "local_read_unavailable"
+	args := []any{project, id, state, revision}
+	if originalLink != nil {
+		// Preserve only positively typed same-project custody. A missing
+		// child is valid diagnostic history; it cannot support a settled
+		// automatic binding or confer operation authority.
+		pid, projectOK := project.(string)
+		sid, selectionOK := id.(string)
+		op, linkOK := originalLink.(string)
+		native, revisionOK := originalRevision.(int64)
+		if !projectOK || !identifier.MatchString(pid) || !selectionOK || !validRunID(sid) ||
+			!linkOK || !identifier.MatchString(op) || !revisionOK || native < 1 {
+			return false, &unprovedSelectionCustodyError{runUnavailable()}
+		}
+		// A retained child must still match the original immutable binding.
+		// Refuse foreign or inconsistent provenance rather than moving that
+		// record into a project where an unrelated operation could be held.
+		var inconsistent bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		  SELECT 1 FROM review_selections s JOIN review_operations o ON o.id=s.operation_id
+		  WHERE s.id=? AND s.project_id=? AND
+		    (o.project_id<>s.project_id OR o.actor_id<>s.actor_id OR o.worker_id<>s.worker_id OR
+		     o.channel<>s.channel OR o.configuration_revision<>s.configuration_revision OR
+		     o.policy_revision<>s.policy_revision OR o.capability_fingerprint<>s.capability_fingerprint OR
+		     (s.expected_pull_number<>0 AND o.pull_number<>s.expected_pull_number))
+		  UNION ALL
+		  SELECT 1 FROM review_selections s JOIN review_automatic_selections a ON a.selection_id=s.id
+		  LEFT JOIN review_operations o ON o.id=s.operation_id WHERE s.id=? AND s.project_id=? AND
+		    (a.project_id<>s.project_id OR a.actor_id<>s.actor_id OR a.worker_id<>s.worker_id OR
+		     typeof(a.pull_number)<>'integer' OR a.pull_number<0 OR a.pull_number>2147483647 OR
+		     (a.pull_number<>0 AND (o.id IS NULL OR o.pull_number<>a.pull_number)) OR
+		     (a.pull_number=0 AND a.pull_basis_sha256<>''))
+		)`, sid, pid, sid, pid).Scan(&inconsistent); err != nil {
+			return false, err
+		}
+		if inconsistent {
+			return false, &unprovedSelectionCustodyError{runUnavailable()}
+		}
+		// Preserve the observed exact link without copying child or credential
+		// state. The outer transaction rolls this back if the hold fails.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO review_selection_quarantine
+		  (selection_id,project_id,original_operation_id,original_state,observed_revision) VALUES(?,?,?,?,?)`, sid, pid, op, state, native); err != nil {
+			return false, err
+		}
+		holdReason = "linked_selection_quarantined"
+		linkGuard = ` AND operation_id=?`
+		args = append(args, op)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',reason=?,operation_id=NULL,
+	  revision=CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision+1 ELSE revision END`+observed+linkGuard, append([]any{holdReason}, args...)...)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n != 1 && originalLink != nil {
+		return false, runUnavailable()
+	}
+	return n == 1, err
 }

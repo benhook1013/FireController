@@ -95,6 +95,20 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Wait != nil && (o.Wait.Paused || o.Wait.RetryNotBefore != "" && now.Before(mustWaitTime(o.Wait.RetryNotBefore))) {
 			return nil
 		}
+		scheduling, err := readPullScheduling(ctx, tx, project, o.PullNumber)
+		if err != nil {
+			return err
+		}
+		if scheduling.Paused {
+			return nil
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			var failure *core.Error
+			if errors.As(err, &failure) && failure.Status == 403 {
+				return nil
+			}
+			return err
+		}
 		at, err := attemptRecordingStamp(ctx, tx, o, nil, e.sampleAttemptTime())
 		if err != nil {
 			return err
@@ -159,6 +173,15 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Reason == cliDraftWait && o.Revision != draftReadyRevision {
 			return nil
 		}
+		if o.Channel == "cli" {
+			var dirty bool
+			if err := tx.QueryRowContext(ctx, "SELECT "+comparisonDirtyExists, project, o.PullNumber, o.Channel).Scan(&dirty); err != nil {
+				return err
+			}
+			if dirty {
+				return &automaticProjectStateError{adjudicationStorageError()}
+			}
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}
@@ -220,11 +243,20 @@ func readAttempt(ctx context.Context, tx EvidenceQuery, project, id string) (Att
 // Admit persists the exact comparison and external intent before the adapter
 // may post or start its command. The caller owns fresh queue/allowance proof.
 func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision int64, anchor Anchor, intent string) (Attempt, error) {
+	return e.admit(ctx, project, id, expectedRevision, anchor, intent, false)
+}
+
+type preparedCLIAdmissionRefusal struct{ error }
+
+func (e *preparedCLIAdmissionRefusal) Unwrap() error { return e.error }
+
+func (e *Engine) admit(ctx context.Context, project, id string, expectedRevision int64, anchor Anchor, intent string, settlePreparedCLI bool) (Attempt, error) {
 	observed, err := time.Parse(time.RFC3339Nano, anchor.ObservedAt)
 	if err != nil || time.Since(observed) > time.Minute || observed.After(time.Now().Add(5*time.Second)) || anchor.RepositoryID <= 0 || anchor.ParentPullNumber < 0 || anchor.ParentPullNumber > 2147483647 || !safeText(anchor.BaseRef, 256) || anchor.BaseRef == "" || !repository.MatchString(anchor.Repository) || !sha.MatchString(anchor.CandidateSHA) || !sha.MatchString(anchor.BaseSHA) || !sha.MatchString(anchor.ParentSHA) || !sha.MatchString(anchor.MergeBaseSHA) || !hash.MatchString(anchor.PatchSHA256) || !safeText(intent, 4096) {
 		return Attempt{}, invalid()
 	}
 	var result Attempt
+	var handlingPreparedRefusal bool
 	err = e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		a, err := readAttempt(ctx, tx, project, id)
 		if err != nil {
@@ -239,6 +271,27 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		if anchor.PullNumber != o.PullNumber || anchor.CandidateSHA != o.HeadSHA {
 			return conflict()
+		}
+		// Preparation may have overlapped a PR pause or a withdrawal of the
+		// automatic intent's authority. Recheck in this admission transaction,
+		// before recording a possibly issued action.
+		if err := requirePullScheduling(ctx, tx, project, o.PullNumber); err != nil {
+			return err
+		}
+		if err := e.requireAutomaticOperation(ctx, tx, o); err != nil {
+			// Only a proved malformed selection-to-operation link can
+			// release this unused preparation here. Other retained-state and
+			// custody refusals keep their original classification.
+			var binding *operationSelectionBindingStateError
+			if errors.As(err, &binding) {
+				return &schedulingStateError{err}
+			}
+			var schedulingHistory *schedulingHistoryUnavailable
+			if settlePreparedCLI && o.Channel == "cli" && intent == "" && !schedulingRefused(err) && errors.As(err, &schedulingHistory) {
+				handlingPreparedRefusal = true
+				result, err = e.settleCLIAdmissionRefusal(ctx, tx, o, a, anchor, err)
+			}
+			return err
 		}
 		if err := requireSourceObligationsClear(ctx, tx, project, o.PullNumber); err != nil {
 			return err
@@ -271,6 +324,10 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 		}
 		_, reason, err := boundPolicy(ctx, tx, o)
 		if err != nil {
+			if settlePreparedCLI && o.Channel == "cli" && intent == "" && isStoredUnavailable(err, storedPolicyHistory) {
+				handlingPreparedRefusal = true
+				result, err = e.settleCLIAdmissionRefusal(ctx, tx, o, a, anchor, err)
+			}
 			return err
 		}
 		if reason != "" {
@@ -313,8 +370,110 @@ func (e *Engine) Admit(ctx context.Context, project, id string, expectedRevision
 	})
 	if err == nil {
 		e.notifyOperation(result.OperationID)
+	} else if handlingPreparedRefusal {
+		// Guard or transaction failures must not enter generic admission
+		// settlement, even if the caller is also shutting down.
+		return Attempt{}, &preparedCLIAdmissionRefusal{err}
 	}
 	return result, err
+}
+
+// Keep the original request queued when admission could not read its policy
+// or automatic scheduling history and its prepared CLI attempt is provably unused.
+func (e *Engine) settleCLIAdmissionRefusal(ctx context.Context, tx *sql.Tx, o Operation, a Attempt, anchor Anchor, refusal error) (Attempt, error) {
+	if o.Channel != "cli" || o.State != "preparing" || o.AttemptID != a.ID ||
+		a.State != "preparing" || a.Revision != 1 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" {
+		return Attempt{}, refusal
+	}
+	record, err := readCLIAllowanceRecord(ctx, tx, o, a)
+	if errors.Is(err, errAllowanceObservationAbsent) {
+		return Attempt{}, refusal
+	}
+	if err != nil {
+		return Attempt{}, err
+	}
+	if record.Observation.Remaining <= 0 || record.Observation.Anchor != anchor {
+		return Attempt{}, refusal
+	}
+	unused, err := untouchedCLIReservation(ctx, tx, o, a, anchor.RepositoryID)
+	if err != nil {
+		return Attempt{}, err
+	}
+	if !unused {
+		return Attempt{}, refusal
+	}
+	return e.advanceAttempt(ctx, tx, o, a, "held", "automatic_scheduling_unavailable", "")
+}
+
+func untouchedCLIReservation(ctx context.Context, tx *sql.Tx, o Operation, a Attempt, repositoryID int64) (bool, error) {
+	var unused bool
+	err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM review_execution_reservations WHERE attempt_id=? AND provider=? AND account=? AND repository_id=? AND pull_number=? AND action_class='cli')
+		AND EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=? AND revision=1 AND state='preparing' AND reason='preparing' AND external_id='')
+		AND NOT EXISTS(SELECT 1 FROM review_execution_transitions WHERE attempt_id=? AND revision<>1)
+		AND NOT EXISTS(SELECT 1 FROM review_execution_evidence WHERE attempt_id=?)`,
+		a.ID, a.Provider, a.Account, repositoryID, o.PullNumber, a.ID, a.ID, a.ID).Scan(&unused)
+	return unused, err
+}
+
+// The driver has finished its exclusively owned preparation before usage.
+// Release only the original revision-1 reservation and retain the queued request.
+func (e *Engine) settleUnusedCLIPreparation(ctx context.Context, original Operation, captured Attempt) error {
+	err := e.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		a, err := readAttempt(ctx, tx, captured.ProjectID, captured.ID)
+		if err != nil {
+			return err
+		}
+		o, err := readOperation(ctx, tx, captured.ProjectID, captured.OperationID)
+		if err != nil {
+			return err
+		}
+		if a != captured || a.State != "preparing" || a.Revision != 1 || a.Anchor != nil || a.Intent != "" || a.ExternalID != "" ||
+			!sameCLIClaim(original, o, a, original.Revision+1) || !sameCLIWait(original.Wait, o.Wait) {
+			return conflict()
+		}
+		var repositoryID int64
+		if err := tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, o.ProjectID).Scan(&repositoryID); err != nil {
+			return err
+		}
+		unused, err := untouchedCLIReservation(ctx, tx, o, a, repositoryID)
+		if err != nil {
+			return err
+		}
+		_, err = readCLIAllowanceRecord(ctx, tx, o, a)
+		if !unused || err == nil {
+			return conflict()
+		}
+		if !errors.Is(err, errAllowanceObservationAbsent) {
+			return err
+		}
+		_, err = e.advanceAttempt(ctx, tx, o, a, "held", "automatic_scheduling_unavailable", "")
+		return err
+	})
+	if err == nil {
+		e.notifyOperation(captured.OperationID)
+	}
+	return err
+}
+
+func sameCLIClaim(original, current Operation, a Attempt, expectedRevision int64) bool {
+	return original.Channel == "cli" && current.Channel == "cli" &&
+		original.ProjectID == current.ProjectID && current.ProjectID == a.ProjectID &&
+		original.ID == current.ID && current.ID == a.OperationID &&
+		original.ActorID == current.ActorID && original.WorkerID == current.WorkerID &&
+		original.ConfigurationRevision == current.ConfigurationRevision && original.PolicyRevision == current.PolicyRevision &&
+		original.CapabilityFingerprint == current.CapabilityFingerprint && original.PullNumber == current.PullNumber &&
+		original.HeadSHA == current.HeadSHA && original.AllowOutOfOrder == current.AllowOutOfOrder &&
+		original.OverrideFileLimit == current.OverrideFileLimit && current.State == "preparing" && current.AttemptID == a.ID &&
+		current.Revision == expectedRevision
+}
+
+func sameCLIWait(original, current *OperationWait) bool {
+	if original == nil || current == nil {
+		return original == current
+	}
+	return original.BaselineAttemptID == current.BaselineAttemptID &&
+		original.RetryNotBefore == current.RetryNotBefore && original.Paused == current.Paused
 }
 
 func safeText(s string, max int) bool {
@@ -359,54 +518,62 @@ func (e *Engine) Advance(ctx context.Context, project, id string, expectedRevisi
 		if err != nil {
 			return err
 		}
-		at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
-		if err != nil {
-			return err
-		}
-		if externalID != "" {
-			a.ExternalID = externalID
-		}
-		if a.State == "posting" && state == "active" && a.ExternalID == "" {
-			return invalid()
-		}
-		a.State = state
-		a.Revision++
-		if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=?,external_id=? WHERE id=?`, state, a.Revision, a.ExternalID, a.ID); err != nil {
-			return err
-		}
-		operationState, operationAttempt := state, o.AttemptID
-		if o.Channel == "cli" && reason == cliDraftWait && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
-			operationState, operationAttempt = "queued", ""
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {
-			return err
-		}
-		if state != "posting" && state != "active" && state != "uncertain" {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, a.ID); err != nil {
-				return err
-			}
-		}
-		if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
-			return err
-		}
-		if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
-			return err
-		}
-		if state == "completed" {
-			if err = refreshComparisonProof(ctx, tx, project, a.OperationID); err != nil {
-				return err
-			}
-			if err = completeRoundControl(ctx, tx, project, a.OperationID); err != nil {
-				return err
-			}
-		}
-		result = a
-		return nil
+		result, err = e.advanceAttempt(ctx, tx, o, a, state, reason, externalID)
+		return err
 	})
 	if err == nil {
 		e.notifyOperation(result.OperationID)
 	}
 	return result, err
+}
+
+// advanceAttempt records a transition for the attempt and operation already
+// checked in this write transaction.
+func (e *Engine) advanceAttempt(ctx context.Context, tx *sql.Tx, o Operation, a Attempt, state, reason, externalID string) (Attempt, error) {
+	at, err := attemptRecordingStamp(ctx, tx, o, &a, e.sampleAttemptTime())
+	if err != nil {
+		return Attempt{}, err
+	}
+	if externalID != "" {
+		a.ExternalID = externalID
+	}
+	if a.State == "posting" && state == "active" && a.ExternalID == "" {
+		return Attempt{}, invalid()
+	}
+	a.State = state
+	a.Revision++
+	if _, err = tx.ExecContext(ctx, `UPDATE review_execution_attempts SET state=?,revision=?,external_id=? WHERE id=?`, state, a.Revision, a.ExternalID, a.ID); err != nil {
+		return Attempt{}, err
+	}
+	operationState, operationAttempt := state, o.AttemptID
+	// Only an unused preparation may detach and retain the same queued intent.
+	retainQueued := o.Channel == "cli" && reason == cliDraftWait || reason == "pull_scheduling_paused" || reason == "automation_authorization_changed" || reason == "automatic_scheduling_unavailable"
+	if retainQueued && state == "held" && o.State == "preparing" && o.AttemptID == a.ID && a.Anchor == nil && a.Intent == "" && a.ExternalID == "" {
+		operationState, operationAttempt = "queued", ""
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE review_operations SET state=?,revision=revision+1,reason=?,attempt_id=?,updated_at=? WHERE id=?`, operationState, reason, operationAttempt, at, a.OperationID); err != nil {
+		return Attempt{}, err
+	}
+	if state != "posting" && state != "active" && state != "uncertain" {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM review_execution_reservations WHERE attempt_id=?`, a.ID); err != nil {
+			return Attempt{}, err
+		}
+	}
+	if err = e.transitionRow(ctx, tx, a, reason, at); err != nil {
+		return Attempt{}, err
+	}
+	if err = core.AppendEvent(ctx, tx, core.Scope{ProjectID: o.ProjectID, PrincipalID: o.ActorID, WorkerID: o.WorkerID}, "review.operation_updated", o.ID, o.Revision+1, struct{}{}); err != nil {
+		return Attempt{}, err
+	}
+	if state == "completed" {
+		if err = refreshComparisonProof(ctx, tx, a.ProjectID, a.OperationID); err != nil {
+			return Attempt{}, err
+		}
+		if err = completeRoundControl(ctx, tx, a.ProjectID, a.OperationID); err != nil {
+			return Attempt{}, err
+		}
+	}
+	return a, nil
 }
 
 func allowedTransition(from, to string) bool {

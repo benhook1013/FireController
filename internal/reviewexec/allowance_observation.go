@@ -27,6 +27,8 @@ const (
 	storedReviewAdmission
 	storedConfigurationHistory
 	storedOperationIdentity
+	storedRoundHistory
+	storedPolicyHistory
 )
 
 type storedUnavailableError struct {
@@ -78,7 +80,7 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 		var err error
 		var draft bool
 		var historical Operation
-		historical, draft, err = historicalCLIDraftOperation(ctx, q, o, a)
+		historical, draft, err = historicalUnusedPreparationOperation(ctx, q, o, a, true)
 		if err == nil {
 			if draft {
 				o = historical
@@ -107,6 +109,12 @@ func readCLIAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a
 }
 
 func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation, a Attempt) (hostedAllowanceRecord, error) {
+	return readHostedAllowanceRecordForHistory(ctx, q, o, a, false)
+}
+
+// Scheduling detachment is attribution for snapshot inspection only. Live
+// allowance and query readers do not use it to authorize or recover actions.
+func readHostedAllowanceRecordForHistory(ctx context.Context, q EvidenceQuery, o Operation, a Attempt, snapshot bool) (hostedAllowanceRecord, error) {
 	var project, attempt string
 	var body sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT project_id,attempt_id,CASE WHEN typeof(body_json)='text' AND length(CAST(body_json AS BLOB))<=16384 THEN body_json END FROM review_hosted_preflight WHERE attempt_id=?`, a.ID).Scan(&project, &attempt, &body)
@@ -120,10 +128,22 @@ func readHostedAllowanceRecord(ctx context.Context, q EvidenceQuery, o Operation
 		return hostedAllowanceRecord{}, allowanceUnavailable()
 	}
 	if o.AttemptID != a.ID {
-		var err error
-		o, err = historicalCooldownOperation(ctx, q, o, a)
-		if err != nil {
-			return hostedAllowanceRecord{}, allowanceDependencyError(err)
+		var retained bool
+		if snapshot && o.Channel == "hosted" {
+			var historical Operation
+			historical, retained, err = historicalUnusedPreparationOperation(ctx, q, o, a, true)
+			if err != nil {
+				return hostedAllowanceRecord{}, allowanceDependencyError(err)
+			}
+			if retained {
+				o = historical
+			}
+		}
+		if !retained {
+			o, err = historicalCooldownOperation(ctx, q, o, a)
+			if err != nil {
+				return hostedAllowanceRecord{}, allowanceDependencyError(err)
+			}
 		}
 	}
 	if !validAllowanceOwners(o, a) {
@@ -289,7 +309,7 @@ func ValidateAllowanceSnapshot(ctx context.Context, q EvidenceQuery, executionVe
 			if table == "review_cli_preflight" {
 				_, err = readCLIAllowanceRecord(ctx, q, o, a)
 			} else {
-				_, err = readHostedAllowanceRecord(ctx, q, o, a)
+				_, err = readHostedAllowanceRecordForHistory(ctx, q, o, a, true)
 			}
 			if err != nil {
 				return err

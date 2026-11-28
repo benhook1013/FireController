@@ -94,3 +94,37 @@ func TestFrontInventoryRejectsEmptyTableWithoutPrimaryKey(t *testing.T) {
 	mutateBundleSQL(t, bundle.Path, `DROP TABLE review_front_frames;`+ddl)
 	assertCurrentSummaryInventoryRefused(t, bundle, false)
 }
+
+func TestSchedulingUpgradePreservesExistingFrontInventory(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "held")
+	db := f.store.DB()
+	if _, err := db.Exec(`
+		DROP TABLE review_automatic_selections;
+		DROP TABLE review_pull_scheduling;
+		DROP TABLE review_scheduling;
+		DROP TABLE review_selection_quarantine;
+		UPDATE metadata SET value='1' WHERE key='schema:review_selection';
+		DELETE FROM metadata WHERE key='schema:review_scheduling';
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var frontCount int
+	if err := db.QueryRow(`SELECT count(*) FROM review_front_frames`).Scan(&frontCount); err != nil || frontCount != 1 {
+		t.Fatal("predecessor front inventory", frontCount, err)
+	}
+	before := backupRows(t, db)
+	bundle := restoreBundle(t, f)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal("front-aware predecessor refused", err)
+	}
+	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	after := backupRows(t, db)
+	if before["review_front_frames"] != after["review_front_frames"] {
+		t.Fatal("scheduling upgrade changed the retained front")
+	}
+	if err := reviewexec.ValidateFrontSnapshot(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+}

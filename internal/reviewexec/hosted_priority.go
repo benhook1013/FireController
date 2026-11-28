@@ -92,6 +92,14 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), position, o.ProjectID, o.Chann
 }
 
 func (e *Engine) hostedPriorityBinding(ctx context.Context, tx *sql.Tx, o Operation) (bool, error) {
+	// A proved custody hold is already ineligible; do not let it consult or
+	// block unrelated source or provider evidence.
+	if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+		if isLinkedSelectionCustodyHeld(err) {
+			return false, nil
+		}
+		return false, err
+	}
 	var err error
 	if o.Channel == "hosted" {
 		var installed bool
@@ -116,6 +124,12 @@ func (e *Engine) hostedPriorityBinding(ctx context.Context, tx *sql.Tx, o Operat
 	_, err = e.currentExecutionContext(ctx, tx, o)
 	if err == nil {
 		return true, nil
+	}
+	// A proved mismatch removes only this candidate's priority. Its own
+	// admission remains refused, and operational storage errors still return.
+	var binding *operationSelectionBindingStateError
+	if errors.As(err, &binding) {
+		return false, nil
 	}
 	var refusal *core.Error
 	if errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {

@@ -224,12 +224,13 @@ func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Model the remaining budget after required selection and operation reads.
-		if err := operationResponseDeadlineAt(w, time.Now().Add(750*time.Millisecond)); err != nil {
+		deadline := time.Now().Add(750 * time.Millisecond)
+		if err := operationResponseDeadlineAt(w, deadline); err != nil {
 			t.Error(err)
 			return
 		}
 		e := f.e
-		e.queuedRunResponseHeader(w, r, scope, RunState{Operation: &Operation{ID: "review_operation_test", State: "queued", Channel: "cli", Revision: 1}})
+		e.queuedRunResponseHeader(w, r, scope, RunState{Operation: &Operation{ID: "review_operation_test", State: "queued", Channel: "cli", Revision: 1}}, deadline)
 		w.Write([]byte("retained response"))
 	}))
 	defer func() {
@@ -251,6 +252,49 @@ func TestQueuedRunDiagnosticPreservesNetworkResponseUnderContention(t *testing.T
 	}
 	if response.Header.Get(queuedDiagnosticHeader) != "" {
 		t.Fatal("unavailable diagnostic must be omitted")
+	}
+}
+
+func TestQueuedRunDiagnosticOmitsHintBeforeRetainedResponseDeadline(t *testing.T) {
+	f := selectionFixture(t)
+	receipt, _ := selectionEnqueue(t, f, "queued-diagnostic-deadline", "cli", nil)
+	selectionNext(t, f, &refreshTestReader{})
+	scope := selectionScope(t, f, attemptProject, f.writer, "read")
+	state, terminal, err := f.e.readRunState(t.Context(), scope, receipt.ID)
+	if err != nil || terminal || state.Operation == nil || state.Operation.State != "queued" {
+		t.Fatalf("expected the original pending queued child: %+v (%v)", state, err)
+	}
+
+	// A normal hint proves this fixture is otherwise eligible for diagnostics.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	f.e.queuedRunResponseHeader(w, req, scope, state, time.Now().Add(time.Second))
+	if w.Header().Get(queuedDiagnosticHeader) == "" {
+		t.Fatal("eligible queued diagnostic missing with ample budget")
+	}
+
+	// A lawful retained response has already used most of its write budget.
+	// The optional diagnostic must not wait for the reserved reader connection.
+	f.store.DB().SetMaxOpenConns(1)
+	conn, err := f.store.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	before := f.store.DB().Stats().WaitCount
+	w = httptest.NewRecorder()
+	deadline := time.Now().Add(queuedDiagnosticBudget / 2)
+	f.e.queuedRunResponseHeader(w, req, scope, state, deadline)
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(state); err != nil {
+		t.Fatal(err)
+	}
+	var result RunState
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Selection.ID != receipt.ID || result.Operation == nil || result.Operation.ID != state.Operation.ID || w.Code != http.StatusOK {
+		t.Fatalf("could not return original retained child: %s (%v)", w.Body, err)
+	}
+	if w.Header().Get(queuedDiagnosticHeader) != "" || f.store.DB().Stats().WaitCount != before {
+		t.Fatal("optional diagnostic should be omitted without trying reader admission")
 	}
 }
 

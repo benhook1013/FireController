@@ -12,6 +12,7 @@ import (
 type evaluatedFront struct {
 	state, reason string
 	plan          *SourcePlan
+	localRefusal  error
 }
 
 func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo int64, plan *SourcePlan) (evaluatedFront, error) {
@@ -72,6 +73,24 @@ func (e *Engine) evaluateFrontPlan(ctx context.Context, q *sql.Tx, r Run, repo i
 	}
 	if state.RoundsConfigured && state.RoundsComplete || !state.RoundsConfigured && state.Covered {
 		return evaluatedFront{state: "complete", plan: plan}, nil
+	}
+	scheduling, err := readPullScheduling(ctx, q, r.ProjectID, plan.Pull.Number)
+	if err != nil {
+		var pullState *pullSchedulingStateError
+		if errors.As(err, &pullState) && pullState.project == r.ProjectID && pullState.pull == plan.Pull.Number {
+			return evaluatedFront{state: "held", reason: "automatic_scheduling_unavailable", plan: plan, localRefusal: err}, nil
+		}
+		return evaluatedFront{}, err
+	}
+	if scheduling.Paused {
+		return evaluatedFront{state: "held", reason: "pull_scheduling_paused", plan: plan}, nil
+	}
+	suppressed, err := e.automaticPullSuppressed(ctx, q, r, plan.Pull.Number)
+	if err != nil {
+		return evaluatedFront{}, err
+	}
+	if suppressed {
+		return evaluatedFront{state: "held", reason: "automatic_intent_retained", plan: plan}, nil
 	}
 	if plan.Pull.State != "open" {
 		return evaluatedFront{state: "held", reason: "front_unavailable", plan: plan}, nil
@@ -144,7 +163,7 @@ func globalFrontHold(reason string) bool {
 }
 
 // runFront preserves existing admission semantics and its zero-on-hold result.
-func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan) (int64, string, error) {
+func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, prefix []SourcePlan, finalPrefix bool) (int64, string, error) {
 	result, err := e.evaluateFront(ctx, q, r, repo, prefix, true)
 	if err != nil {
 		return 0, "", err
@@ -154,6 +173,17 @@ func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, pre
 	}
 	if result.state == "complete" {
 		return 0, "", nil
+	}
+	if finalPrefix && result.localRefusal != nil {
+		// Keep the refusal local during traversal, but preserve explicit
+		// selection attribution and finish rollback when it is the final hold.
+		reason, err := selectionLocalHoldReason(ctx, q, r)
+		if err != nil {
+			return 0, "", err
+		}
+		if reason == "local_read_unavailable" {
+			return 0, "", result.localRefusal
+		}
 	}
 	return 0, result.reason, nil
 }

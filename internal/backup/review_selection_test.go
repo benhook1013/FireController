@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
@@ -225,9 +226,7 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 		if err := f.store.DB().QueryRow(`SELECT count(*) FROM review_selections`).Scan(&count); err != nil || count != 0 {
 			t.Fatal("predecessor domain not empty", err)
 		}
-		if _, err := f.store.DB().Exec(`DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
-			t.Fatal(err)
-		}
+		dropSelectionPredecessorDomains(t, f.store.DB())
 		bundle := restoreBundle(t, f)
 		if _, err := Inspect(t.Context(), bundle.Path); err != nil {
 			t.Fatal(err)
@@ -235,18 +234,23 @@ func TestSelectionInventorySchemaAndPredecessor(t *testing.T) {
 	})
 }
 
-// Removing the independent optional domain reconstructs the unchanged parent
-// physical schema, rather than relabeling a newer reviews/execution migration.
+// The newer scheduling and front-cache domains must be absent from a
+// predecessor snapshot along with selection. Scheduling references selections
+// directly, so leaving it installed would not describe a valid predecessor.
+func dropSelectionPredecessorDomains(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`DROP TABLE review_selection_quarantine; DROP TABLE review_automatic_selections; DROP TABLE review_pull_scheduling; DROP TABLE review_scheduling; DROP TABLE review_front_frames; DROP TABLE review_selections; DELETE FROM metadata WHERE key IN ('schema:review_scheduling','schema:review_fronts','schema:review_selection')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Removing the new optional domains reconstructs a valid parent schema without
+// relabeling a newer reviews/execution migration.
 func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testing.T) {
 	f := newRestoreFixture(t)
 	db := f.store.DB()
-	if _, err := db.Exec(`DROP TABLE review_selections;DELETE FROM metadata WHERE key='schema:review_selection'`); err != nil {
-		t.Fatal(err)
-	}
+	dropSelectionPredecessorDomains(t, db)
 	before := backupRows(t, db)
-	if _, ok := before["review_front_frames"]; !ok {
-		t.Fatal("predecessor must already include review front frames")
-	}
 	schema := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
 	metadata := restoreRows(t, db, `SELECT key,value FROM metadata ORDER BY key`)
 	for domain, version := range map[string]string{"reviews": "11", "review_execution": "10", "review_policy": "1", "review_rounds": "5"} {
@@ -272,10 +276,10 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 			t.Fatal("upgrade changed business bytes", table)
 		}
 	}
-	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name<>'review_selections' ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
+	if got := restoreRows(t, db, `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND tbl_name NOT IN ('review_selection_quarantine','review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames') ORDER BY type,name`); !reflect.DeepEqual(schema, got) {
 		t.Fatal("upgrade changed predecessor physical SQL")
 	}
-	if got := restoreRows(t, db, `SELECT key,value FROM metadata WHERE key<>'schema:review_selection' ORDER BY key`); !reflect.DeepEqual(metadata, got) {
+	if got := restoreRows(t, db, `SELECT key,value FROM metadata WHERE key NOT IN ('schema:review_selection','schema:review_scheduling','schema:review_fronts') ORDER BY key`); !reflect.DeepEqual(metadata, got) {
 		t.Fatal("upgrade changed parent metadata")
 	}
 	var count int
@@ -283,16 +287,164 @@ func TestSelectionInventoryParentUpgradePreservesPhysicalSchemaAndRows(t *testin
 		t.Fatal("upgrade manufactured selection activity", count, err)
 	}
 	var version string
-	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "1" {
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "2" {
 		t.Fatal("selection domain version", version, err)
 	}
-	if len(after) != len(before)+1 {
-		t.Fatal("upgrade added another table domain")
+	if len(after) != len(before)+6 {
+		t.Fatal("upgrade did not reinstall the newer optional domains", len(before), len(after))
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name IN ('review_scheduling','review_pull_scheduling','review_automatic_selections','review_pr_followers')`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("deferred domain installed", count, err)
+	for domain, version := range map[string]string{"review_selection": "2", "review_scheduling": "2", "review_fronts": "1"} {
+		var got string
+		if err := db.QueryRow(`SELECT value FROM metadata WHERE key=?`, "schema:"+domain).Scan(&got); err != nil || got != version {
+			t.Fatal("reinstalled domain version", domain, got, err)
+		}
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('review_selection_quarantine','review_selections','review_scheduling','review_pull_scheduling','review_automatic_selections','review_front_frames')`).Scan(&count); err != nil || count != 6 {
+		t.Fatal("new optional domain tables were not reinstalled", count, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE name='review_pr_followers'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("unexpected deferred domain installed", count, err)
+	}
+	for _, table := range []string{"review_scheduling", "review_pull_scheduling", "review_automatic_selections", "review_front_frames"} {
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatal("upgrade manufactured optional-domain activity", table, count, err)
+		}
 	}
 	if err := reviewexec.ValidateSelectionSnapshot(t.Context(), db); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSelectionQuarantineInventoryRetainsInertMissingLink(t *testing.T) {
+	f, id := selectionInventoryFixture(t, "queued")
+	ctx := t.Context()
+	// Exercise only the canonical post-recovery representation; this does
+	// not manufacture an invalid pending row, grant, or executing child.
+	err := f.store.BackgroundWrite(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE review_selections SET state='held',
+		  reason='linked_selection_quarantined',revision=2 WHERE id=?`, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO review_selection_quarantine
+		  (selection_id,project_id,original_operation_id,original_state,observed_revision)
+		  VALUES(?,?,'review_operation_absent_fixture','queued',1)`, id, f.project)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const diagnostics = `SELECT selection_id,project_id,original_operation_id,original_state,observed_revision
+	  FROM review_selection_quarantine`
+	const children = `SELECT * FROM review_operations ORDER BY id`
+	before, kept := restoreRows(t, f.store.DB(), diagnostics), restoreRows(t, f.store.DB(), children)
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "inactive-with-diagnostic")
+	if _, err := Restore(ctx, bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSnapshot(ctx, filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if len(before) != 1 || !reflect.DeepEqual(before, restoreRows(t, db, diagnostics)) || !reflect.DeepEqual(kept, restoreRows(t, db, children)) {
+		t.Fatal("inert diagnostic or unchanged child state lost")
+	}
+	testBundle := restoreBundle(t, f)
+	mutateBundleSQL(t, testBundle.Path, `UPDATE review_selection_quarantine SET observed_revision=2`)
+	assertCurrentSummaryInventoryRefused(t, testBundle, false)
+}
+
+func TestSelectionQuarantineInventoryKeepsV1Restore(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	if _, err := f.store.DB().Exec(`DROP TABLE review_selection_quarantine;
+	  UPDATE metadata SET value='1' WHERE key='schema:review_selection'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	destination := filepath.Join(t.TempDir(), "inactive-v1-selection")
+	if _, err := Restore(t.Context(), bundle.Path, destination); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSnapshot(t.Context(), filepath.Join(destination, "firecontroller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "1" {
+		t.Fatal("offline restore migrated the previous snapshot", version, err)
+	}
+	mutateBundleSQL(t, bundle.Path, `UPDATE review_selections
+	   SET state='held',reason='linked_selection_quarantined',revision=2`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}
+
+func TestSelectionQuarantineInventoryRefusesV1NameCollision(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	if _, err := f.store.DB().Exec(`DROP TABLE review_selection_quarantine;
+	  UPDATE metadata SET value='1' WHERE key='schema:review_selection'`); err != nil {
+		t.Fatal(err)
+	}
+	bundle := restoreBundle(t, f)
+	mutateBundleSQL(t, bundle.Path, `CREATE INDEX Review_Selection_Quarantine ON projects(id)`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}
+
+func TestSelectionQuarantineInventoryRejectsDanglingEmptyV2Marker(t *testing.T) {
+	f, _ := selectionInventoryFixture(t, "queued")
+	bundle := restoreBundle(t, f)
+	mutateBundleSQL(t, bundle.Path, `UPDATE review_selections
+	   SET state='held',reason='linked_selection_quarantined',revision=2`)
+	assertCurrentSummaryInventoryRefused(t, bundle, false)
+}
+
+// A physical v1 database can already contain selected runs and front frames.
+func TestSelectionV1UpgradePreservesSelectedRunAndFront(t *testing.T) {
+	f, id := selectionInventoryFixture(t, "selected")
+	db := f.store.DB()
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM review_selections WHERE id=? AND state='selected'`, id).Scan(&count); err != nil || count != 1 {
+		t.Fatal("missing selected predecessor", count, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM review_front_frames`).Scan(&count); err != nil || count < 1 {
+		t.Fatal("missing predecessor front frame", count, err)
+	}
+	if _, err := db.Exec(`DROP TABLE review_selection_quarantine;
+		UPDATE metadata SET value='1' WHERE key='schema:review_selection'`); err != nil {
+		t.Fatal(err)
+	}
+	before := backupRows(t, db)
+	const schema = `SELECT type,name,tbl_name,sql FROM sqlite_schema
+		WHERE name NOT LIKE 'sqlite_%' AND tbl_name<>'review_selection_quarantine' ORDER BY type,name`
+	physical := restoreRows(t, db, schema)
+	const metadata = `SELECT key,value FROM metadata WHERE key<>'schema:review_selection' ORDER BY key`
+	parentMetadata := restoreRows(t, db, metadata)
+	bundle := restoreBundle(t, f)
+	if _, err := Inspect(t.Context(), bundle.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(t.Context(), bundle.Path, filepath.Join(t.TempDir(), "inactive-selection-v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reviewexec.EnsureSchema(t.Context(), f.store); err != nil {
+		t.Fatal(err)
+	}
+	after := backupRows(t, db)
+	for table, hash := range before {
+		if table != "metadata" && after[table] != hash {
+			t.Fatal("upgrade changed retained rows", table)
+		}
+	}
+	if len(after) != len(before)+1 || !reflect.DeepEqual(physical, restoreRows(t, db, schema)) ||
+		!reflect.DeepEqual(parentMetadata, restoreRows(t, db, metadata)) {
+		t.Fatal("upgrade changed unrelated schema or metadata")
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM review_selection_quarantine`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("upgrade manufactured quarantine records", count, err)
+	}
+	var version string
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key='schema:review_selection'`).Scan(&version); err != nil || version != "2" {
+		t.Fatal("wrong upgraded selection version", version, err)
 	}
 }

@@ -132,7 +132,7 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 	var principal, credential string
 	var admin int
 	err := q.QueryRowContext(ctx, "SELECT id,principal_id,is_admin FROM credentials WHERE token_sha256=? AND revoked=0", scope.tokenHash).Scan(&credential, &principal, &admin)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && principal != scope.PrincipalID) {
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (principal != scope.PrincipalID || scope.automationCredential != "" && credential != scope.automationCredential)) {
 		return Fail("unauthorized", "A valid bearer credential is required.", 401)
 	}
 	if err != nil {
@@ -166,6 +166,15 @@ func (s *Store) authorize(ctx context.Context, q querier, scope Scope, permissio
 			}
 			if err != nil {
 				return storageError(err)
+			}
+		}
+		if scope.activeWorkerRequired {
+			var retired bool
+			if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_retirements WHERE project_id=? AND worker_id=?)`, scope.ProjectID, scope.WorkerID).Scan(&retired); err != nil {
+				return storageError(err)
+			}
+			if retired {
+				return Fail("worker_retired", "This worker is retired; select an active worker for new coordination work.", 409)
 			}
 		}
 	} else if scope.WorkerID != "" {

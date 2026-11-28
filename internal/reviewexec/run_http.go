@@ -140,7 +140,8 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if err = operationResponseDeadline(w, seconds); err != nil {
+	responseDeadline := operationResultWriteDeadline(seconds)
+	if err = operationResponseDeadlineAt(w, responseDeadline); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -168,6 +169,7 @@ func (e *Engine) enqueueRunHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if terminal {
+			e.queuedRunResponseHeader(w, r, scope, state, responseDeadline)
 			core.WriteJSON(w, http.StatusOK, runStateForResponse(state, r.Header.Get(operationWaitHeader)))
 			return
 		}
@@ -196,7 +198,8 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	if err = operationResponseDeadline(w, seconds); err != nil {
+	responseDeadline := operationResultWriteDeadline(seconds)
+	if err = operationResponseDeadlineAt(w, responseDeadline); err != nil {
 		core.WriteError(w, err)
 		return
 	}
@@ -206,6 +209,6 @@ func (e *Engine) readRunHTTP(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, err)
 		return
 	}
-	e.queuedRunResponseHeader(w, r, scope, state)
+	e.queuedRunResponseHeader(w, r, scope, state, responseDeadline)
 	core.WriteJSON(w, http.StatusOK, runStateForResponse(state, r.Header.Get(operationWaitHeader)))
 }

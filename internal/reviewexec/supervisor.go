@@ -23,6 +23,76 @@ type Preparation struct {
 	Intent string
 }
 
+// CLIPreparationHandoff transfers a finished, exclusively owned CLI
+// preparation to the supervisor for guarded local settlement.
+type CLIPreparationHandoff struct {
+	recovery *PreparationRecoveryError
+	source   CLIExhaustionRecoverySource
+	release  func()
+}
+
+func (h *CLIPreparationHandoff) Error() string { return h.recovery.Error() }
+func (h *CLIPreparationHandoff) Unwrap() error { return h.recovery }
+
+// CLIRefusalBeforeUsage marks only classified project-local history refusals.
+// The concrete driver calls it after acquiring ownership and before quota usage.
+func CLIRefusalBeforeUsage(err error, release func()) error {
+	if isLinkedSelectionCustodyHeld(err) {
+		return &PreparationRecoveryError{Err: err}
+	}
+	if CLIProjectHistoryRefused(err) {
+		return &CLIPreparationHandoff{recovery: &PreparationRecoveryError{Err: err}, release: release}
+	}
+	return err
+}
+
+// CLIProjectHistoryRefused reports typed project-local history failures.
+func CLIProjectHistoryRefused(err error) bool {
+	return automaticProjectRefused(err) || isStoredUnavailable(err, storedRoundHistory) || isStoredUnavailable(err, storedPolicyHistory)
+}
+
+// CLIExhaustionAuthorityRefused identifies explicit authority/history refusal
+// of a normal zero-observation write. Only capture-only recovery may follow.
+func CLIExhaustionAuthorityRefused(err error) bool {
+	if isLinkedSelectionCustodyHeld(err) {
+		return false
+	}
+	var failure *core.Error
+	return CLIProjectHistoryRefused(err) || errors.As(err, &failure) &&
+		(failure.Code == "forbidden" || failure.Code == "pull_scheduling_paused" || failure.Code == "automation_authorization_changed")
+}
+
+// RetainedCLIExhaustionHandoff requires an already-saved private observation.
+// A failure to save the capture cannot use this path.
+func RetainedCLIExhaustionHandoff(err error, source CLIExhaustionRecoverySource, release func()) error {
+	return &CLIPreparationHandoff{recovery: &PreparationRecoveryError{Err: err}, source: source, release: release}
+}
+
+func (e *Engine) settleCLIPreparationHandoff(ctx context.Context, original Operation, a Attempt, h *CLIPreparationHandoff) error {
+	local, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if h.source == nil {
+		return retryRunSelectionLocal(local, func() error {
+			return e.settleUnusedCLIPreparation(local, original, a)
+		})
+	}
+	record, found, err := h.source.LoadCLIExhaustion(local, a.ID)
+	if err != nil {
+		return err
+	}
+	if !found || a != record.Attempt || !sameCLIClaim(original, record.Operation, a, original.Revision+1) ||
+		!sameCLIWait(original.Wait, record.Operation.Wait) {
+		return conflict()
+	}
+	err = retryRunSelectionLocal(local, func() error {
+		return e.replayCLIExhaustion(local, record, true)
+	})
+	if err == nil {
+		e.notifyOperation(a.OperationID)
+	}
+	return err
+}
+
 // Result describes external execution only. Completed is not policy credit or
 // merge readiness. The adapter must retain its bounded capture/evidence before
 // returning a proven terminal result; unresolved outcomes return uncertain.
@@ -254,6 +324,7 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 	JOIN projects p ON p.id=o.project_id
 	LEFT JOIN installed i ON i.id=CASE WHEN json_valid(c.body_json) THEN json_extract(c.body_json,'$.capability_id') END AND i.fingerprint=o.capability_fingerprint
 	WHERE o.state='queued'
+	AND NOT EXISTS (SELECT 1 FROM review_pull_scheduling s WHERE s.project_id=o.project_id AND s.pull_number=o.pull_number AND s.paused=1)
 	AND NOT EXISTS (SELECT 1 FROM review_operation_waits w WHERE w.operation_id=o.id AND (w.paused=1 OR (w.retry_not_before<>'' AND julianday(w.retry_not_before)>julianday(?))))
 	AND NOT EXISTS (SELECT 1 FROM review_execution_config latest WHERE latest.project_id=o.project_id AND latest.revision=(SELECT MAX(revision) FROM review_execution_config WHERE project_id=o.project_id) AND json_valid(latest.body_json) AND json_extract(latest.body_json,'$.paused')=1)
 	AND NOT EXISTS (SELECT 1 FROM review_execution_reservations r WHERE r.provider=i.provider AND r.account=i.account AND r.action_class=o.channel AND (o.channel='cli' OR r.repository_id=p.github_repository_id))
@@ -270,7 +341,7 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 	readCandidate := func(project, operation string) (Operation, error) {
 		o, err := readOperation(ctx, tx, project, operation)
 		if err != nil {
-			if e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
 			return Operation{}, err
@@ -278,11 +349,17 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 		if o.State != "queued" {
 			return Operation{}, nil
 		}
+		if err := requireUnquarantinedSelectionLink(ctx, tx, o.ProjectID, o.ID); err != nil {
+			if automaticProjectRefused(err) {
+				return Operation{}, nil
+			}
+			return Operation{}, err
+		}
 		configuration, ok := configurations[o.ProjectID]
 		if !ok {
 			c, revision, err := readConfiguration(ctx, tx, o.ProjectID)
 			if err != nil {
-				if e.skipUnavailableConfiguration(ctx, o, err) {
+				if e.skipUnavailableConfiguration(ctx, o, err) || automaticProjectRefused(err) {
 					return Operation{}, nil
 				}
 				return Operation{}, err
@@ -325,7 +402,7 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 		}
 		earlier, err := e.earlierQueuedReviewIntentInSnapshot(ctx, tx, o, c, revision, emptyPredecessors)
 		if err != nil {
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				return Operation{}, nil
 			}
 			return Operation{}, err
@@ -532,12 +609,12 @@ func (e *Engine) scanPendingInLane(ctx context.Context, probeDrafts bool, batchL
 func preparationReason(err error) string {
 	var failure *core.Error
 	if errors.As(err, &failure) {
-		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" {
+		if failure.Code == "review_evidence_pending" || failure.Code == "review_capacity" || failure.Code == "pull_scheduling_paused" || failure.Code == "automation_authorization_changed" {
 			return failure.Code
 		}
 		if details, ok := failure.Details.(map[string]string); failure.Code == "review_held" && ok {
 			switch reason := details["reason"]; reason {
-			case "pull_draft", "source_changed":
+			case "pull_draft", "source_changed", "target_changed":
 				return reason
 			case "source_obligations_pending", "repository_changed", "allowance_exhausted", "allowance_unavailable", "target_already_covered", "predecessor_identity_changed", "predecessor_unavailable", "predecessor_unfinished", "execution_binding_changed", "preparation_duplicate", "source_unavailable", "workspace_unavailable", "workspace_changed", "comparison_unavailable", "project_file_limit", "provider_activity_unproven", "provider_review_active", "provider_actor_unproven", "hosted_allowance_unproven", "hosted_allowance_cooldown", "standing_baseline_unproven":
 				return reason
@@ -673,6 +750,18 @@ func (e *Engine) processNextWithProbe(ctx context.Context, drivers map[string]Dr
 	return e.processPendingBatch(ctx, drivers, releaseProbe, worker, operations, receipt)
 }
 
+// A typed scheduling or round-control refusal requeues only unused
+// preparation. Other local history failures retain the reservation.
+func (e *Engine) classifyUnavailablePreparation(ctx context.Context, o Operation, a Attempt, err error) (bool, error) {
+	if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+		return true, nil
+	}
+	if schedulingRefused(err) || isStoredUnavailable(err, storedRoundHistory) {
+		return true, e.finishPreparation(a, "held", "automatic_scheduling_unavailable")
+	}
+	return automaticProjectRefused(err), nil
+}
+
 func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Driver, releaseProbe func(), worker int, operations []Operation, receipt pendingExhaustion) error {
 	overloaded := false
 	claimed := false
@@ -689,7 +778,7 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var refusal *core.Error
@@ -711,7 +800,7 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			if ctx.Err() != nil {
 				return nil
 			}
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			if automaticProjectRefused(err) || e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
 				continue
 			}
 			var failure *core.Error
@@ -745,13 +834,37 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 		prepared, err := driver.Prepare(prepareCtx, o, c, a)
 		cancel()
 		if err != nil {
+			var handoff *CLIPreparationHandoff
+			if o.Channel == "cli" && errors.As(err, &handoff) {
+				settleErr := e.settleCLIPreparationHandoff(ctx, o, a, handoff)
+				// A saved capture remains available to the next recovery owner.
+				// Release only the process-local marker, not the journal or its
+				// reservation. A failed volatile no-usage handoff is different.
+				if handoff.release != nil && (settleErr == nil || handoff.source != nil) {
+					handoff.release()
+				}
+				if settleErr != nil {
+					return &PreparationRecoveryError{Err: settleErr}
+				}
+				continue
+			}
 			var recoverable *PreparationRecoveryError
 			if errors.As(err, &recoverable) {
 				return err
 			}
-			if ctx.Err() == nil && e.skipUnavailableOperation(ctx, o, err) {
-				// The retained identity does not support settling this preparation.
-				continue
+			if ctx.Err() == nil {
+				if o.Channel == "hosted" && isSourceObligationProjectStateError(err) {
+					if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
+						return err
+					}
+					continue
+				}
+				if handled, settleErr := e.classifyUnavailablePreparation(ctx, o, a, err); handled {
+					if settleErr != nil {
+						return settleErr
+					}
+					continue
+				}
 			}
 			state := "held"
 			reason := preparationReason(err)
@@ -782,17 +895,40 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 			}
 			return e.finishPreparation(a, state, reason)
 		}
-		admitted, err := e.Admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent)
+		admitted, err := e.admit(ctx, o.ProjectID, a.ID, a.Revision, prepared.Anchor, prepared.Intent, true)
 		if err != nil {
+			var preparedRefusal *preparedCLIAdmissionRefusal
+			if errors.As(err, &preparedRefusal) {
+				var schedulingHistory *schedulingHistoryUnavailable
+				if isStoredUnavailable(err, storedPolicyHistory) || errors.As(err, &schedulingHistory) {
+					continue
+				}
+				return persistenceFailure()
+			}
 			if ctx.Err() != nil {
 				return e.finishPreparation(a, "cancelled", "supervisor_stopping")
 			}
-			// Preserve the unused preparation and reservation on damaged retained
-			// history, without stopping unrelated candidates.
-			if e.skipUnavailableConfiguration(ctx, o, err) || e.skipUnavailableWait(ctx, o, err) || e.skipUnavailableOperation(ctx, o, err) {
+			// Preserve the existing recovery for a proven project-wide source
+			// obligation fault at admission. The retained reason keeps old
+			// detached attempts compatible with snapshot validation.
+			if isSourceObligationProjectStateError(err) {
+				if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
+					return err
+				}
+				continue
+			}
+			if handled, settleErr := e.classifyUnavailablePreparation(ctx, o, a, err); handled {
+				if settleErr != nil {
+					return settleErr
+				}
 				continue
 			}
 			var refusal *core.Error
+			if errors.As(err, &refusal) && (refusal.Code == "pull_scheduling_paused" || refusal.Code == "automation_authorization_changed") {
+				// Admit recorded no intent. Release only this unused attempt and
+				// retain the queued operation's original identity and wait state.
+				return e.finishPreparation(a, "held", refusal.Code)
+			}
 			if errors.As(err, &refusal) && refusal.Code == "review_held" {
 				reason := preparationReason(err)
 				if reason == "source_obligations_pending" || reason == "repository_changed" {
@@ -803,6 +939,9 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 				return e.finishPreparation(a, "held", "admission_changed")
 			}
 			return persistenceFailure()
+		}
+		if admitted.State == "held" {
+			continue
 		}
 		a = admitted
 		var progressMu sync.Mutex
