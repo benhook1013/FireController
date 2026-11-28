@@ -12,6 +12,7 @@ import (
 	"github.com/benhook1013/FireController/internal/buildinfo"
 	"github.com/benhook1013/FireController/internal/client"
 	"github.com/benhook1013/FireController/internal/profile"
+	"github.com/benhook1013/FireController/skills/firecontroller-use"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -94,7 +95,12 @@ func toolServer(stdioBinding profile.Binding, remote *remoteMCP) *mcp.Server {
 }
 
 func connectorToolServer(stdioBinding profile.Binding, remote *remoteMCP, multiProject bool) *mcp.Server {
-	options := &mcp.ServerOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}, PageSize: 128}
+	options := &mcp.ServerOptions{
+		Instructions: useguidance.MCPInstructions(),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+		PageSize:     128,
+	}
 	if remote != nil {
 		options.SupportedProtocolVersions = remoteProtocolVersions
 	}

@@ -135,6 +135,29 @@ func connectorSDK(t *testing.T, s *httptest.Server, token, version string) *mcp.
 	return session
 }
 
+func TestRemoteConnectorHandshakeInstructions(t *testing.T) {
+	f, service, _, _, _ := connectorFixture(t)
+	bearer := core.NewID("synthetic")
+	connectorGrant(t, f, bearer, f.sender, "grant-guidance", []string{"read"}, 200)
+	for _, version := range []string{"2025-11-25", "2026-07-28"} {
+		t.Run(version, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			session := connectWithInstructions(t, ctx, &mcp.StreamableClientTransport{
+				Endpoint: service.URL + "/mcp", DisableStandaloneSSE: true, HTTPClient: &http.Client{
+					Transport: connectorTestTransport{next: service.Client().Transport, token: bearer},
+				},
+			}, version)
+			if session.InitializeResult().ProtocolVersion != version {
+				t.Fatal("remote protocol negotiation changed")
+			}
+			if _, err := session.ListTools(ctx, nil); err != nil {
+				t.Fatalf("discover tools after handshake: %v", err)
+			}
+		})
+	}
+}
+
 func remoteToolCatalog(t *testing.T, session *mcp.ClientSession) []*mcp.Tool {
 	t.Helper()
 	var catalog []*mcp.Tool

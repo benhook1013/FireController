@@ -40,6 +40,8 @@ The [suggested workflow](agent-workflow.md#text-ownership) explains optional rec
 
 Operation-specific CLI help supplies the routine edit syntax locally, without loading connection files or requesting service/provider data. An argument error points to that operation instead of making the caller repeat general help and search a large guide. MCP Project properties explain the distinct purpose of optional description, state, milestone and reconsideration fields at discovery time; full replacement and partial-update semantics remain explicit.
 
+Advertised tool descriptions start with the action and the object it applies to, followed by the constraints the caller needs to interpret the result. The [shared MCP instructions](mcp.md#server-instructions) provide the initial job and CI workflow. The everyday and review skills supply details on demand.
+
 A measured configured agent host exposed 22 coordination tools per worker connection while the corresponding raw server catalog contained 77 tools. The serialized baseline schemas were 15,861 bytes for that selected subset and 59,276 bytes for the complete catalog. These are transport/schema measurements, not measured model tokens or evidence that every schema enters a turn. A sampled context result carries both structured content and compatibility text; the host's final model-visible representation was not established. Preserve compatible result forms and existing host selection unless actual exposure demonstrates a useful reason to change them.
 
 ## Inspection and acceptance

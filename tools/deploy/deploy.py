@@ -23,7 +23,10 @@ REPO = HERE.parent.parent
 HOST = "root@77.42.29.156"
 REMOTE_ROOT = "/root/firecontroller-deploy"
 INSTALL = REPO / "tools" / "install"
-CONTEXT = ("Dockerfile", ".dockerignore", "go.mod", "go.sum", "LICENSE", "cmd", "internal")
+CONTEXT = (
+    "Dockerfile", ".dockerignore", "go.mod", "go.sum", "LICENSE", "cmd", "internal",
+    "skills/firecontroller-use/SKILL.md", "skills/firecontroller-use/mcp_guidance.go",
+)
 RECEIVER = (
     "generation_package.py",
     "deploy_helper_consumer.py",
