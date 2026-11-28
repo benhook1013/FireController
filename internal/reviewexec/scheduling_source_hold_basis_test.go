@@ -42,6 +42,18 @@ func TestAutomaticSourceHoldRetainsOnlyItsBoundPullSchedulingBasis(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
+			var expected string
+			err = f.store.BackgroundWrite(t.Context(), func(ctx context.Context, tx *sql.Tx) error {
+				config, _, err := readConfiguration(ctx, tx, scope.ProjectID)
+				if err != nil {
+					return err
+				}
+				expected, _, err = f.e.automaticPlanningBasisChannel(ctx, tx, scope.ProjectID, config, receipt.ID, "hosted")
+				return err
+			})
+			if err != nil || !hash.MatchString(expected) {
+				t.Fatalf("compute fixture's bound basis: %q (%v)", expected, err)
+			}
 			reader := &refreshTestReader{repository: func(context.Context, int64) (reviewprovider.Repository, error) {
 				if edited {
 					schedulingPause(t, f, 2, 0, true)
@@ -58,7 +70,7 @@ func TestAutomaticSourceHoldRetainsOnlyItsBoundPullSchedulingBasis(t *testing.T)
 			if err := f.store.DB().QueryRow(`SELECT settled_basis_sha256 FROM review_automatic_selections WHERE selection_id=?`, receipt.ID).Scan(&settled); err != nil {
 				t.Fatal(err)
 			}
-			if edited && settled != "" || !edited && !hash.MatchString(settled) {
+			if edited && settled != "" || !edited && settled != expected {
 				t.Fatalf("unexpected settled basis after lawful source hold: edited=%v basis=%q", edited, settled)
 			}
 		})

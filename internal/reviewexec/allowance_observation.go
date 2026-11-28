@@ -28,6 +28,7 @@ const (
 	storedConfigurationHistory
 	storedOperationIdentity
 	storedRoundHistory
+	storedPolicyHistory
 )
 
 type storedUnavailableError struct {

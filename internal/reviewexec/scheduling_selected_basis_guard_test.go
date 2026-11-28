@@ -75,6 +75,9 @@ func TestSelectedChildDoesNotSettleRearmedLaneBasis(t *testing.T) {
 			} else if !hash.MatchString(settled) || pull != 2 || !hash.MatchString(pullBasis) {
 				t.Fatalf("stable selection did not settle its own lane/pull basis")
 			}
+			if err := f.e.readAdmission(t.Context(), ValidateSchedulingSnapshot); err != nil {
+				t.Fatal("valid linked child could not be retained in a scheduling snapshot", err)
+			}
 		})
 	}
 }

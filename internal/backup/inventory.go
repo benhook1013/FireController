@@ -1097,7 +1097,8 @@ func validateSnapshotContent(ctx context.Context, dataDir string, m Manifest, al
 		// An optional predecessor domain may be absent only before it has
 		// produced durable controls. Dropping tables cannot erase that history.
 		var used bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE event_type IN ('review.scheduling_updated','review.pull_scheduling_updated'))`).Scan(&used); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE event_type IN ('review.scheduling_updated','review.pull_scheduling_updated')
+			OR (typeof(event_type)='blob' AND CAST(event_type AS TEXT) IN ('review.scheduling_updated','review.pull_scheduling_updated')))`).Scan(&used); err != nil {
 			return unavailable()
 		}
 		if used {
