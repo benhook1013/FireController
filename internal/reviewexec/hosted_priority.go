@@ -125,6 +125,12 @@ func (e *Engine) hostedPriorityBinding(ctx context.Context, tx *sql.Tx, o Operat
 	if err == nil {
 		return true, nil
 	}
+	// A proved mismatch removes only this candidate's priority. Its own
+	// admission remains refused, and operational storage errors still return.
+	var binding *operationSelectionBindingStateError
+	if errors.As(err, &binding) {
+		return false, nil
+	}
 	var refusal *core.Error
 	if errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
 		return false, nil

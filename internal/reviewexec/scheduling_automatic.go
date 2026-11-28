@@ -546,7 +546,7 @@ func (e *Engine) automaticHostedQueuedPrefixChannel(ctx context.Context, tx *sql
 	if err != nil {
 		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT q.key,s.id,s.project_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
+	rows, err := tx.QueryContext(ctx, `SELECT q.key,o.pull_number,s.id,s.project_id,o.id,EXISTS(SELECT 1 FROM review_selection_quarantine d WHERE d.project_id=o.project_id AND d.original_operation_id=o.id) FROM review_operations o
 JOIN json_each(?) q ON q.value=o.pull_number
 LEFT JOIN review_selections s ON s.operation_id=o.id
 WHERE o.project_id=? AND o.channel=? AND o.state='queued'
@@ -563,10 +563,11 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 			return 0, schedulingUnavailable()
 		}
 		var position int
+		var pull int64
 		var selection, selectionProject any
 		var operation string
 		var custodyPresent bool
-		if err := rows.Scan(&position, &selection, &selectionProject, &operation, &custodyPresent); err != nil {
+		if err := rows.Scan(&position, &pull, &selection, &selectionProject, &operation, &custodyPresent); err != nil {
 			return 0, err
 		}
 		if custodyPresent {
@@ -578,8 +579,16 @@ ORDER BY q.key,o.id LIMIT 101`, string(queue), project, channel)
 			}
 			return 0, runUnavailable()
 		}
-		// A direct operation has no parent selection and keeps its position.
+		// A readable direct operation keeps its fence. A locally
+		// unavailable control cannot prevent independent pulls being assessed.
 		if selection == nil {
+			if _, err := readPullScheduling(ctx, tx, project, pull); err != nil {
+				var local *pullSchedulingStateError
+				if errors.As(err, &local) && local.project == project && local.pull == pull {
+					continue
+				}
+				return 0, err
+			}
 			return position, nil
 		}
 		id, validID := selection.(string)

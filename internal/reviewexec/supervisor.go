@@ -836,11 +836,15 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 		if err != nil {
 			var handoff *CLIPreparationHandoff
 			if o.Channel == "cli" && errors.As(err, &handoff) {
-				if err := e.settleCLIPreparationHandoff(ctx, o, a, handoff); err != nil {
-					return &PreparationRecoveryError{Err: err}
-				}
-				if handoff.release != nil {
+				settleErr := e.settleCLIPreparationHandoff(ctx, o, a, handoff)
+				// A saved capture remains available to the next recovery owner.
+				// Release only the process-local marker, not the journal or its
+				// reservation. A failed volatile no-usage handoff is different.
+				if handoff.release != nil && (settleErr == nil || handoff.source != nil) {
 					handoff.release()
+				}
+				if settleErr != nil {
+					return &PreparationRecoveryError{Err: settleErr}
 				}
 				continue
 			}
@@ -849,6 +853,12 @@ func (e *Engine) processPendingBatch(ctx context.Context, drivers map[string]Dri
 				return err
 			}
 			if ctx.Err() == nil {
+				if o.Channel == "hosted" && isSourceObligationProjectStateError(err) {
+					if err := e.finishPreparation(a, "held", "automatic_scheduling_unavailable"); err != nil {
+						return err
+					}
+					continue
+				}
 				if handled, settleErr := e.classifyUnavailablePreparation(ctx, o, a, err); handled {
 					if settleErr != nil {
 						return settleErr

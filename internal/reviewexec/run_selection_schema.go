@@ -61,6 +61,20 @@ func requireUnquarantinedSelectionLink(ctx context.Context, q EvidenceQuery, pro
 	  LEFT JOIN review_operations o ON o.id=d.original_operation_id
 	  WHERE d.project_id=? AND d.original_operation_id=?`, project, operation).Scan(&proved)
 	if errors.Is(err, sql.ErrNoRows) {
+		// A detached marker without its diagnostic has lost the only
+		// exact child link. Do not infer ordinary authority for any
+		// child in that project from the absent link.
+		var unproved bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS (
+		  SELECT 1 FROM review_selections s
+		  WHERE s.project_id=? AND s.reason='linked_selection_quarantined'
+		  AND NOT EXISTS (SELECT 1 FROM review_selection_quarantine d
+		    WHERE d.project_id=s.project_id AND d.selection_id=s.id))`, project).Scan(&unproved); err != nil {
+			return err
+		}
+		if unproved {
+			return automaticProjectStateFailure(linkedSelectionCustodyHeld, "A review operation is held for selection custody recovery in this project.", 403)
+		}
 		return nil
 	}
 	if err != nil {

@@ -97,6 +97,9 @@ func automaticSelectionBinding(ctx context.Context, tx *sql.Tx, r Run) (automati
 		return automaticSelectionAttribution{}, err
 	}
 	hasAttribution := err == nil
+	if hasAttribution && event.sequence == 0 {
+		return automaticSelectionAttribution{}, schedulingUnavailable()
+	}
 	switch event.Origin {
 	case selectionOriginAutomatic:
 		if !hasAttribution || r.ExpectedPullNumber != 0 {

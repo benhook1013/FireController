@@ -81,7 +81,7 @@ func TestLiveCLIPreparationReplaysOnlyRetainedExactZero(t *testing.T) {
 			op := roundOperation(t, f, request.ID)
 			journaled := attemptCount(t, f.store, `SELECT count(*) FROM review_cli_preflight`)
 			reserved := attemptCount(t, f.store, `SELECT count(*) FROM review_execution_reservations`)
-			if d.prepares.Load() != 1 || d.calls.Load() != 0 || released != found {
+			if d.prepares.Load() != 1 || d.calls.Load() != 0 || !released {
 				t.Fatal("local replay performed provider work")
 			}
 			if !found {
@@ -96,5 +96,55 @@ func TestLiveCLIPreparationReplaysOnlyRetainedExactZero(t *testing.T) {
 				t.Fatal("exact zero did not preserve the original retry baseline and backoff", op, reserved, journaled, err)
 			}
 		})
+	}
+}
+
+func TestLiveCLIPreparationRetainedHandoffTransfersToSameEngineRecovery(t *testing.T) {
+	f := supervisorFixture(t)
+	request := f.enqueue(t, attemptProject, "retained-handoff-transfers", "cli", 2, 1)
+	var originalAttempt string
+	loads := 0
+	released := false
+	driver := &controlledDriver{prepare: func(_ context.Context, o Operation, _ Configuration, a Attempt) (Preparation, error) {
+		originalAttempt = a.ID
+		record := CLIExhaustionRecovery{
+			Operation:   roundOperation(t, f, o.ID),
+			Attempt:     a,
+			Observation: CLIAllowanceObservation{Anchor: attemptAnchor(o.ProjectID, o.PullNumber), ObservedAt: stamp(), Remaining: 0, Limit: 5, RollingWindowMS: 3600000, ChangedFiles: 2},
+		}
+		source := exhaustionRecoverySourceFunc(func(_ context.Context, id string) (CLIExhaustionRecovery, bool, error) {
+			loads++
+			if id != a.ID {
+				t.Fatalf("recovery requested a different attempt: %s", id)
+			}
+			if loads == 1 {
+				return CLIExhaustionRecovery{}, false, errors.New("temporary local capture read failure")
+			}
+			if !released {
+				t.Fatal("startup replay did not receive ownership")
+			}
+			return record, true, nil
+		})
+		f.e.cliExhaustionRecovery = source
+		return Preparation{}, RetainedCLIExhaustionHandoff(errors.New("temporary local journal failure"), source, func() { released = true })
+	}}
+	drivers := map[string]Driver{"test-capability": driver}
+	var recoverable *PreparationRecoveryError
+	if err := f.e.processNext(t.Context(), drivers); !errors.As(err, &recoverable) || !released {
+		t.Fatal("transient settlement did not hand durable recovery off", err)
+	}
+	pending := roundOperation(t, f, request.ID)
+	if pending.State != "preparing" || pending.AttemptID != originalAttempt {
+		t.Fatal("failed local settlement changed the accepted attempt", pending)
+	}
+	skipped, err := f.e.reconcilePreparingDrivers(t.Context(), drivers)
+	if err != nil || len(skipped) != 0 {
+		t.Fatal("same engine startup could not recover durable handoff", skipped, err)
+	}
+	got := roundOperation(t, f, request.ID)
+	if loads != 2 || driver.prepares.Load() != 1 || driver.calls.Load() != 0 ||
+		got.State != "queued" || got.AttemptID != "" || got.Wait == nil || got.Wait.BaselineAttemptID != originalAttempt ||
+		!cliWaitDue(t, got).After(time.Now()) {
+		t.Fatal("startup recovery did not settle the sole original attempt", got)
 	}
 }

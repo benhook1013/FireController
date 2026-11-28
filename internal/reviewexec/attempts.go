@@ -173,6 +173,15 @@ func (e *Engine) startAttempt(ctx context.Context, project, id string, draftRead
 		if o.Reason == cliDraftWait && o.Revision != draftReadyRevision {
 			return nil
 		}
+		if o.Channel == "cli" {
+			var dirty bool
+			if err := tx.QueryRowContext(ctx, "SELECT "+comparisonDirtyExists, project, o.PullNumber, o.Channel).Scan(&dirty); err != nil {
+				return err
+			}
+			if dirty {
+				return &automaticProjectStateError{adjudicationStorageError()}
+			}
+		}
 		if err = tx.QueryRowContext(ctx, `SELECT github_repository_id FROM projects WHERE id=?`, project).Scan(&repositoryID); err != nil {
 			return err
 		}

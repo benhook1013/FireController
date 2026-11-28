@@ -67,8 +67,9 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	var ahead bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events e
 		LEFT JOIN review_scheduling s ON s.project_id=e.project_id
-		WHERE e.event_type='review.scheduling_updated'
-		AND (typeof(e.resource_id)<>'text' OR e.resource_id<>e.project_id OR s.project_id IS NULL OR e.revision>s.revision))`).Scan(&ahead)
+		WHERE (e.event_type='review.scheduling_updated' OR
+			(typeof(e.event_type)='blob' AND CAST(e.event_type AS TEXT)='review.scheduling_updated'))
+		AND (typeof(e.event_type)<>'text' OR typeof(e.resource_id)<>'text' OR e.resource_id<>e.project_id OR s.project_id IS NULL OR e.revision>s.revision))`).Scan(&ahead)
 	if err != nil {
 		return err
 	}
@@ -131,9 +132,11 @@ func ValidateSchedulingSnapshot(ctx context.Context, tx *sql.Tx) error {
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections a LEFT JOIN review_selections s ON s.id=a.selection_id`+custodyJoin+`
 		LEFT JOIN review_scheduling c ON c.project_id=a.project_id LEFT JOIN review_operations o ON o.id=`+linked+`
 		WHERE s.id IS NULL OR s.project_id<>a.project_id OR s.channel NOT IN(`+channels+`) OR s.actor_id<>a.actor_id OR s.worker_id<>a.worker_id OR c.project_id IS NULL
-		OR a.scheduling_revision>c.revision OR (a.pull_number=0 AND (a.pull_basis_sha256<>'' OR s.state='selected'))
-		OR (a.pull_number<>0 AND ((s.state<>'selected' AND NOT `+held+`) OR o.id IS NULL OR o.pull_number<>a.pull_number
-			OR o.project_id<>a.project_id OR o.channel<>s.channel OR o.actor_id<>a.actor_id OR o.worker_id<>a.worker_id)))`).Scan(&bad)
+		OR a.scheduling_revision>c.revision
+		OR (a.pull_number=0 AND (a.pull_basis_sha256<>'' OR (s.state='selected' AND a.settled_basis_sha256<>'')))
+		OR ((s.state='selected' OR a.pull_number<>0) AND (o.id IS NULL
+			OR o.project_id<>a.project_id OR o.channel<>s.channel OR o.actor_id<>a.actor_id OR o.worker_id<>a.worker_id))
+		OR (a.pull_number<>0 AND ((s.state<>'selected' AND NOT `+held+`) OR o.pull_number<>a.pull_number)))`).Scan(&bad)
 	if err != nil {
 		return err
 	}
@@ -317,13 +320,24 @@ func validPullSchedulingPayload(payload sql.NullString, pull int64, paused bool)
 // outer side of this join, SQLite can seek the control's composite primary key
 // rather than reading the same project's event history once for each control.
 // Ordered qualifying matches keep duplicate detection constant-space.
-const pullSchedulingSnapshotEventsSQL = `SELECT s.project_id,s.pull_number,s.revision,s.paused,s.actor_id,
-	e.revision,e.actor_id,CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END
+const pullSchedulingSnapshotEventsSQL = `WITH represented_history AS (
+	SELECT s.project_id,s.pull_number,s.revision AS control_revision,s.paused,s.actor_id AS control_actor,
+		e.revision,e.actor_id,e.event_type,
+		CASE WHEN typeof(e.payload_json)='text' AND length(CAST(e.payload_json AS BLOB))<=4096 THEN e.payload_json END AS payload,
+		LAG(e.revision) OVER (PARTITION BY s.project_id,s.pull_number ORDER BY e.sequence) AS prev_revision
 	FROM events e CROSS JOIN review_pull_scheduling s
-	WHERE e.event_type='review.pull_scheduling_updated' AND s.project_id=e.project_id
-	AND s.pull_number=CAST(e.resource_id AS INTEGER) AND CAST(s.pull_number AS TEXT)=e.resource_id
-	AND (typeof(e.revision)<>'integer' OR e.revision<1 OR e.revision>=s.revision)
-	ORDER BY s.project_id,s.pull_number`
+	WHERE (e.event_type='review.pull_scheduling_updated' OR
+		(typeof(e.event_type)='blob' AND CAST(e.event_type AS TEXT)='review.pull_scheduling_updated'))
+	AND s.project_id=e.project_id AND s.pull_number=CAST(e.resource_id AS INTEGER) AND CAST(s.pull_number AS TEXT)=e.resource_id
+	), relevant AS (
+		SELECT *, (typeof(event_type)<>'text' OR typeof(revision)<>'integer' OR revision<1 OR
+			(prev_revision IS NOT NULL AND revision<=prev_revision)) AS invalid_event
+		FROM represented_history
+	)
+	SELECT project_id,pull_number,control_revision,paused,control_actor,
+		CASE WHEN NOT invalid_event THEN revision END,actor_id,payload
+	FROM relevant WHERE invalid_event OR revision>=control_revision
+	ORDER BY project_id,pull_number`
 
 func validatePullSchedulingEvents(ctx context.Context, tx *sql.Tx, controls int) error {
 	if controls == 0 {

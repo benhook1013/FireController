@@ -241,6 +241,14 @@ func (e *Engine) runBinding(ctx context.Context, tx *sql.Tx, r Run) (Configurati
    WHERE p.project_id=o.project_id AND p.pull_number=o.pull_number AND typeof(p.paused)='integer' AND p.paused=1)))`, r.ProjectID, r.Channel).Scan(&busy); err != nil {
 		return c, 0, "", err
 	}
+	if !busy && r.Channel == "hosted" {
+		// The SQL predicate is only a shortlist. A queued operation
+		// may yield its turn only on a fully validated pull pause.
+		busy, err = unprovedQueuedHostedPause(ctx, tx, r.ProjectID)
+		if err != nil {
+			return c, 0, "", err
+		}
+	}
 	if busy {
 		var automatic bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM review_automatic_selections WHERE project_id=? AND selection_id=?)`, r.ProjectID, r.ID).Scan(&automatic); err != nil {
@@ -502,6 +510,46 @@ func AbandonReviewRuns(ctx context.Context, tx *sql.Tx, at time.Time) (int64, er
 	return int64(len(selected)), nil
 }
 
+func unprovedQueuedHostedPause(ctx context.Context, tx *sql.Tx, project string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT pull_number FROM review_operations
+	 WHERE project_id=? AND channel='hosted' AND state='queued' ORDER BY pull_number LIMIT 101`, project)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var pulls []int64
+	for rows.Next() {
+		var pull int64
+		if err := rows.Scan(&pull); err != nil {
+			return false, err
+		}
+		pulls = append(pulls, pull)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(pulls) > 100 {
+		return true, nil
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	for _, pull := range pulls {
+		s, err := readPullScheduling(ctx, tx, project, pull)
+		if err != nil {
+			var invalid *pullSchedulingStateError
+			if errors.As(err, &invalid) {
+				return true, nil
+			}
+			return false, err
+		}
+		if !s.Paused {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // A corrupt revision is an opaque retained value, never an arithmetic operand.
 const selectionClaimRevision = `CASE WHEN typeof(revision)='integer' AND revision BETWEEN 1 AND 9223372036854775806 THEN revision ELSE 0 END`
 
@@ -532,9 +580,6 @@ func quarantineNativeSelection(ctx context.Context, tx *sql.Tx, project, id any,
 	}
 	if err != nil {
 		return false, err
-	}
-	if native, ok := originalRevision.(int64); originalLink == nil && ok && native < 1 {
-		return false, &unprovedSelectionCustodyError{runUnavailable()}
 	}
 	linkGuard := ` AND operation_id IS NULL`
 	holdReason := "local_read_unavailable"

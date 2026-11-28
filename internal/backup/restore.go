@@ -250,9 +250,9 @@ func restoreIdentity(ctx context.Context, dir string, m Manifest, id, key string
 		}
 		var failure *core.Error
 		if errors.As(err, &failure) && failure.Code == "storage_unavailable" {
-			return invalid()
+			return historicalResumeRestoreError{public: invalid(), cause: err}
 		}
-		return unavailable()
+		return historicalResumeRestoreError{public: unavailable(), cause: err}
 	}
 	if err = tx.Commit(); err != nil {
 		return unavailable()
@@ -328,3 +328,10 @@ func restoreParent(path string) error {
 		path = next
 	}
 }
+
+// historicalResumeRestoreError preserves the operational cause without exposing
+// storage internals through the public restore message.
+type historicalResumeRestoreError struct{ public, cause error }
+
+func (e historicalResumeRestoreError) Error() string   { return e.public.Error() }
+func (e historicalResumeRestoreError) Unwrap() []error { return []error{e.public, e.cause} }
