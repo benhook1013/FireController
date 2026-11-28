@@ -36,6 +36,10 @@ func (e *Engine) earlierQueuedReviewIntents(ctx context.Context, tx *sql.Tx, o O
 	if err != nil {
 		return nil, err
 	}
+	return e.earlierQueuedReviewIntentsInOrder(ctx, tx, o, order, limit, e.hostedPriorityBinding)
+}
+
+func (e *Engine) earlierQueuedReviewIntentsInOrder(ctx context.Context, tx *sql.Tx, o Operation, order []int64, limit int, binding func(context.Context, *sql.Tx, Operation) (bool, error)) ([]Operation, error) {
 	position := slices.Index(order, o.PullNumber)
 	if position < 1 {
 		return nil, nil
@@ -78,7 +82,7 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), o.ProjectID, o.Channel, now, n
 	}
 	// Inapplicable requests must still reach normal StartAttempt hold handling,
 	// rather than being hidden behind another intent indefinitely.
-	valid, err := e.hostedPriorityBinding(ctx, tx, o)
+	valid, err := binding(ctx, tx, o)
 	if err != nil || !valid {
 		return nil, err
 	}
@@ -92,7 +96,7 @@ ORDER BY q.key,o.created_at,o.id`, string(queue), o.ProjectID, o.Channel, now, n
 		if seen[earlier.PullNumber] {
 			continue
 		}
-		valid, err := e.hostedPriorityBinding(ctx, tx, earlier)
+		valid, err := binding(ctx, tx, earlier)
 		if err != nil {
 			return nil, err
 		}

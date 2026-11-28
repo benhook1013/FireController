@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/benhook1013/FireController/internal/core"
 )
@@ -151,9 +152,6 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 						}
 					}
 				}
-				if view.queueDetails && queueRevision > 0 && execution > 0 && !control.Closed {
-					progress.Queue = e.readQueuedReviewPosition(ctx, tx, scope.ProjectID, number, channel, queueConfig, queueRevision)
-				}
 				if view.activity {
 					progress.SubmissionEvidence, err = readSubmissionEvidence(ctx, tx, scope.ProjectID, number, channel)
 					if err != nil {
@@ -193,6 +191,15 @@ func (e *Engine) readRoundProgress(ctx context.Context, scope core.Scope, number
 				item.Channels = append(item.Channels, progress)
 			}
 			out.Items = append(out.Items, item)
+		}
+		if view.queueDetails && queueRevision > 0 {
+			// Preserve the actual wait and round status if optional tooltip
+			// details cannot finish within this read's remaining budget.
+			if deadline, ok := ctx.Deadline(); ok {
+				detailsCtx, cancel := context.WithDeadline(ctx, deadline.Add(-100*time.Millisecond))
+				e.addQueuedReviewPositions(detailsCtx, tx, scope.ProjectID, queueConfig, queueRevision, out.Items)
+				cancel()
+			}
 		}
 		out.EvaluatedAt = stamp()
 		return nil

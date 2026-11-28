@@ -205,3 +205,15 @@ it.each(['cli','hosted'] as const)('retains exact grant semantics and unresolved
   expect(reviewAttemptStatus({...attempt,channel,state:'uncertain'},{...progress,channel,...grant})?.text).toBe('Needs agent attention');
  }
 });
+
+it.each([
+  ['hosted', 'hosted_allowance_cooldown', 'Hosted cooldown'],
+  ['cli', 'allowance_exhausted', 'CLI quota exhausted'],
+] as const)('shows missing progress rather than attention after an unused %s allowance check', (channel, reason, cause) => {
+  const checked = {
+    ...attempt, channel, state: 'held' as const, reason, source_run_id: '', trigger_id: '',
+    provider_review_id: '', finished_at: '2026-10-30T12:00:00Z',
+  };
+  expect(reviewAttemptStatus(checked)).toMatchObject({ text: 'Status unavailable', description: expect.stringContaining(cause) });
+  expect(reviewAttemptStatus({ ...checked, state: 'uncertain' })?.text).toBe('Needs agent attention');
+});

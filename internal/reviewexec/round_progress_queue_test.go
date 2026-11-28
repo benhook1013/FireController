@@ -18,37 +18,47 @@ func TestQueuedReviewSlotDetailsSeparateHoldersAndPredecessors(t *testing.T) {
 	prior := f.enqueue(t, attemptProject, "earlier-request", "hosted", 4, 1)
 	f.enqueue(t, attemptProject, "queued-request", "hosted", 6, 1)
 
-	read := func(version string) RoundProgressChannel {
+	read := func(version string) []RoundProgressItem {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, roundProgressPath(attemptProject)+"?pull_numbers=6&view=stages", nil)
+		req := httptest.NewRequest(http.MethodGet, roundProgressPath(attemptProject)+"?pull_numbers=6,4,2&view=stages", nil)
 		req.Header.Set("Authorization", "Bearer "+f.reader)
 		req.Header.Set(reviewQueueDetailsHeader, version)
 		req.Header.Set(operationWaitHeader, "5")
 		response := httptest.NewRecorder()
 		f.handler.ServeHTTP(response, req)
 		var progress RoundProgress
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &progress) != nil || len(progress.Items) != 1 {
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &progress) != nil || len(progress.Items) != 3 {
 			t.Fatal(response.Code, response.Body.String())
 		}
 		if !strings.Contains(strings.Join(response.Header().Values("Vary"), ","), reviewQueueDetailsHeader) {
 			t.Fatal("missing queue detail negotiation")
 		}
-		return progress.Items[0].Channels[0]
+		return progress.Items
 	}
-	if legacy := read(""); legacy.Queue != nil || legacy.Wait != nil {
+	if legacy := read("")[0].Channels[0]; legacy.Queue != nil || legacy.Wait != nil {
 		t.Fatal("ordinary reader gained queue details", legacy)
 	}
-	queued := read("v1")
+	rows := read("v1")
+	if rows[0].PullNumber != 6 || rows[1].PullNumber != 4 || rows[2].PullNumber != 2 {
+		t.Fatalf("batch progress reordered the selected pull rows: %+v", rows)
+	}
+	if position := rows[1].Channels[0].Queue; position == nil || !slices.Equal(position.Ahead, []int64{2}) {
+		t.Fatalf("shared queue proof returned the wrong predecessor for the middle row: %+v", position)
+	}
+	if position := rows[2].Channels[0].Queue; position != nil {
+		t.Fatalf("first queued row inherited a later row's predecessors: %+v", position)
+	}
+	queued := rows[0].Channels[0]
 	if queued.Wait != nil || queued.Queue == nil || !slices.Equal(queued.Queue.Ahead, []int64{2, 4}) || len(queued.Queue.Holding) != 0 {
 		t.Fatalf("ordinary queued request or project boundary was misread: %+v", queued.Queue)
 	}
 	f.start(t, attemptProject, head)
-	queued = read("v1")
+	queued = read("v1")[0].Channels[0]
 	if queued.Queue == nil || !slices.Equal(queued.Queue.Ahead, []int64{4}) || !slices.Equal(queued.Queue.Holding, []int64{2}) {
 		t.Fatalf("reservation and waiting PRs were conflated: %+v", queued.Queue)
 	}
 	timerControl(t, f, prior.ID, "pause", "pause-predecessor")
-	queued = read("v1")
+	queued = read("v1")[0].Channels[0]
 	if queued.Queue == nil || len(queued.Queue.Ahead) != 0 || !slices.Equal(queued.Queue.Holding, []int64{2}) {
 		t.Fatalf("paused predecessor still held its place: %+v", queued.Queue)
 	}

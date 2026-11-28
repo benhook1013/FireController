@@ -131,6 +131,16 @@ export function reviewAttemptStatus(attempt?: ReviewAttemptSummary, progress?: R
   if (attempt?.state === 'held' && progress?.channel === attempt.channel && progress.pending_execution === 0 && progress.pending_adjudication === 0 && validCancelledWait(cancelled) && cancelled.baseline_attempt_id === attempt.source_attempt_id && cancelled.head_sha === attempt.head_sha && attempt.reason === (attempt.channel === 'hosted' ? 'hosted_allowance_cooldown' : 'allowance_exhausted') && !attempt.source_run_id && !attempt.trigger_id && !attempt.provider_review_id && attempt.finished_at && Number.isFinite(Date.parse(attempt.finished_at)) && Date.parse(attempt.finished_at) <= Date.parse(cancelled.cancelled_at)) {
     return undefined; // The request is gone; its unused baseline stays in history.
   }
+  if (!progress && attempt?.state === 'held' && attempt.finished_at &&
+      !attempt.source_run_id && !attempt.trigger_id && !attempt.provider_review_id &&
+      attempt.reason === (attempt.channel === 'hosted' ? 'hosted_allowance_cooldown' : 'allowance_exhausted')) {
+    return {
+      text: 'Status unavailable',
+      description: attempt.channel === 'hosted'
+        ? 'Last check found a Hosted cooldown. Current status could not be loaded.'
+        : 'Last check found the CLI quota exhausted. Current status could not be loaded.',
+    };
+  }
   if (stopped && !settled && !priorSourceWait) {
     if (githubHold) return { text: 'Needs agent attention', kind: 'attention', cause: githubRateLimit, description: 'See Attempts in review history.' };
     // A known admission hold is more useful than a generic process alert.

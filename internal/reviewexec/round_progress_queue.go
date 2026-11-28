@@ -81,9 +81,33 @@ func (e *Engine) readHostedLaneHold(ctx context.Context, tx *sql.Tx, project, ca
 	return &hold, nil
 }
 
+// A progress batch reads one authorized transaction. Share the effective
+// order and the results of expensive admission checks across rows in that
+// snapshot. Scheduling never reuses this view cache for an execution claim.
+type queuePositionSnapshot struct {
+	order   []int64
+	loaded  bool
+	binding map[string]bool
+}
+
+func (e *Engine) addQueuedReviewPositions(ctx context.Context, tx *sql.Tx, project string, c Configuration, revision int64, items []RoundProgressItem) {
+	snapshot := queuePositionSnapshot{binding: make(map[string]bool)}
+	for i := range items {
+		for j := range items[i].Channels {
+			if ctx.Err() != nil {
+				return
+			}
+			progress := &items[i].Channels[j]
+			if !progress.Closed && progress.PendingExecution != nil && *progress.PendingExecution > 0 {
+				progress.Queue = e.readQueuedReviewPosition(ctx, tx, project, items[i].PullNumber, progress.Channel, c, revision, &snapshot)
+			}
+		}
+	}
+}
+
 // This is optional local diagnostic evidence. If a binding cannot be verified,
 // preserve the existing wait and progress facts without adding a position.
-func (e *Engine) readQueuedReviewPosition(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, c Configuration, revision int64) *QueuedReviewPosition {
+func (e *Engine) readQueuedReviewPosition(ctx context.Context, tx *sql.Tx, project string, pull int64, channel string, c Configuration, revision int64, snapshot *queuePositionSnapshot) *QueuedReviewPosition {
 	var id string
 	err := tx.QueryRowContext(ctx, `SELECT id FROM review_operations
 		WHERE project_id=? AND pull_number=? AND channel=? AND state='queued'
@@ -99,15 +123,31 @@ func (e *Engine) readQueuedReviewPosition(ctx context.Context, tx *sql.Tx, proje
 	if operation.Wait != nil && operation.Wait.SourceRetry != nil && e.sampleExecutionTime().Before(mustWaitTime(operation.Wait.SourceRetry.RetryNotBefore)) {
 		return nil
 	}
-	valid, err := e.hostedPriorityBinding(ctx, tx, operation)
+	binding := func(ctx context.Context, tx *sql.Tx, operation Operation) (bool, error) {
+		if valid, ok := snapshot.binding[operation.ID]; ok {
+			return valid, nil
+		}
+		valid, err := e.hostedPriorityBinding(ctx, tx, operation)
+		if err == nil {
+			snapshot.binding[operation.ID] = valid
+		}
+		return valid, err
+	}
+	valid, err := binding(ctx, tx, operation)
 	if err != nil || !valid {
 		return nil
 	}
+	if !snapshot.loaded {
+		snapshot.order, _ = orderedConfiguredQueue(ctx, tx, project, c)
+		snapshot.loaded = true
+	}
 	position := &QueuedReviewPosition{}
-	if earlier, err := e.earlierQueuedReviewIntents(ctx, tx, operation, c, revision, maxVisibleQueuePredecessors+1); err == nil {
-		position.More = len(earlier) > maxVisibleQueuePredecessors
-		for _, item := range earlier[:min(len(earlier), maxVisibleQueuePredecessors)] {
-			position.Ahead = append(position.Ahead, item.PullNumber)
+	if !c.Paused && revision >= operation.ConfigurationRevision && slices.Contains(c.Queue, operation.PullNumber) {
+		if earlier, err := e.earlierQueuedReviewIntentsInOrder(ctx, tx, operation, snapshot.order, maxVisibleQueuePredecessors+1, binding); err == nil {
+			position.More = len(earlier) > maxVisibleQueuePredecessors
+			for _, item := range earlier[:min(len(earlier), maxVisibleQueuePredecessors)] {
+				position.Ahead = append(position.Ahead, item.PullNumber)
+			}
 		}
 	}
 	position.Holding = e.readQueueSlotHolders(ctx, tx, operation, e.capabilities[c.CapabilityID])

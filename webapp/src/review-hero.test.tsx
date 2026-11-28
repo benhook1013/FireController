@@ -224,7 +224,8 @@ it('shows closed native rounds instead of historical Held while preserving unfin
   expect(render(closed)).toContain('No reviews remaining');
   expect(render(closed)).not.toContain('>Held<');
   expect(render(closed)).toContain('Manually closed');
-  expect(render(undefined)).toContain('>Check attempt<');
+  expect(render(undefined)).toContain('>Status unavailable<');
+  expect(render(undefined)).not.toContain('>Check attempt<');
   expect(render({...closed,closed:false})).toContain('>Check attempt<');
   expect(render({...closed,pending:1,pending_execution:0,pending_adjudication:1})).toContain('1 awaiting adjudication');
   expect(render({...closed,pending:1})).not.toContain('>Closed<');
