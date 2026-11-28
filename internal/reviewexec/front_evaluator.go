@@ -216,15 +216,9 @@ func (e *Engine) runFront(ctx context.Context, q *sql.Tx, r Run, repo int64, pre
 		return 0, "", nil
 	}
 	if finalPrefix && result.localRefusal != nil {
-		// Keep the refusal local during traversal, but preserve explicit
-		// selection attribution and finish rollback when it is the final hold.
-		reason, err := selectionLocalHoldReason(ctx, q, r)
-		if err != nil {
-			return 0, "", err
-		}
-		if reason == "local_read_unavailable" {
-			return 0, "", result.localRefusal
-		}
+		// Traverse past local refusals while considering other PRs. A final
+		// refusal retains the original hold without publishing partial source.
+		return 0, "", result.localRefusal
 	}
 	return 0, result.reason, nil
 }
